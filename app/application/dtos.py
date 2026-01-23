@@ -43,6 +43,25 @@ class UserResponseDTO(BaseModel):
     plan_expiration: Optional[datetime] = None
     is_active: bool = True
     
+    # CORREÇÃO: Validadores 'before' para extrair valores de objetos de domínio (Email, Role)
+    # Isso permite passar o objeto User direto do banco para o DTO sem conversão manual.
+    
+    @field_validator('email', mode='before')
+    @classmethod
+    def parse_email_value_object(cls, v: Any) -> str:
+        # Se receber um objeto Email(value='...'), extrai o value
+        if hasattr(v, 'value'):
+            return v.value
+        return str(v)
+
+    @field_validator('role', mode='before')
+    @classmethod
+    def parse_role_enum(cls, v: Any) -> str:
+        # Se receber um Enum UserRole, extrai o value ('admin', 'owner', etc)
+        if hasattr(v, 'value'):
+            return v.value
+        return str(v)
+
     class Config:
         from_attributes = True
 
