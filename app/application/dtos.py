@@ -12,7 +12,26 @@ class UserCreateDTO(BaseModel):
     name: str
     email: EmailStr
     cpf: str
-    password: str
+    # Removemos o max_length do Field para tratar manualmente no validator
+    password: str = Field(..., min_length=6) 
+
+    @field_validator('password')
+    @classmethod
+    def truncate_password_if_needed(cls, v: str) -> str:
+        """
+        Trunca automaticamente a senha para 72 bytes (limite do Bcrypt).
+        Isso evita o erro 500 'password cannot be longer than 72 bytes'.
+        """
+        # Converte para bytes para checar o tamanho real
+        v_bytes = v.encode('utf-8')
+        
+        if len(v_bytes) > 72:
+            # Corta nos primeiros 72 bytes
+            truncated_bytes = v_bytes[:72]
+            # Decodifica de volta, ignorando erros se cortar um caractere multi-byte no meio
+            return truncated_bytes.decode('utf-8', errors='ignore')
+            
+        return v
 
 class UserResponseDTO(BaseModel):
     id: UUID
@@ -60,10 +79,6 @@ class PlanUpdateDTO(BaseModel):
 
 class PlanResponseDTO(PlanCreateDTO):
     id: UUID
-
-class AdminManualSubscribeDTO(BaseModel):
-    user_id_override: Optional[UUID] = None
-    duration_days: int
 
 # ===========================
 # INVENTORY & SALES DTOs
