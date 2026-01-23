@@ -351,6 +351,14 @@ class TerminalResponseDTO(BaseModel):
     name: str
     active: bool
     
+    # CORREÇÃO: Trata campo active=None vindo do banco/entidade
+    @field_validator('active', mode='before')
+    @classmethod
+    def handle_none_active(cls, v: Any) -> bool:
+        if v is None:
+            return True # Default to True if null
+        return v
+
     class Config:
         from_attributes = True
 
