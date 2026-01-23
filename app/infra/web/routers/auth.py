@@ -25,7 +25,7 @@ async def login_for_access_token(
         valid_password = False
         if user:
             try:
-                valid_password = AuthHandler.verify_password(form_data.password, user.password_hash)
+                valid_password = AuthHandler.verify_password(form_data.password[:72], user.password_hash)
             except Exception:
                 valid_password = False
         

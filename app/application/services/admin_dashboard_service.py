@@ -97,7 +97,7 @@ class AdminDashboardService:
             raise BusinessRuleException("Usuário não encontrado.")
         
         # Gera novo hash
-        user.password_hash = self.hasher(dto.password)
+        user.password_hash = self.hasher(dto.password[:72])
         await self.user_repo.save(user)
         return {"message": "Senha alterada com sucesso."}
 

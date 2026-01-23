@@ -22,7 +22,7 @@ class IdentityService:
             raise BusinessRuleException("Email já cadastrado.")
 
         # Gera o hash real usando a função injetada (Bcrypt)
-        password_hash = self.hasher(dto.password)
+        password_hash = self.hasher(dto.password[:72])
 
         new_user = User(
             name=dto.name,
