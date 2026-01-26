@@ -15,7 +15,7 @@ def pre_hash_password(password: str) -> str:
     Converte qualquer senha em um hash SHA-256 de 64 caracteres.
     Isso contorna o limite de 72 bytes do Bcrypt de forma segura.
     """
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return hashlib.sha256(password[:72].encode("utf-8")).hexdigest()
 
 class AuthHandler:
     @staticmethod
