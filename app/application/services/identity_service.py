@@ -21,9 +21,20 @@ class IdentityService:
         if existing_user:
             raise BusinessRuleException("Email já cadastrado.")
 
-        # CORREÇÃO: Removemos o corte [:72]. 
-        # O hasher (AuthHandler) já aplica SHA256, suportando senhas de qualquer tamanho.
-        password_hash = self.hasher(dto.password)
+        # CORREÇÃO DE PRODUÇÃO (Safety Truncate):
+        # O Bcrypt tem um limite rígido de 72 bytes. Se o AuthHandler falhar no pré-hash (SHA256),
+        # ou se o input for muito longo, o sistema quebra.
+        # Aqui garantimos que nunca passaremos mais de 72 bytes para o hasher.
+        safe_password = dto.password
+        try:
+            p_bytes = safe_password.encode('utf-8')
+            if len(p_bytes) > 72:
+                # Corta exatamente em 72 bytes e decodifica ignorando erros de caractere incompleto no final
+                safe_password = p_bytes[:72].decode('utf-8', errors='ignore')
+        except Exception:
+            pass # Em caso de erro bizarro de encoding, mantemos a original e deixamos o hasher lidar
+            
+        password_hash = self.hasher(safe_password)
 
         new_user = User(
             name=dto.name,
