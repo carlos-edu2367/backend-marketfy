@@ -1,11 +1,12 @@
 import uvicorn
 import os
 import sys
-from app.infra.security.auth_handler import pwd_context
+
 
 if __name__ == "__main__":
     # Adiciona a pasta 'app' ao PYTHONPATH
     sys.path.append(os.path.join(os.path.dirname(__file__), "app"))
+    from app.infra.security.auth_handler import pwd_context
 
     port = int(os.environ.get("PORT", 8000))
 
