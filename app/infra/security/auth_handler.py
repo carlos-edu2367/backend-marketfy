@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import jwt, JWTError
@@ -6,22 +7,28 @@ from infra.config.settings import get_settings
 
 settings = get_settings()
 
+# Configuração do Bcrypt
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-import hashlib
-
 def pre_hash_password(password: str) -> str:
+    """
+    Converte qualquer senha em um hash SHA-256 de 64 caracteres.
+    Isso contorna o limite de 72 bytes do Bcrypt de forma segura.
+    """
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 class AuthHandler:
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
+        # A senha plana deve passar pelo mesmo pré-hash antes de verificar
         pre_hashed = pre_hash_password(plain_password)
         return pwd_context.verify(pre_hashed, hashed_password)
 
     @staticmethod
     def get_password_hash(password: str) -> str:
+        # A senha é reduzida para 64 bytes via SHA-256
         pre_hashed = pre_hash_password(password)
+        # O Bcrypt encripta o hash SHA-256, não a senha original
         return pwd_context.hash(pre_hashed)
 
     @staticmethod

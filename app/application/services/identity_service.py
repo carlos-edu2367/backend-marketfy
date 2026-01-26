@@ -10,7 +10,7 @@ class IdentityService:
                  user_repo: UserRepositoryInterface, 
                  market_repo: MarketRepositoryInterface,
                  plan_repo: PlanRepositoryInterface,
-                 hasher: Callable[[str], str]): # Injeção da função de Hash
+                 hasher: Callable[[str], str]):
         self.user_repo = user_repo
         self.market_repo = market_repo
         self.plan_repo = plan_repo
@@ -21,8 +21,9 @@ class IdentityService:
         if existing_user:
             raise BusinessRuleException("Email já cadastrado.")
 
-        # Gera o hash real usando a função injetada (Bcrypt)
-        password_hash = self.hasher(dto.password[:72])
+        # CORREÇÃO: Removemos o corte [:72]. 
+        # O hasher (AuthHandler) já aplica SHA256, suportando senhas de qualquer tamanho.
+        password_hash = self.hasher(dto.password)
 
         new_user = User(
             name=dto.name,
