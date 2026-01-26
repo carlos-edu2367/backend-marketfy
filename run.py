@@ -1,6 +1,7 @@
 import uvicorn
 import os
 import sys
+from app.infra.security.auth_handler import pwd_context
 
 if __name__ == "__main__":
     # Adiciona a pasta 'app' ao PYTHONPATH
@@ -9,6 +10,10 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
 
     print(f"🚀 Iniciando SGM Marketfy Backend na porta {port}...")
+
+    print("PASSLIB SCHEMES:", pwd_context.schemes())
+    print("PASSLIB VERSION CHECK")
+
 
     uvicorn.run(
         "infra.web.main:app",
