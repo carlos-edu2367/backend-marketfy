@@ -454,3 +454,20 @@ async def change_ticket_status(
         return {"message": "Status atualizado com sucesso."}
     except BusinessRuleException as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+@router_finance.get("/{market_id}/customers", response_model=List[CustomerResponseDTO])
+async def list_customers(
+    market_id: uuid.UUID,
+    search: Optional[str] = Query(None, description="Nome ou CPF"),
+    service: FinanceService = Depends(get_finance_service),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Lista todos os clientes de uma loja, com resumo financeiro (Dívida/Limite).
+    """
+    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
+    
+    # Nota: Você precisará implementar o método 'list_customers' no FinanceService
+    # e no CustomerRepository se eles ainda não existirem.
+    return await service.list_customers(market_id, search)
