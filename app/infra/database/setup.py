@@ -3,10 +3,11 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from infra.config.settings import get_settings
 
 settings = get_settings()
-DATABASE_URL = settings.DATABASE_URL.replace(
+DATABASE_URL = settings.DATABASE_URL.strip().replace(
     "postgresql://",
     "postgresql+asyncpg://"
 )
+
 
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
