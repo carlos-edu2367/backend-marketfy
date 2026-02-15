@@ -8,16 +8,18 @@ DATABASE_URL = settings.DATABASE_URL.replace(
     "postgresql+asyncpg://"
 )
 
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    future=True,
-    poolclass=NullPool,
+    poolclass=NullPool,   # MUITO IMPORTANTE com PgBouncer
     connect_args={
-        "statement_cache_size": 0
-    }
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+        "command_timeout": 60,
+    },
 )
 
 AsyncSessionLocal = sessionmaker(
