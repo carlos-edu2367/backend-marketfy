@@ -8,10 +8,13 @@ DATABASE_URL = settings.DATABASE_URL.replace(
     "postgresql+asyncpg://"
 )
 
+from sqlalchemy.pool import NullPool
+
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
+    poolclass=NullPool,
     connect_args={
         "statement_cache_size": 0
     }
