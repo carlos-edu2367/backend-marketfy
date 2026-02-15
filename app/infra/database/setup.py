@@ -10,8 +10,11 @@ DATABASE_URL = settings.DATABASE_URL.replace(
 
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False, # True para debug de SQL
-    future=True
+    echo=False,
+    future=True,
+    connect_args={
+        "statement_cache_size": 0
+    }
 )
 
 AsyncSessionLocal = sessionmaker(
