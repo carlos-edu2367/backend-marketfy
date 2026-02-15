@@ -3,9 +3,13 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from infra.config.settings import get_settings
 
 settings = get_settings()
+DATABASE_URL = settings.DATABASE_URL.replace(
+    "postgresql://",
+    "postgresql+asyncpg://"
+)
 
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    DATABASE_URL,
     echo=False, # True para debug de SQL
     future=True
 )
