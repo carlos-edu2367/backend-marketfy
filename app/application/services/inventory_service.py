@@ -5,7 +5,7 @@ from datetime import datetime
 from domain.inventory import Product, StockMovementType
 from domain.interfaces import ProductRepositoryInterface, MarketRepositoryInterface
 from domain.shared import BusinessRuleException
-from application.dtos import ProductCreateDTO, StockMovementDTO, StockMovementResponseDTO, ProductSyncResponseDTO
+from application.dtos import ProductCreateDTO, StockMovementDTO, StockMovementResponseDTO, ProductSyncResponseDTO, EditProductDTO
 
 class InventoryService:
     def __init__(self, product_repo: ProductRepositoryInterface, market_repo: MarketRepositoryInterface):
@@ -27,6 +27,20 @@ class InventoryService:
             ncm=dto.ncm,
             origin=dto.origin
         )
+        return await self.product_repo.save(product)
+    
+    async def edit_product(self, product: Product, dtos: EditProductDTO) -> Product:
+        if dtos.name:
+            product.name = dtos.name
+        if dtos.price:
+            product.price = dtos.price
+        if dtos.cost_price:
+            product.cost_price = dtos.cost_price
+        if dtos.ncm:
+            product.ncm = dtos.ncm
+        if dtos.origin:
+            product.origin = dtos.origin
+
         return await self.product_repo.save(product)
 
     async def list_products(self, market_id: uuid.UUID) -> List[Product]:

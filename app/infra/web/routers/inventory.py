@@ -7,7 +7,7 @@ from infra.web.dependencies import (
     get_inventory_service, get_current_user, PermissionChecker
 )
 from application.services.inventory_service import InventoryService
-from application.dtos import ProductCreateDTO, StockMovementDTO, StockMovementResponseDTO, ProductSyncResponseDTO
+from application.dtos import ProductCreateDTO, StockMovementDTO, StockMovementResponseDTO, ProductSyncResponseDTO, EditProductDTO
 from domain.shared import BusinessRuleException, ValidationException
 
 router = APIRouter()
@@ -49,6 +49,32 @@ async def create_product(
     await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     try:
         return await service.create_product(market_id, dto)
+    except BusinessRuleException as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Erro interno.")
+    
+@router.put("/{market_id}/product/{product_id}", status_code=status.HTTP_201_CREATED)
+async def update_product(
+    market_id: uuid.UUID,
+    product_id: uuid.UUID,
+    dto: EditProductDTO,
+    service: InventoryService = Depends(get_inventory_service),
+    current_user = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
+    try:
+        product = await service.product_repo.get_by_id(product_id)
+        if not product:
+            raise HTTPException(status_code=404, detail="Produto não encontrado")
+        if product.market_id != market_id:
+            raise HTTPException(status_code=403, detail="Você não tem permissão para modificar este produto")
+        ok = await service.edit_product(product, dto)
+        if ok:
+            return
+    
     except BusinessRuleException as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

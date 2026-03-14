@@ -112,6 +112,13 @@ class ProductCreateDTO(BaseModel):
     ncm: Optional[str] = None
     origin: int = 0
 
+class EditProductDTO(BaseModel):
+    name: Optional[str] = None
+    price: Optional[Decimal] = None
+    cost_price: Optional[Decimal] = None
+    ncm: Optional[str] = None
+    origin: Optional[int] = None
+
 class SaleItemDTO(BaseModel):
     product_id: UUID
     product_name: str
