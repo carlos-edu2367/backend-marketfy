@@ -85,7 +85,8 @@ def get_sales_service(db: AsyncSession = Depends(get_db)):
         user_repo=SQLAlchemyUserRepository(db),
         terminal_repo=SQLAlchemyTerminalRepository(db),
         plan_repo=SQLAlchemyPlanRepository(db),
-        customer_repo=SQLAlchemyCustomerRepository(db)
+        customer_repo=SQLAlchemyCustomerRepository(db),
+        financial_repo=SQLAlchemyFinancialTransactionRepository(db)
     )
 
 def get_finance_service(db: AsyncSession = Depends(get_db)):

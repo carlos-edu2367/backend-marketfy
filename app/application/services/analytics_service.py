@@ -112,7 +112,7 @@ class AnalyticsService:
                 desc=t.description,
                 type=direction,
                 value=t.amount,
-                date=t.created_at.strftime("%d/%m %H:%M") # Formatação simples solicitada
+                date=t.created_at.isoformat() # Formatação simples solicitada
             ))
 
         return FinancialDashboardUnifiedDTO(

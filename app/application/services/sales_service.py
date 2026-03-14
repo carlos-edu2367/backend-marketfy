@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 from typing import Dict, List, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from domain.sales import Sale, SaleItem, SaleStatus, Payment, PaymentMethod, Box, BoxStatus, Terminal
 from domain.inventory import StockMovementType
@@ -9,8 +9,9 @@ from domain.shared import BusinessRuleException, CPF
 from domain.interfaces import (
     SaleRepositoryInterface, BoxRepositoryInterface, ProductRepositoryInterface,
     MarketRepositoryInterface, TerminalRepositoryInterface, CustomerRepositoryInterface,
-    UserRepositoryInterface, PlanRepositoryInterface
+    UserRepositoryInterface, PlanRepositoryInterface, FinancialTransactionRepositoryInterface, FinancialTransaction
 )
+from domain.finance import TransactionType
 from application.dtos import (
     SaleCreateDTO, MarketDashboardStatsDTO, DailySalesDTO, 
     TerminalCreateDTO, TerminalResponseDTO, BoxResponseDTO, 
@@ -29,7 +30,9 @@ class SalesService:
                  terminal_repo: TerminalRepositoryInterface, 
                  user_repo: UserRepositoryInterface,
                  plan_repo: PlanRepositoryInterface,
-                 customer_repo: CustomerRepositoryInterface = None): 
+                 financial_repo: FinancialTransactionRepositoryInterface,
+                 customer_repo: CustomerRepositoryInterface = None,
+                 ): 
         self.sale_repo = sale_repo
         self.box_repo = box_repo
         self.product_repo = product_repo
@@ -38,6 +41,7 @@ class SalesService:
         self.user_repo = user_repo
         self.plan_repo = plan_repo
         self.customer_repo = customer_repo
+        self.financial_repo = financial_repo
 
     # ==================================================================================
     # TERMINAIS (PDVs)
@@ -242,9 +246,19 @@ class SalesService:
                         await self.customer_repo.save(cust, commit=False)
                     
                     # Commit final de tudo (Venda + Estoque + Caixa + Fiado)
+
                     await self.sale_repo.save(sale, commit=True) # Este método já faz refresh, usamos ele para finalizar a transação
                 else:
                     # Fluxo normal sem fiado (Venda + Estoque + Caixa)
+                    financial = FinancialTransaction(
+                        market_id=market_id,
+                        description="Venda realizada",
+                        amount=sale.total_amount,
+                        type=TransactionType.CREDIT,
+                        due_date=datetime.now(),
+                        paid_at=sale.synced_at
+                    )
+                    await self.financial_repo.save(financial)
                     saved_sale = await self.sale_repo.save(sale, commit=True)
 
                 results.append(self._map_sale_to_response(saved_sale))
