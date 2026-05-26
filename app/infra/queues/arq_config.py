@@ -42,14 +42,28 @@ def get_redis_settings():
     settings = get_settings()
     redis_url = settings.REDIS_URL
 
-    # Parseia URL Redis: redis://host:port/db
-    if redis_url.startswith("redis://"):
-        url_parts = redis_url.replace("redis://", "").split("/")
-        host_port = url_parts[0].split(":")
-        host = host_port[0]
-        port = int(host_port[1]) if len(host_port) > 1 else 6379
-        database = int(url_parts[1]) if len(url_parts) > 1 and url_parts[1] else 0
-        return RedisSettings(host=host, port=port, database=database)
+    if redis_url.startswith("redis://") or redis_url.startswith("rediss://"):
+        from urllib.parse import urlparse
+        parsed = urlparse(redis_url)
+        
+        host = parsed.hostname or "localhost"
+        port = parsed.port if parsed.port is not None else 6379
+        
+        database = 0
+        if parsed.path:
+            try:
+                database = int(parsed.path.lstrip("/"))
+            except ValueError:
+                pass
+                
+        return RedisSettings(
+            host=host,
+            port=port,
+            database=database,
+            username=parsed.username,
+            password=parsed.password,
+            ssl=parsed.scheme == "rediss"
+        )
 
     return RedisSettings()
 
