@@ -278,3 +278,69 @@ async def test_add_addon_credits_calls_increment_when_new():
     svc = _service(repo)
     await svc.add_addon_credits(uuid.uuid4(), PERIOD, amount=50, idempotency_key="key-xyz")
     repo.increment_addon_limit.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# PR6 — add_addon_credits sem counter prévio
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_add_addon_credits_creates_counter_when_missing():
+    """get_or_create_counter deve ser chamado para garantir que o counter exista."""
+    repo = _make_repo()
+    repo.get_ledger_entry_by_idempotency.return_value = None
+    svc = _service(repo)
+    owner_id = uuid.uuid4()
+    await svc.add_addon_credits(owner_id, PERIOD, amount=100, idempotency_key="key-new")
+    repo.get_or_create_counter.assert_called_once_with(
+        owner_id=owner_id,
+        period=PERIOD,
+        included_limit=0,
+    )
+    repo.increment_addon_limit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_add_addon_credits_idempotency_with_no_prior_counter():
+    """Se a chave já existe no ledger, não deve chamar get_or_create_counter nem increment."""
+    repo = _make_repo()
+    repo.get_ledger_entry_by_idempotency.return_value = MagicMock()
+    svc = _service(repo)
+    await svc.add_addon_credits(uuid.uuid4(), PERIOD, amount=100, idempotency_key="key-dup")
+    repo.get_or_create_counter.assert_not_called()
+    repo.increment_addon_limit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_counter_resets_failed_billable_count():
+    """Segundo upsert no mesmo período deve zerar failed_billable_count."""
+    existing_counter = _make_counter(included_limit=300)
+    repo = _make_repo(counter=existing_counter)
+
+    # Simula que o modelo retornado pela query tem failed_billable_count residual.
+    model_mock = MagicMock()
+    model_mock.failed_billable_count = 7
+    model_mock.released_count = 3
+
+    # Verifica diretamente que o campo é zerado ao executar upsert_counter.
+    # Como upsert_counter opera no ORM, testamos que o campo foi atribuído.
+    from infra.repositories.fiscal_repo import SQLAlchemyFiscalUsageRepository
+    from unittest.mock import patch, AsyncMock as AM
+
+    async def fake_execute(q):
+        result = MagicMock()
+        result.scalars.return_value.first.return_value = model_mock
+        return result
+
+    session = MagicMock()
+    session.execute = fake_execute
+    session.commit = AM(return_value=None)
+
+    usage_repo = SQLAlchemyFiscalUsageRepository(session)
+    await usage_repo.upsert_counter(
+        owner_id=uuid.uuid4(),
+        period=PERIOD,
+        included_limit=300,
+        addon_limit=0,
+    )
+    assert model_mock.failed_billable_count == 0

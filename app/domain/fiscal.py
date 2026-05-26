@@ -610,6 +610,7 @@ class CreditsBalance:
     reserved_count: int
     remaining: int
     percentage_used: float
+    addon_total: int = 0
 
 
 @dataclass
@@ -628,6 +629,7 @@ class QuotaStatus:
     reserved_count: int
     remaining: int
     percentage_used: float
+    addon_total: int = 0
 
 
 class NeectifyOnboardingStep(Enum):

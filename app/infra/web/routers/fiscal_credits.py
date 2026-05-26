@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -34,6 +34,11 @@ router = APIRouter()
 
 class CheckoutRequest(BaseModel):
     package_slug: str = Field(..., min_length=1, max_length=32)
+    idempotency_key: str = Field(..., min_length=8, max_length=160)
+
+
+class CustomCheckoutRequest(BaseModel):
+    quantity: int = Field(..., ge=10, le=10_000)
     idempotency_key: str = Field(..., min_length=8, max_length=160)
 
 
@@ -172,8 +177,68 @@ async def credits_balance(
         "period": balance.period,
         "included_limit": balance.included_limit,
         "addon_limit": balance.addon_limit,
+        "addon_total": balance.addon_total,
         "used_count": balance.used_count,
         "reserved_count": balance.reserved_count,
         "remaining": balance.remaining,
         "percentage_used": balance.percentage_used,
+    }
+
+
+@router.get("/credits/price", tags=["Fiscal Credits"])
+async def preview_price(qty: int = Query(..., ge=1, le=10_000)):
+    settings = get_settings()
+    if qty < settings.FISCAL_CREDIT_MIN_QTY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Minimo {settings.FISCAL_CREDIT_MIN_QTY} creditos por compra.",
+        )
+    price = (settings.FISCAL_CREDIT_UNIT_PRICE * qty).quantize(Decimal("0.01"), ROUND_HALF_UP)
+    return {
+        "quantity": qty,
+        "price_gross": str(price),
+        "unit_price": str(settings.FISCAL_CREDIT_UNIT_PRICE),
+    }
+
+
+@router.post("/{market_id}/credits/checkout/custom", tags=["Fiscal Credits"])
+async def create_custom_checkout(
+    request: Request,
+    market_id: uuid.UUID,
+    payload: CustomCheckoutRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
+):
+    await enforce_rate_limit_async(
+        request,
+        bucket=f"fiscal-credits-checkout:{current_user.id}",
+        limit=10,
+        window_seconds=60,
+    )
+    settings = get_settings()
+    price_gross = (settings.FISCAL_CREDIT_UNIT_PRICE * payload.quantity).quantize(
+        Decimal("0.01"), ROUND_HALF_UP
+    )
+    svc = _credits_service(db)
+    try:
+        result = await svc.initiate_custom_purchase(
+            owner_id=current_user.id,
+            market_id=market_id,
+            quantity=payload.quantity,
+            price_gross=price_gross,
+            idempotency_key=payload.idempotency_key,
+        )
+    except MercadoPagoAuthError:
+        raise HTTPException(status_code=502, detail="Checkout indisponivel.")
+    except MercadoPagoValidationError:
+        raise HTTPException(status_code=502, detail="Checkout indisponivel.")
+    except MercadoPagoUnavailableError:
+        raise HTTPException(status_code=503, detail="Checkout temporariamente indisponivel.")
+
+    return {
+        "package_id": str(result.package_id),
+        "init_point": result.init_point,
+        "quantity": payload.quantity,
+        "price_gross": str(price_gross),
     }

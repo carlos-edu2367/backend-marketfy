@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Optional
 
 from domain.fiscal import (
@@ -123,6 +124,7 @@ class FiscalCreditsService:
             reserved_count=quota.reserved_count,
             remaining=quota.remaining,
             percentage_used=quota.percentage_used,
+            addon_total=quota.addon_total,
         )
 
     async def activate_package(
@@ -170,6 +172,7 @@ class FiscalCreditsService:
             period=now.strftime("%Y%m"),
             amount=package.quantity,
             idempotency_key=ledger_key,
+            included_limit=0,
         )
         await self._record_activation_audit(package, mp_payment_id)
         await self._notify_activation(package, mp_payment_id, valid_until)
@@ -181,6 +184,60 @@ class FiscalCreditsService:
                 "owner_id": str(package.owner_id),
                 "quantity": package.quantity,
             }},
+        )
+
+    async def initiate_custom_purchase(
+        self,
+        owner_id: uuid.UUID,
+        market_id: uuid.UUID,
+        quantity: int,
+        price_gross: Decimal,
+        idempotency_key: str,
+    ) -> PurchaseInitResult:
+        package_slug = f"custom_{quantity}"
+        custom_package = EmissionCreditPackage(
+            slug=package_slug,
+            emission_count=quantity,
+            price_gross=price_gross,
+            price_net_target=price_gross,
+        )
+
+        existing = await self.credits_repo.get_package_by_external_ref(idempotency_key)
+        if existing and existing.mp_preference_id:
+            return PurchaseInitResult(
+                package_id=existing.id,
+                init_point=self._checkout_url_from_preference_id(existing.mp_preference_id),
+                package=custom_package,
+            )
+
+        db_package = existing or await self.credits_repo.create_package(
+            owner_id=owner_id,
+            market_id=market_id,
+            package_slug=package_slug,
+            quantity=quantity,
+            remaining=quantity,
+            price_gross=price_gross,
+            price_net_target=price_gross,
+            payment_status="pending",
+            mp_external_reference=idempotency_key,
+        )
+
+        payload = self._preference_payload(db_package, custom_package)
+        mp_response = await self.mp_client.create_preference(payload)
+        await self.credits_repo.update_package_preference(
+            package_id=db_package.id,
+            mp_preference_id=mp_response["id"],
+        )
+
+        init_point = (
+            mp_response.get("sandbox_init_point")
+            if getattr(self.settings, "MP_SANDBOX", True)
+            else mp_response.get("init_point")
+        )
+        return PurchaseInitResult(
+            package_id=db_package.id,
+            init_point=init_point or self._checkout_url_from_preference_id(mp_response["id"]),
+            package=custom_package,
         )
 
     async def mark_package_failed(self, package_id: uuid.UUID, reason: str = "") -> None:

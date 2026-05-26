@@ -617,6 +617,7 @@ class SQLAlchemyFiscalUsageRepository:
             m.used_count = used_count
             m.reserved_count = reserved_count
             m.released_count = 0
+            m.failed_billable_count = 0
         else:
             m = FiscalUsageCounterModel(
                 id=uuid.uuid4(),
@@ -745,6 +746,19 @@ class SQLAlchemyFiscalUsageRepository:
         )
         await self.session.commit()
         return result.rowcount > 0
+
+    async def sum_active_packages_qty(self, owner_id: uuid.UUID) -> int:
+        """Soma quantity (total original) dos pacotes pagos e válidos — denominador da barra addon."""
+        now = datetime.utcnow()
+        r = await self.session.execute(
+            select(func.coalesce(func.sum(FiscalEmissionPackageModel.quantity), 0)).where(
+                FiscalEmissionPackageModel.owner_id == owner_id,
+                FiscalEmissionPackageModel.payment_status == "paid",
+                (FiscalEmissionPackageModel.valid_until == None)
+                | (FiscalEmissionPackageModel.valid_until > now),
+            )
+        )
+        return int(r.scalar() or 0)
 
     async def sum_active_packages_remaining(self, owner_id: uuid.UUID) -> int:
         """Soma remaining dos pacotes pagos e não expirados (para carryover do reset mensal)."""

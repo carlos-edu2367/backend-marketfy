@@ -234,6 +234,7 @@ async def test_get_credits_balance_correct_remaining():
         period="202605",
         included_limit=200,
         addon_limit=100,
+        addon_total=250,
         used_count=120,
         reserved_count=0,
         remaining=180,

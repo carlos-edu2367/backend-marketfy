@@ -1,3 +1,4 @@
+from decimal import Decimal
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -56,6 +57,11 @@ class Settings(BaseSettings):
     FISCAL_CREDITS_BACK_URL_SUCCESS: str = ""
     FISCAL_CREDITS_BACK_URL_FAILURE: str = ""
     FISCAL_CREDITS_BACK_URL_PENDING: str = ""
+
+    # Créditos fiscais flexíveis
+    FISCAL_CREDIT_UNIT_PRICE: Decimal = Decimal("0.42")
+    FISCAL_CREDIT_MIN_QTY: int = 10
+    FISCAL_CREDIT_MAX_QTY: int = 10_000
 
     # S3 / Object Storage (Railway S3-compatible)
     S3_ENDPOINT_URL: Optional[str] = None       # Railway: RAILWAY_BUCKET_ENDPOINT_URL

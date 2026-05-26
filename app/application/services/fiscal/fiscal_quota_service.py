@@ -163,11 +163,21 @@ class FiscalQuotaService:
         period: str,
         amount: int,
         idempotency_key: str,
+        included_limit: int = 0,
     ) -> None:
         """Ativa créditos addon após pagamento confirmado. Idempotente."""
         existing = await self.repo.get_ledger_entry_by_idempotency(idempotency_key)
         if existing:
             return
+
+        # Garante que o counter existe antes de incrementar addon_limit.
+        # Se o usuário nunca emitiu neste período, cria o counter com included_limit=0;
+        # o reset mensal corrigirá included_limit via PlanAccessService.
+        await self.repo.get_or_create_counter(
+            owner_id=owner_id,
+            period=period,
+            included_limit=included_limit,
+        )
 
         await self.repo.increment_addon_limit(owner_id, period, amount)
         entry = FiscalUsageLedger(
@@ -189,6 +199,7 @@ class FiscalQuotaService:
         fallback_included_limit: int = 0,
     ) -> QuotaStatus:
         counter = await self.repo.get_counter(owner_id, period)
+        addon_total = await self.repo.sum_active_packages_qty(owner_id)
         if not counter:
             # Counter só existe após a primeira emissão do período. Usa o limite do
             # plano como fallback para exibição correta antes da primeira emissão.
@@ -197,6 +208,7 @@ class FiscalQuotaService:
                 period=period,
                 included_limit=fallback_included_limit,
                 addon_limit=addon_carryover,
+                addon_total=addon_total,
                 used_count=0,
                 reserved_count=0,
                 remaining=fallback_included_limit + addon_carryover,
@@ -210,6 +222,7 @@ class FiscalQuotaService:
             period=period,
             included_limit=counter.included_limit,
             addon_limit=counter.addon_limit,
+            addon_total=addon_total,
             used_count=counter.used_count,
             reserved_count=counter.reserved_count,
             remaining=remaining,
