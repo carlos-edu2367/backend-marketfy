@@ -54,9 +54,6 @@ class Settings(BaseSettings):
     MP_WEBHOOK_SECRET: str = ""
     MP_SANDBOX: bool = True
     MP_BASE_URL: str = "https://api.mercadopago.com"
-    FISCAL_CREDITS_BACK_URL_SUCCESS: str = ""
-    FISCAL_CREDITS_BACK_URL_FAILURE: str = ""
-    FISCAL_CREDITS_BACK_URL_PENDING: str = ""
 
     # Créditos fiscais flexíveis
     FISCAL_CREDIT_UNIT_PRICE: Decimal = Decimal("0.72")

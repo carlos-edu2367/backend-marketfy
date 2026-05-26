@@ -31,9 +31,7 @@ from infra.clients.mercado_pago_client import (
 class FakeSettings:
     MP_SANDBOX: bool = True
     PUBLIC_API_BASE_URL: str = "https://api.marketfy.test/api/v1"
-    FISCAL_CREDITS_BACK_URL_SUCCESS: str = "https://app.marketfy.test/success"
-    FISCAL_CREDITS_BACK_URL_FAILURE: str = "https://app.marketfy.test/failure"
-    FISCAL_CREDITS_BACK_URL_PENDING: str = "https://app.marketfy.test/pending"
+    PUBLIC_FRONTEND_URL: str = "https://app.marketfy.test"
 
 
 def FakePackage(**kwargs) -> FiscalEmissionPackage:
@@ -148,9 +146,9 @@ async def test_initiate_purchase_back_urls_from_settings():
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_250", "idem-4")
 
     payload = mp.create_preference.call_args.args[0]
-    assert payload["back_urls"]["success"] == "https://app.marketfy.test/success"
-    assert payload["back_urls"]["failure"] == "https://app.marketfy.test/failure"
-    assert payload["back_urls"]["pending"] == "https://app.marketfy.test/pending"
+    assert payload["back_urls"]["success"] == "https://app.marketfy.test/fiscal/credits/return?status=success"
+    assert payload["back_urls"]["failure"] == "https://app.marketfy.test/fiscal/credits/return?status=failure"
+    assert payload["back_urls"]["pending"] == "https://app.marketfy.test/fiscal/credits/return?status=pending"
 
 
 @pytest.mark.asyncio

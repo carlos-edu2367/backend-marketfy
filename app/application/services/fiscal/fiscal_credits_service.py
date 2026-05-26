@@ -245,9 +245,7 @@ class FiscalCreditsService:
 
     def _preference_payload(self, db_package: FiscalEmissionPackage, package: EmissionCreditPackage) -> dict:
         api_base = (getattr(self.settings, "PUBLIC_API_BASE_URL", "") or "").rstrip("/")
-        back_success = getattr(self.settings, "FISCAL_CREDITS_BACK_URL_SUCCESS", "") or ""
-        back_failure = getattr(self.settings, "FISCAL_CREDITS_BACK_URL_FAILURE", "") or ""
-        back_pending = getattr(self.settings, "FISCAL_CREDITS_BACK_URL_PENDING", "") or ""
+        frontend_base = (getattr(self.settings, "PUBLIC_FRONTEND_URL", "") or "").rstrip("/")
 
         payload: dict = {
             "items": [{
@@ -269,15 +267,16 @@ class FiscalCreditsService:
         if api_base and api_base.startswith("http"):
             payload["notification_url"] = f"{api_base}/webhooks/mercado-pago"
 
-        # back_urls e auto_return só fazem sentido quando as URLs estão configuradas.
-        if back_success or back_failure or back_pending:
+        # back_urls derivadas de PUBLIC_FRONTEND_URL → rota real do frontend.
+        # Evita configuração manual incorreta de 3 URLs separadas.
+        if frontend_base:
+            return_base = f"{frontend_base}/fiscal/credits/return"
             payload["back_urls"] = {
-                "success": back_success,
-                "failure": back_failure,
-                "pending": back_pending,
+                "success": f"{return_base}?status=success",
+                "failure": f"{return_base}?status=failure",
+                "pending": f"{return_base}?status=pending",
             }
-            if back_success:
-                payload["auto_return"] = "approved"
+            payload["auto_return"] = "approved"
 
         return payload
 

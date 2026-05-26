@@ -34,9 +34,7 @@ from domain.fiscal import (
 class FakeSettings:
     MP_SANDBOX: bool = True
     PUBLIC_API_BASE_URL: str = "https://api.marketfy.test/api/v1"
-    FISCAL_CREDITS_BACK_URL_SUCCESS: str = "https://app.marketfy.test/success"
-    FISCAL_CREDITS_BACK_URL_FAILURE: str = "https://app.marketfy.test/failure"
-    FISCAL_CREDITS_BACK_URL_PENDING: str = "https://app.marketfy.test/pending"
+    PUBLIC_FRONTEND_URL: str = "https://app.marketfy.test"
 
 
 PERIOD = "202606"
