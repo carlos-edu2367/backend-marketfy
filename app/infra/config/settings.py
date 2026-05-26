@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     FISCAL_CREDITS_BACK_URL_PENDING: str = ""
 
     # Créditos fiscais flexíveis
-    FISCAL_CREDIT_UNIT_PRICE: Decimal = Decimal("0.42")
+    FISCAL_CREDIT_UNIT_PRICE: Decimal = Decimal("0.72")
     FISCAL_CREDIT_MIN_QTY: int = 10
     FISCAL_CREDIT_MAX_QTY: int = 10_000
 

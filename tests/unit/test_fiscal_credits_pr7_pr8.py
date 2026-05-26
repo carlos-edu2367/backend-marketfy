@@ -276,10 +276,10 @@ async def test_custom_checkout_slug_format():
 
 def test_preview_price_calculation():
     """Preço deve ser unit_price * qty arredondado."""
-    unit_price = Decimal("0.42")
+    unit_price = Decimal("0.72")
     qty = 37
     price = (unit_price * qty).quantize(Decimal("0.01"))
-    assert price == Decimal("15.54")
+    assert price == Decimal("26.64")
 
 
 def test_preview_price_boundary_min():
