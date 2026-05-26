@@ -121,6 +121,8 @@ async def get_config(
     market=Depends(require_market_access(MarketPermission.FISCAL_READ)),
 ):
     """Retorna configuração fiscal atual (sem segredos)."""
+    from infra.config.settings import get_settings
+    settings = get_settings()
     svc = _get_config_service(db)
     cfg = await svc.get_config(market_id)
     if not cfg:
@@ -128,7 +130,7 @@ async def get_config(
             "market_id": str(market_id),
             "enabled": False,
             "environment": "homologacao",
-            "provider": "focus_nfe",
+            "provider": settings.FISCAL_PROVIDER,
             "validation_status": "not_validated",
             "has_certificate": False,
             "has_csc": False,
@@ -202,6 +204,9 @@ async def save_config(
         except ValueError as e:
             raise HTTPException(400, str(e))
 
+    from infra.config.settings import get_settings
+    settings = get_settings()
+
     data = {
         "legal_name": legal_name, "trade_name": trade_name, "cnpj": cnpj,
         "state_registration": state_registration, "tax_regime": tax_regime,
@@ -209,6 +214,7 @@ async def save_config(
         "certificate_password": certificate_password, "environment": environment,
         "nfce_series": nfce_series, "default_cfop": default_cfop,
         "default_ncm": default_ncm, "default_csosn": default_csosn,
+        "provider": settings.FISCAL_PROVIDER,
     }
     # Remover None para não sobrescrever
     data = {k: v for k, v in data.items() if v is not None}

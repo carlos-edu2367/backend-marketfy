@@ -78,7 +78,7 @@ class FiscalConfigService:
 
         # Dados do estabelecimento
         for field in ("legal_name", "trade_name", "cnpj", "state_registration",
-                      "municipal_registration", "crt", "cnae_primary"):
+                      "municipal_registration", "crt", "cnae_primary", "provider"):
             if field in data and data[field] is not None:
                 setattr(cfg, field, data[field])
 
