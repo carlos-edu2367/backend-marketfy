@@ -180,6 +180,7 @@ async def save_config(
     default_cfop: Optional[str] = Form(None),
     default_ncm: Optional[str] = Form(None),
     default_csosn: Optional[str] = Form(None),
+    address: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     audit: AuditService = Depends(get_audit_service),
@@ -211,6 +212,13 @@ async def save_config(
     }
     # Remover None para não sobrescrever
     data = {k: v for k, v in data.items() if v is not None}
+
+    if address:
+        try:
+            import json
+            data["address"] = json.loads(address)
+        except Exception:
+            data["address"] = {"street": address}
 
     svc = _get_config_service(db)
     try:
