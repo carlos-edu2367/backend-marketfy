@@ -1,0 +1,313 @@
+"""Router de billing — Fase 4 / PRs 14 e 15.
+
+Endpoints:
+  GET  /billing/subscription         — status consolidado da assinatura
+  POST /billing/subscriptions        — iniciar assinatura via Billing Core
+  GET  /billing/jobs/{job_id}        — polling de job (proxy)
+  GET  /billing/plans/features       — features e limites do plano atual
+  POST /billing/webhooks/internal    — webhook idempotente do Billing Core
+
+Segurança:
+  - API key e URL do Billing Core nunca retornados ao frontend.
+  - Webhook valida X-System e X-Api-Key (ou header de autenticação do Billing Core).
+  - Toda validação de plano ocorre no backend.
+  - Fallback seguro quando Billing Core indisponível.
+"""
+
+import uuid
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from application.dtos import (
+    BillingSubscriptionResponseDTO,
+    BillingWebhookEventDTO,
+    InitiateSubscriptionRequestDTO,
+    BillingJobStatusResponseDTO,
+)
+from application.services.subscription_service import SubscriptionService
+from application.services.audit_service import AuditService
+from application.services.plan_access_service import PlanAccessService, SubscriptionStatus
+from domain.shared import BusinessRuleException
+from infra.config.logger import get_logger
+from infra.config.settings import get_settings
+from infra.database.setup import get_db
+from infra.web.dependencies import get_current_user, get_subscription_service
+from infra.web.dependencies import get_audit_service
+from infra.clients.billing_core_client import BillingCoreClient, BillingCoreError
+from infra.observability.audit import record_audit_event
+from infra.observability.metrics import metrics_registry
+
+router = APIRouter()
+logger = get_logger("billing_router")
+settings = get_settings()
+
+
+# ---------------------------------------------------------------------------
+# Factories
+# ---------------------------------------------------------------------------
+
+def _get_subscription_service(db: AsyncSession = Depends(get_db)) -> SubscriptionService:
+    from infra.repositories.sqlalchemy_repos import SQLAlchemyUserRepository, SQLAlchemyPlanRepository
+    from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository, SQLAlchemyBillingEventRepository
+
+    return SubscriptionService(
+        user_repo=SQLAlchemyUserRepository(db),
+        plan_repo=SQLAlchemyPlanRepository(db),
+        subscription_repo=SQLAlchemyBillingSubscriptionRepository(db),
+        event_repo=SQLAlchemyBillingEventRepository(db),
+        billing_client=BillingCoreClient(),
+    )
+
+
+def _get_plan_access_service(db: AsyncSession = Depends(get_db)) -> PlanAccessService:
+    from infra.repositories.sqlalchemy_repos import SQLAlchemyUserRepository, SQLAlchemyPlanRepository
+    from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
+
+    return PlanAccessService(
+        user_repo=SQLAlchemyUserRepository(db),
+        plan_repo=SQLAlchemyPlanRepository(db),
+        subscription_repo=SQLAlchemyBillingSubscriptionRepository(db),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /billing/subscription
+# ---------------------------------------------------------------------------
+
+@router.get("/subscription", response_model=BillingSubscriptionResponseDTO)
+async def get_subscription_status(
+    current_user=Depends(get_current_user),
+    service: PlanAccessService = Depends(_get_plan_access_service),
+):
+    """Retorna status consolidado da assinatura do usuário autenticado.
+
+    O frontend usa este endpoint para exibir banners, bloquear features
+    e informar o usuário sobre o estado da sua assinatura.
+    Nunca expõe API key ou dados internos do Billing Core.
+    """
+    try:
+        features_dict = await service.get_plan_features(current_user.id)
+
+        sub_result = await service.get_subscription_status(current_user.id)
+        is_pending = sub_result.subscription_status == SubscriptionStatus.PENDING
+
+        return BillingSubscriptionResponseDTO(
+            status=sub_result.subscription_status,
+            plan_name=sub_result.plan_name,
+            expires_at=sub_result.expires_at,
+            billing_pending=is_pending,
+            features=features_dict.get("features"),
+            limits=features_dict.get("limits"),
+        )
+    except Exception as exc:
+        logger.error(f"[billing] Erro ao buscar assinatura user={current_user.id}: {exc}")
+        raise HTTPException(status_code=500, detail="Erro ao consultar assinatura.")
+
+
+# ---------------------------------------------------------------------------
+# POST /billing/subscriptions
+# ---------------------------------------------------------------------------
+
+@router.post("/subscriptions", status_code=status.HTTP_202_ACCEPTED)
+async def initiate_subscription(
+    request: Request,
+    dto: InitiateSubscriptionRequestDTO,
+    current_user=Depends(get_current_user),
+    service: SubscriptionService = Depends(_get_subscription_service),
+    audit: AuditService = Depends(get_audit_service),
+):
+    """Inicia uma nova assinatura via Billing Core.
+
+    O frontend envia plan_id e subscription_type.
+    O backend monta e assina o payload para o Billing Core.
+    Retorna job_id para polling opcional.
+    """
+    if dto.subscription_type not in ("trial", "monthly", "semiannual", "annual"):
+        raise HTTPException(
+            status_code=400,
+            detail="subscription_type inválido. Use: trial, monthly, semiannual ou annual.",
+        )
+
+    try:
+        result = await service.initiate_subscription(
+            owner_id=current_user.id,
+            plan_id=dto.plan_id,
+            subscription_type=dto.subscription_type,
+            customer_provider_id=dto.customer_provider_id,
+            idempotency_key=dto.idempotency_key,
+        )
+        await record_audit_event(
+            audit,
+            request,
+            actor=current_user,
+            action="billing.subscription.created",
+            resource_type="billing_subscription",
+            resource_id=result.get("subscription_id"),
+            result="success",
+            metadata={"plan_id": dto.plan_id, "subscription_type": dto.subscription_type},
+        )
+        return result
+    except BusinessRuleException as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except BillingCoreError as exc:
+        logger.warning(f"[billing] Billing Core indisponível na criação user={current_user.id}: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail="Serviço de cobrança temporariamente indisponível. Tente novamente em instantes.",
+        )
+    except Exception as exc:
+        logger.error(f"[billing] Erro inesperado na criação user={current_user.id}: {exc}")
+        raise HTTPException(status_code=500, detail="Erro ao iniciar assinatura.")
+
+
+# ---------------------------------------------------------------------------
+# GET /billing/jobs/{job_id}
+# ---------------------------------------------------------------------------
+
+@router.get("/jobs/{job_id}", response_model=BillingJobStatusResponseDTO)
+async def get_job_status(
+    job_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Polling de status de job no Billing Core.
+
+    O formato de resposta do Billing Core necessita validação manual.
+    Este endpoint é um proxy seguro — nunca expõe a API key.
+    """
+    client = BillingCoreClient()
+    try:
+        result = await client.get_job_status(job_id)
+        return BillingJobStatusResponseDTO(
+            job_id=job_id,
+            status=result.get("status"),
+            result=result,
+        )
+    except BillingCoreError as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} não encontrado.")
+        raise HTTPException(
+            status_code=503,
+            detail="Serviço de cobrança temporariamente indisponível.",
+        )
+    except Exception as exc:
+        logger.error(f"[billing] Erro ao consultar job {job_id}: {exc}")
+        raise HTTPException(status_code=500, detail="Erro ao consultar status do job.")
+
+
+# ---------------------------------------------------------------------------
+# GET /billing/plans/features
+# ---------------------------------------------------------------------------
+
+@router.get("/plans/features")
+async def get_plan_features(
+    current_user=Depends(get_current_user),
+    service: PlanAccessService = Depends(_get_plan_access_service),
+):
+    """Retorna features e limites do plano atual do usuário.
+
+    Usado pelo frontend para ajustar UI sem conhecer a lógica de plano.
+    """
+    try:
+        return await service.get_plan_features(current_user.id)
+    except Exception as exc:
+        logger.error(f"[billing] Erro ao buscar features user={current_user.id}: {exc}")
+        raise HTTPException(status_code=500, detail="Erro ao consultar features do plano.")
+
+
+# ---------------------------------------------------------------------------
+# POST /billing/webhooks/internal  (PR 15)
+# ---------------------------------------------------------------------------
+
+@router.post("/webhooks/internal", status_code=status.HTTP_200_OK)
+async def receive_billing_webhook(
+    request: Request,
+    service: SubscriptionService = Depends(_get_subscription_service),
+    audit: AuditService = Depends(get_audit_service),
+    x_system: Optional[str] = Header(None, alias="X-System"),
+    x_api_key: Optional[str] = Header(None, alias="X-Api-Key"),
+):
+    """Recebe eventos do Billing Core de forma idempotente.
+
+    Validações obrigatórias:
+      1. X-System deve ser "marketfy".
+      2. X-Api-Key deve corresponder à chave configurada.
+      3. event_id obrigatório para idempotência.
+
+    O payload bruto é persistido antes do processamento para auditoria.
+    Se o evento já foi processado (mesmo event_id), retorna sucesso idempotente.
+
+    NOTA: O formato exato do payload de webhook necessita validação manual
+    com o Billing Core. Esta implementação usa os campos mínimos conhecidos
+    e aceita campos extras.
+    """
+    # 1. Validar X-System
+    expected_system = settings.BILLING_CORE_SYSTEM
+    if x_system != expected_system:
+        logger.warning(f"[webhook] X-System inválido: '{x_system}' (esperado: '{expected_system}')")
+        raise HTTPException(status_code=403, detail="X-System inválido.")
+
+    # 2. Validar API key (se configurada)
+    expected_key = settings.BILLING_CORE_API_KEY
+    if expected_key and x_api_key != expected_key:
+        logger.warning("[webhook] API key inválida no webhook do Billing Core.")
+        raise HTTPException(status_code=403, detail="Autenticação inválida.")
+
+    # 3. Parsear payload
+    try:
+        raw_body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Payload inválido (JSON esperado).")
+
+    try:
+        payload = BillingWebhookEventDTO(**raw_body)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Payload de webhook inválido: {exc}")
+
+    if not payload.event_id:
+        raise HTTPException(status_code=400, detail="event_id obrigatório para idempotência.")
+
+    # 4. Processar evento
+    try:
+        result = await service.process_webhook_event(
+            event_id=payload.event_id,
+            event_type=payload.event_type,
+            system=payload.system,
+            system_sub_id=payload.system_sub_id,
+            billing_subscription_id=payload.subscription_id,
+            status_from_event=payload.status,
+            expires_at=payload.expires_at,
+            raw_payload=raw_body,
+        )
+        metrics_registry.record_billing_webhook(payload.event_id, result.get("result"))
+        await record_audit_event(
+            audit,
+            request,
+            actor=None,
+            action="billing.webhook.processed",
+            resource_type="billing_event",
+            resource_id=payload.event_id,
+            result=result.get("result", "unknown"),
+            metadata={"event_type": payload.event_type, "system": payload.system},
+        )
+        return result
+    except BusinessRuleException as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"[webhook] Erro ao processar evento {payload.event_id}: {exc}")
+        metrics_registry.record_billing_webhook(payload.event_id, "failed")
+        await record_audit_event(
+            audit,
+            request,
+            actor=None,
+            action="billing.webhook.processed",
+            resource_type="billing_event",
+            resource_id=payload.event_id,
+            result="failed",
+            metadata={"event_type": payload.event_type, "system": payload.system},
+        )
+        # Retornar 200 para o Billing Core não re-tentar indefinidamente
+        # O evento foi persistido para análise manual
+        return {"result": "error_persisted", "event_id": payload.event_id}

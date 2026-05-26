@@ -4,6 +4,14 @@ from datetime import datetime, date
 from uuid import UUID
 from decimal import Decimal
 
+# Reexport dos DTOs de finance movidos para arquivo próprio (Fase 3 / PR 11).
+# Imports antigos `from application.dtos import FinanceDashboardDTO, ...`
+# continuam funcionando.
+from application.dtos_finance import (  # noqa: F401
+    FinanceDashboardDTO,
+    FinancialTransactionResponseDTO,
+)
+
 # ===========================
 # IDENTITY & ACCESS DTOs
 # ===========================
@@ -90,14 +98,86 @@ class PlanCreateDTO(BaseModel):
 
 class PlanUpdateDTO(BaseModel):
     name: Optional[str] = None
+    type: Optional[str] = None
     max_markets: Optional[int] = None
     max_terminals: Optional[int] = None
     price_monthly: Optional[Decimal] = None
     price_180days: Optional[Decimal] = None
     price_annual: Optional[Decimal] = None
+    is_active: Optional[bool] = None
 
 class PlanResponseDTO(PlanCreateDTO):
     id: UUID
+
+
+# ===========================
+# BILLING DTOs (Fase 4)
+# ===========================
+
+class BillingSubscriptionResponseDTO(BaseModel):
+    """Status consolidado da assinatura para o frontend."""
+    subscription_id: Optional[UUID] = None
+    status: str
+    subscription_type: Optional[str] = None
+    plan_id: Optional[UUID] = None
+    plan_name: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    billing_pending: bool = False
+    features: Optional[Dict[str, Any]] = None
+    limits: Optional[Dict[str, Any]] = None
+
+    class Config:
+        from_attributes = True
+
+
+class InitiateSubscriptionRequestDTO(BaseModel):
+    """Payload enviado pelo frontend para iniciar uma assinatura.
+
+    O backend valida e monta o payload real para o Billing Core.
+    O frontend nunca deve conhecer a API key ou o webhook_link interno.
+    """
+    plan_id: UUID
+    subscription_type: str  # trial | monthly | semiannual | annual
+    customer_provider_id: Optional[str] = None  # ID do cliente no gateway (se já cadastrado)
+    idempotency_key: Optional[str] = None        # Opcional; gerado no backend se ausente
+
+
+class BillingJobStatusResponseDTO(BaseModel):
+    """Resposta de polling de job do Billing Core.
+
+    Campos marcados como 'necessita validação manual' pois o
+    billing_core.md não especifica o formato exato de resposta.
+    """
+    job_id: str
+    status: Optional[str] = None   # necessita validação manual com Billing Core
+    result: Optional[Dict[str, Any]] = None  # necessita validação manual
+
+
+class BillingWebhookEventDTO(BaseModel):
+    """Payload recebido via webhook do Billing Core.
+
+    Campos mínimos definidos pelo contrato em billing_core.md.
+    Campos adicionais são aceitos como raw_payload para auditoria.
+    NOTA: o formato exato do payload necessita validação manual com o
+    Billing Core — esta DTO aceita campos extras via extra='allow'.
+    """
+    event_id: str
+    event_type: str                         # subscription.active, subscription.past_due, ...
+    system: Optional[str] = None            # deve ser "marketfy"
+    system_sub_id: Optional[str] = None     # str(owner_user_id)
+    subscription_id: Optional[str] = None   # ID no Billing Core
+    status: Optional[str] = None
+    expires_at: Optional[datetime] = None
+
+    class Config:
+        extra = "allow"  # aceita campos extras não mapeados
+
+
+class AdminBillingReconcileResponseDTO(BaseModel):
+    user_id: UUID
+    previous_status: Optional[str] = None
+    new_status: Optional[str] = None
+    message: str
 
 # ===========================
 # INVENTORY & SALES DTOs
@@ -335,6 +415,8 @@ class CustomerResponseDTO(BaseModel):
 class DebtPaymentDTO(BaseModel):
     amount: Decimal
     description: Optional[str] = "Pagamento de Dívida"
+    payment_method: Optional[str] = None
+    paid_at: Optional[datetime] = None
 
 class LedgerEntryDTO(BaseModel):
     id: UUID

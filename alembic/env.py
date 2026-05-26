@@ -39,7 +39,14 @@ target_metadata = Base.metadata
 # Sobrescreve a URL do banco de dados com a do settings.py (pydantic)
 # Isso evita ter que colocar credenciais no alembic.ini
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+
+
+def normalize_async_database_url(database_url: str) -> str:
+    """Keep Alembic compatible with standard Postgres URLs from providers."""
+    return database_url.strip().replace("postgresql://", "postgresql+asyncpg://", 1)
+
+
+config.set_main_option("sqlalchemy.url", normalize_async_database_url(settings.DATABASE_URL))
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
@@ -62,10 +69,15 @@ def do_run_migrations(connection) -> None:
 
 async def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
+    # Disable prepared statement caching for Railway/PgBouncer transaction mode.
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+        },
     )
 
     async with connectable.connect() as connection:

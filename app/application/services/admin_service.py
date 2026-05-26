@@ -34,7 +34,7 @@ class AdminService:
             price_monthly=price_monthly,
             price_180days=price_180days,
             price_annual=price_annual,
-            is_active=True
+            is_active=dto.is_active
         )
         
         return await self.plan_repo.save(plan)
@@ -45,6 +45,11 @@ class AdminService:
             raise BusinessRuleException("Plano não encontrado.")
 
         if dto.name: plan.name = dto.name
+        if dto.type is not None:
+            try:
+                plan.type = PlanType(dto.type)
+            except ValueError:
+                raise BusinessRuleException(f"Tipo de plano invÃ¡lido: {dto.type}. Use 'cortesia', 'pago' ou 'trial'.")
         if dto.max_markets is not None: plan.max_markets = dto.max_markets
         if dto.max_terminals is not None: plan.max_terminals = dto.max_terminals # CORRIGIDO
         
@@ -59,6 +64,10 @@ class AdminService:
             
         if dto.price_annual is not None: 
             plan.price_annual = Decimal("0.00") if is_free else dto.price_annual
+        elif is_free:
+            plan.price_monthly = Decimal("0.00")
+            plan.price_180days = Decimal("0.00")
+            plan.price_annual = Decimal("0.00")
             
         if dto.is_active is not None:
             plan.is_active = dto.is_active

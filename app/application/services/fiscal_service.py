@@ -6,6 +6,8 @@ from domain.interfaces import FiscalRepositoryInterface, MarketRepositoryInterfa
 from domain.shared import BusinessRuleException
 from application.dtos import FiscalConfigCreateDTO, FiscalConfigResponseDTO, InvoiceResponseDTO
 from infra.providers.focus_nfe_provider import FocusNFeProvider
+from infra.config.settings import get_settings
+from infra.security.secret_cipher import SecretCipher
 
 class FiscalService:
     def __init__(
@@ -19,6 +21,7 @@ class FiscalService:
         self.market_repo = market_repo
         self.sale_repo = sale_repo
         self.provider = provider or FocusNFeProvider()
+        self.cipher = SecretCipher(get_settings().FISCAL_SECRET_KEY)
 
     async def save_config(self, market_id: uuid.UUID, dto: FiscalConfigCreateDTO, cert_file_path: str = None) -> FiscalConfigResponseDTO:
         config = await self.fiscal_repo.get_config(market_id)
@@ -33,13 +36,14 @@ class FiscalService:
                 environment=FiscalEnvironment(dto.environment)
             )
 
-        config.csc_token = dto.csc_token
+        if dto.csc_token:
+            config.csc_token = self.cipher.encrypt(dto.csc_token)
         config.csc_id = dto.csc_id
         config.environment = FiscalEnvironment(dto.environment)
         if cert_file_path:
             config.certificate_path = cert_file_path
         if dto.certificate_password:
-            config.certificate_password = dto.certificate_password
+            config.certificate_password = self.cipher.encrypt(dto.certificate_password)
             
         config.default_ncm = dto.default_ncm
         
@@ -53,7 +57,8 @@ class FiscalService:
         )
     
     async def get_config(self, market_id: uuid.UUID) -> Optional[FiscalConfig]:
-        return await self.fiscal_repo.get_config(market_id)
+        config = await self.fiscal_repo.get_config(market_id)
+        return self._decrypt_config(config)
 
     async def emit_invoice(self, market_id: uuid.UUID, sale_id: uuid.UUID) -> InvoiceResponseDTO:
         # 1. Validações Básicas
@@ -61,6 +66,7 @@ class FiscalService:
         if not config:
             raise BusinessRuleException("Emissão Fiscal não configurada para esta loja.")
         
+        config = self._decrypt_config(config)
         config.validate_for_emission()
         
         sale = await self.sale_repo.get_by_id(sale_id)
@@ -171,3 +177,10 @@ class FiscalService:
             "fiado": "99" # Fiado tecnicamente é "Outros" ou "Sem Pagamento" na NFC-e até quitação? Geralmente 99.
         }
         return mapping.get(method_str, "99")
+
+    def _decrypt_config(self, config: Optional[FiscalConfig]) -> Optional[FiscalConfig]:
+        if not config:
+            return None
+        config.csc_token = self.cipher.decrypt(config.csc_token)
+        config.certificate_password = self.cipher.decrypt(config.certificate_password)
+        return config

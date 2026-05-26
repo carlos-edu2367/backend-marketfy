@@ -116,7 +116,7 @@ class SQLAlchemyPlanRepository(PlanRepositoryInterface):
         model.price_monthly = plan.price_monthly
         model.price_180days = plan.price_180days
         model.price_annual = plan.price_annual
-        model.is_active = True 
+        model.is_active = plan.is_active
         
         if commit:
             await self.session.commit()
@@ -138,7 +138,9 @@ class SQLAlchemyPlanRepository(PlanRepositoryInterface):
             max_terminals=m.max_terminals,
             price_monthly=m.price_monthly,
             price_180days=m.price_180days,
-            price_annual=m.price_annual
+            price_annual=m.price_annual,
+            fiscal_monthly_limit=getattr(m, "fiscal_monthly_limit", 0) or 0,
+            is_active=m.is_active,
         )
         p.id = m.id
         return p
@@ -464,6 +466,18 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
             selectinload(SaleModel.payments)
         ).where(SaleModel.id == sale_id)
         
+        res = await self.session.execute(stmt)
+        model = res.scalars().first()
+        return self._to_entity(model) if model else None
+
+    async def get_by_offline_id(self, market_id: uuid.UUID, offline_id: str) -> Optional[Sale]:
+        stmt = select(SaleModel).options(
+            selectinload(SaleModel.items),
+            selectinload(SaleModel.payments)
+        ).where(
+            SaleModel.market_id == market_id,
+            SaleModel.offline_id == offline_id,
+        )
         res = await self.session.execute(stmt)
         model = res.scalars().first()
         return self._to_entity(model) if model else None
@@ -871,6 +885,8 @@ class SQLAlchemyFinancialTransactionRepository(FinancialTransactionRepositoryInt
         model.due_date = transaction.due_date
         model.paid_at = transaction.paid_at
         model.category = transaction.category
+        model.sale_id = transaction.sale_id
+        model.customer_id = transaction.customer_id
         
         if commit:
             await self.session.commit()

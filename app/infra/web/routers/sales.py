@@ -1,17 +1,19 @@
 import uuid
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 
-from infra.database.setup import get_db
-from infra.web.dependencies import get_sales_service, get_current_user, PermissionChecker
+from infra.web.dependencies import get_audit_service, get_sales_service, get_current_user, require_market_access
+from infra.security.market_access import MarketPermission
+from application.services.audit_service import AuditService
 from application.services.sales_service import SalesService
 from application.dtos import (
-    SaleSyncDTO, OpenBoxDTO, CloseBoxDTO, MarketDashboardStatsDTO, 
-    TerminalCreateDTO, TerminalResponseDTO, SaleResponseDTO, 
+    SaleSyncDTO, OpenBoxDTO, CloseBoxDTO, MarketDashboardStatsDTO,
+    TerminalCreateDTO, TerminalResponseDTO, SaleResponseDTO,
     DailySalesDTO, BoxResponseDTO
 )
 from domain.shared import BusinessRuleException
+from infra.observability.audit import record_audit_event
+from infra.observability.metrics import metrics_registry
 
 router = APIRouter()
 
@@ -23,10 +25,8 @@ router = APIRouter()
 async def list_terminals(
     market_id: uuid.UUID,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    market=Depends(require_market_access(MarketPermission.SALES_READ)),
 ):
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     return await service.list_terminals(market_id)
 
 @router.post("/{market_id}/terminals", status_code=status.HTTP_201_CREATED, response_model=TerminalResponseDTO)
@@ -34,10 +34,8 @@ async def create_terminal(
     market_id: uuid.UUID,
     dto: TerminalCreateDTO,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    market=Depends(require_market_access(MarketPermission.SALES_WRITE)),
 ):
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     try:
         return await service.create_terminal(market_id, dto)
     except BusinessRuleException as e:
@@ -52,11 +50,9 @@ async def get_current_box(
     market_id: uuid.UUID,
     terminal_id: uuid.UUID,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    market=Depends(require_market_access(MarketPermission.SALES_READ)),
 ):
     """Verifica se há um caixa aberto neste terminal."""
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     return await service.get_open_box(market_id, terminal_id)
 
 @router.post("/{market_id}/terminals/{terminal_id}/box/open", response_model=BoxResponseDTO)
@@ -65,12 +61,11 @@ async def open_box(
     terminal_id: uuid.UUID,
     dto: OpenBoxDTO,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user=Depends(get_current_user),
+    market=Depends(require_market_access(MarketPermission.SALES_WRITE)),
 ):
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     try:
-        # Se operator_id não vier no DTO, usa o usuário logado
+        # Se operator_id não vier no DTO, usa o usuário autenticado
         op_id = dto.operator_id or current_user.id
         return await service.open_box(market_id, terminal_id, op_id, dto.initial_balance)
     except BusinessRuleException as e:
@@ -78,32 +73,58 @@ async def open_box(
 
 @router.post("/{market_id}/terminals/{terminal_id}/box/close", response_model=BoxResponseDTO)
 async def close_box(
+    request: Request,
     market_id: uuid.UUID,
     terminal_id: uuid.UUID,
     dto: CloseBoxDTO,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user=Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+    market=Depends(require_market_access(MarketPermission.SALES_WRITE)),
 ):
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     try:
-        return await service.close_box(market_id, terminal_id, dto)
+        result = await service.close_box(market_id, terminal_id, dto)
+        await record_audit_event(
+            audit,
+            request,
+            actor=current_user,
+            action="sales.box.closed",
+            resource_type="box",
+            resource_id=str(result.id),
+            result="success",
+            market_id=market_id,
+            metadata={"terminal_id": terminal_id},
+        )
+        return result
     except BusinessRuleException as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/{market_id}/terminals/{terminal_id}/box/{box_id}/close", response_model=BoxResponseDTO)
 async def close_box_with_id(
+    request: Request,
     market_id: uuid.UUID,
     terminal_id: uuid.UUID,
     box_id: uuid.UUID,
     dto: CloseBoxDTO,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user=Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+    market=Depends(require_market_access(MarketPermission.SALES_WRITE)),
 ):
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     try:
-        return await service.close_box(market_id, terminal_id, dto)
+        result = await service.close_box(market_id, terminal_id, dto, box_id=box_id)
+        await record_audit_event(
+            audit,
+            request,
+            actor=current_user,
+            action="sales.box.closed",
+            resource_type="box",
+            resource_id=str(box_id),
+            result="success",
+            market_id=market_id,
+            metadata={"terminal_id": terminal_id},
+        )
+        return result
     except BusinessRuleException as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -115,11 +136,9 @@ async def close_box_with_id(
 async def get_market_dashboard(
     market_id: uuid.UUID,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    market=Depends(require_market_access(MarketPermission.SALES_READ)),
 ):
     """Retorna os dados principais do PDV (Vendas Hoje, Caixas Abertos, etc)."""
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     return await service.get_dashboard_stats(market_id)
 
 @router.get("/{market_id}/dashboard/summary", response_model=List[DailySalesDTO])
@@ -128,11 +147,9 @@ async def get_sales_summary(
     start_date: str = Query(..., description="Data inicial YYYY-MM-DD"),
     end_date: str = Query(..., description="Data final YYYY-MM-DD"),
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    market=Depends(require_market_access(MarketPermission.SALES_READ)),
 ):
     """Gráfico de vendas por período."""
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     try:
         return await service.get_sales_summary(market_id, start_date, end_date)
     except BusinessRuleException as e:
@@ -147,12 +164,16 @@ async def sync_sales(
     market_id: uuid.UUID,
     dto: SaleSyncDTO,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    market=Depends(require_market_access(MarketPermission.SALES_WRITE)),
 ):
     """Recebe lote de vendas offline para sincronização."""
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
-    return await service.process_sync(market_id, dto.sales)
+    try:
+        result = await service.process_sync(market_id, dto.sales)
+        metrics_registry.record_sync("success")
+        return result
+    except Exception:
+        metrics_registry.record_sync("failed")
+        raise
 
 @router.get("/{market_id}", response_model=List[SaleResponseDTO])
 async def list_sales(
@@ -160,11 +181,9 @@ async def list_sales(
     limit: int = 50,
     offset: int = 0,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    market=Depends(require_market_access(MarketPermission.SALES_READ)),
 ):
     """Retorna histórico de vendas recentes."""
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     return await service.list_sales(market_id, limit, offset)
 
 # ROTA DE DETALHES DE VENDA
@@ -174,11 +193,9 @@ async def get_sale(
     market_id: uuid.UUID,
     sale_id: uuid.UUID,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    market=Depends(require_market_access(MarketPermission.SALES_READ)),
 ):
     """Detalha uma venda específica (Itens e Pagamentos)."""
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     sale = await service.get_sale_by_id(market_id, sale_id)
     if not sale:
         raise HTTPException(status_code=404, detail="Venda não encontrada.")
@@ -189,10 +206,8 @@ async def cancel_sale(
     market_id: uuid.UUID,
     sale_id: uuid.UUID,
     service: SalesService = Depends(get_sales_service),
-    current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    market=Depends(require_market_access(MarketPermission.SALES_WRITE)),
 ):
-    await PermissionChecker.verify_market_ownership(market_id, current_user.id, db)
     try:
         return await service.cancel_sale(market_id, sale_id)
     except BusinessRuleException as e:

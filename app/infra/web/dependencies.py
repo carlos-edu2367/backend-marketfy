@@ -2,11 +2,19 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from jose import JWTError, jwt
+from typing import Optional, Callable
 import uuid
 
 from infra.database.setup import get_db
 from infra.config.settings import get_settings
 from infra.security.auth_handler import AuthHandler
+from infra.security.authorization import require_admin_user
+from infra.security.market_access import (
+    MarketAccessDenied,
+    MarketNotFoundError,
+    MarketPermission,
+    resolve_market_access,
+)
 from infra.repositories.sqlalchemy_repos import (
     SQLAlchemyUserRepository, SQLAlchemyProductRepository, SQLAlchemySaleRepository,
     SQLAlchemyMarketRepository, SQLAlchemyBoxRepository, SQLAlchemyPlanRepository,
@@ -28,6 +36,8 @@ from application.services.admin_service import AdminService
 from application.services.fiscal_service import FiscalService
 from application.services.analytics_service import AnalyticsService
 from application.services.finance_report_service import FinanceReportService # NOVO
+from application.services.audit_service import AuditService
+from infra.repositories.audit_repo import SQLAlchemyAuditLogRepository
 
 from infra.providers.focus_nfe_provider import FocusNFeProvider
 
@@ -47,6 +57,8 @@ async def get_current_user(
     try:
         payload = AuthHandler.decode_token(token)
         if payload is None:
+            raise credentials_exception
+        if payload.get("typ", "access") != "access":
             raise credentials_exception
         user_id: str = payload.get("sub")
         if user_id is None:
@@ -92,7 +104,8 @@ def get_sales_service(db: AsyncSession = Depends(get_db)):
 def get_finance_service(db: AsyncSession = Depends(get_db)):
     return FinanceService(
         customer_repo=SQLAlchemyCustomerRepository(db),
-        transaction_repo=SQLAlchemyFinancialTransactionRepository(db)
+        transaction_repo=SQLAlchemyFinancialTransactionRepository(db),
+        sale_repo=SQLAlchemySaleRepository(db),
     )
 
 def get_finance_report_service(db: AsyncSession = Depends(get_db)): # NOVO
@@ -135,17 +148,77 @@ def get_admin_plan_service(db: AsyncSession = Depends(get_db)):
 def get_analytics_service(db: AsyncSession = Depends(get_db)):
     return AnalyticsService(analytics_repo=AnalyticsRepository(db))
 
-# --- PERMISSIONS ---
+def get_audit_service(db: AsyncSession = Depends(get_db)):
+    return AuditService(SQLAlchemyAuditLogRepository(db))
+
+# --- POLÍTICA CENTRAL DE AUTORIZAÇÃO (Fase 3 / PR 9) ---
+#
+# A regra é centralizada em `infra/security/market_access.py`. Os helpers
+# abaixo expõem o policy como dependências FastAPI reutilizáveis.
+
 class PermissionChecker:
+    """Compatibilidade. Usa o policy central por baixo.
+
+    Mantido enquanto os routers migram para `require_market_access` /
+    `require_market_owner`. Não adicionar nova lógica aqui.
+    """
+
     @staticmethod
     async def verify_market_ownership(market_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession):
-        repo = SQLAlchemyMarketRepository(db)
-        market = await repo.get_by_id(market_id)
+        market_repo = SQLAlchemyMarketRepository(db)
+        market = await market_repo.get_by_id(market_id)
         if not market:
             raise HTTPException(status_code=404, detail="Loja não encontrada")
-        
+
         if market.owner_id != user_id:
-             # TODO: Implementar verificação de tabela de funcionários (UserMarket)
-             raise HTTPException(status_code=403, detail="Acesso negado.")
-        
+            # Após PR 10 a checagem deve considerar market_members.
+            # PermissionChecker permanece estrito (owner-only) para não
+            # alargar acesso por engano em rotas não migradas.
+            raise HTTPException(status_code=403, detail="Acesso negado.")
+
         return market
+
+
+def require_admin(current_user = Depends(get_current_user)):
+    try:
+        return require_admin_user(current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+def _build_market_dependency(
+    permission: Optional[MarketPermission],
+    owner_only: bool,
+) -> Callable:
+    async def _dep(
+        market_id: uuid.UUID,
+        current_user=Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        try:
+            return await resolve_market_access(
+                market_id=market_id,
+                user=current_user,
+                db=db,
+                permission=permission,
+                owner_only=owner_only,
+            )
+        except MarketNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except MarketAccessDenied as exc:
+            raise HTTPException(status_code=403, detail=exc.detail)
+
+    return _dep
+
+
+def require_market_access(permission: Optional[MarketPermission] = None) -> Callable:
+    """Dependência FastAPI que valida acesso à loja para uma permissão.
+
+    Owner sempre passa. Membros (PR 10) passam se o role tem a permissão.
+    """
+    return _build_market_dependency(permission=permission, owner_only=False)
+
+
+def require_market_owner() -> Callable:
+    """Dependência FastAPI que exige que o usuário seja o owner da loja."""
+    return _build_market_dependency(permission=None, owner_only=True)

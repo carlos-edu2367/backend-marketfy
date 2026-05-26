@@ -99,6 +99,8 @@ class SaleRepositoryInterface(ABC):
     @abstractmethod
     async def get_by_id(self, sale_id: uuid.UUID) -> Optional[Sale]: pass
     @abstractmethod
+    async def get_by_offline_id(self, market_id: uuid.UUID, offline_id: str) -> Optional[Sale]: pass
+    @abstractmethod
     async def save(self, sale: Sale, commit: bool = True) -> Sale: pass
     @abstractmethod
     async def get_daily_stats(self, market_id: uuid.UUID, date_obj) -> dict: pass
@@ -146,6 +148,7 @@ class TicketRepositoryInterface(ABC):
 # --- FISCAL (UPDATED) ---
 
 class FiscalRepositoryInterface(ABC):
+    """Interface legada — mantida para compatibilidade."""
     @abstractmethod
     async def get_config(self, market_id: uuid.UUID) -> Optional[FiscalConfig]: pass
     @abstractmethod
@@ -156,19 +159,7 @@ class FiscalRepositoryInterface(ABC):
     async def save_invoice(self, invoice: Invoice, commit: bool = True) -> Invoice: pass
 
 class FiscalProviderInterface(ABC):
-    """Contrato para provedores de emissão (eNotas, FocusNFe, SpeedNFe)."""
+    """Contrato legado para provedores de emissão."""
     @abstractmethod
-    def emit(self, sale_data: dict, config: FiscalConfig) -> Dict[str, Any]: 
-        """
-        Deve retornar:
-        {
-            "success": bool,
-            "access_key": str (opcional),
-            "protocol": str (opcional),
-            "number": int (opcional),
-            "xml_url": str (opcional),
-            "pdf_url": str (opcional),
-            "error": str (opcional)
-        }
-        """
+    def emit(self, sale_data: dict, config: FiscalConfig) -> Dict[str, Any]:
         pass

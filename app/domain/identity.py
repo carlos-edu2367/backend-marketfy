@@ -42,7 +42,9 @@ class Plan(Entity):
     price_monthly: Decimal = field(default_factory=lambda: Decimal("0.00"))
     price_180days: Decimal = field(default_factory=lambda: Decimal("0.00"))
     price_annual: Decimal = field(default_factory=lambda: Decimal("0.00"))
-    
+
+    fiscal_monthly_limit: int = 0
+
     is_active: bool = True
 
     def is_limit_reached(self, current_count: int, context: str) -> bool:

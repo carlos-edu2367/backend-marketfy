@@ -1,72 +1,43 @@
+import json
 import logging
 import sys
-import time
+from datetime import datetime
+from typing import Any
 
-class PrettyFormatter(logging.Formatter):
-    """
-    Formatter que adiciona cores ANSI e emojis aos logs do Backend.
-    """
-    # Cores ANSI
-    grey = "\x1b[38;20m"
-    green = "\x1b[32;20m"
-    yellow = "\x1b[33;20m"
-    red = "\x1b[31;20m"
-    bold_red = "\x1b[31;1m"
-    cyan = "\x1b[36;20m"
-    reset = "\x1b[0m"
+from infra.observability.request_context import get_request_id
+from infra.observability.sanitization import sanitize_log_data
 
-    emoji_map = {
-        logging.DEBUG: "🐛",
-        logging.INFO: "ℹ️ ",
-        logging.WARNING: "⚠️ ",
-        logging.ERROR: "🚨",
-        logging.CRITICAL: "🔥"
-    }
 
-    color_map = {
-        logging.DEBUG: grey,
-        logging.INFO: green,
-        logging.WARNING: yellow,
-        logging.ERROR: red,
-        logging.CRITICAL: bold_red
-    }
+class StructuredJSONFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "timestamp": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+            "level": record.levelname,
+            "logger": record.name.replace("sgm_marketfy.", ""),
+            "message": record.getMessage(),
+        }
+        request_id = getattr(record, "request_id", None) or get_request_id()
+        if request_id:
+            payload["request_id"] = request_id
 
-    def format(self, record):
-        color = self.color_map.get(record.levelno, self.reset)
-        emoji = self.emoji_map.get(record.levelno, "")
-        
-        # Formata Time (apenas hora para dev)
-        asctime = self.formatTime(record, "%H:%M:%S")
-        
-        # Mensagem e Nome do Módulo
-        message = record.getMessage()
-        name = record.name.replace("sgm_marketfy.", "").replace("infra.web.", "")
-
-        # Layout: [Hora] EMOJI LEVEL [Modulo] Mensagem
-        log_fmt = (
-            f"{self.grey}[{asctime}]{self.reset} "
-            f"{emoji} {color}{record.levelname:<8}{self.reset} "
-            f"{self.cyan}[{name}]{self.reset} {message}"
-        )
+        extra_data = getattr(record, "extra_data", None)
+        if isinstance(extra_data, dict):
+            payload.update(sanitize_log_data(extra_data))
 
         if record.exc_info:
-            text = super().formatException(record.exc_info)
-            log_fmt += f"\n{self.red}{text}{self.reset}"
+            payload["exception_type"] = record.exc_info[0].__name__
 
-        return log_fmt
+        return json.dumps(payload, default=str, ensure_ascii=False)
+
 
 def get_logger(name: str):
-    """Retorna uma instância de logger configurada."""
     logger = logging.getLogger(f"sgm_marketfy.{name}")
     logger.setLevel(logging.DEBUG)
-    
-    # Evita adicionar múltiplos handlers se já existir
+
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(PrettyFormatter())
+        handler.setFormatter(StructuredJSONFormatter())
         logger.addHandler(handler)
-    
-    # Não propaga para o root logger do Uvicorn para evitar duplicidade feia
+
     logger.propagate = False
-    
     return logger

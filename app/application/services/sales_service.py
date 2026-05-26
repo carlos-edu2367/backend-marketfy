@@ -102,13 +102,22 @@ class SalesService:
         saved = await self.box_repo.save(box)
         return BoxResponseDTO.model_validate(saved)
 
-    async def close_box(self, market_id: uuid.UUID, terminal_id: uuid.UUID, dto: CloseBoxDTO) -> BoxResponseDTO:
+    async def close_box(
+        self,
+        market_id: uuid.UUID,
+        terminal_id: uuid.UUID,
+        dto: CloseBoxDTO,
+        box_id: Optional[uuid.UUID] = None,
+    ) -> BoxResponseDTO:
         box = await self.box_repo.get_open_box_by_terminal(terminal_id)
         if not box:
             raise BusinessRuleException("Não há caixa aberto neste terminal para fechar.")
         
         if box.market_id != market_id:
             raise BusinessRuleException("Terminal não pertence a esta loja.")
+
+        if box_id and box.id != box_id:
+            raise BusinessRuleException("Caixa informado nÃ£o corresponde ao caixa aberto deste terminal.")
 
         box.close(dto.final_balance_reported, dto.closing_observation)
         saved = await self.box_repo.save(box)
@@ -137,6 +146,8 @@ class SalesService:
                 existing_sale = None
                 if dto.id:
                     existing_sale = await self.sale_repo.get_by_id(dto.id)
+                if not existing_sale and dto.offline_id:
+                    existing_sale = await self.sale_repo.get_by_offline_id(market_id, dto.offline_id)
                 
                 if existing_sale:
                     # Se já existe e está concluída, ignora para evitar duplicação de estoque
@@ -164,7 +175,13 @@ class SalesService:
                     sale.id = dto.id
 
                 # 3. Validação e Processamento de Pagamentos (Antes de salvar itens para garantir integridade)
-                fiado_pending_list = [] # Armazena dados para processar fiado após salvar a venda
+                box = await self.box_repo.get_by_id(dto.box_id)
+                if not box or box.market_id != market_id or box.status != BoxStatus.OPEN:
+                    raise BusinessRuleException(
+                        f"Erro na venda {dto.offline_id or str(dto.id)[:8]}: caixa invalido ou fechado."
+                    )
+
+                fiado_pending_list = [] # Armazena dados para processar fiado apos salvar a venda
                 cash_amount_to_add_to_box = Decimal("0.00") # CORREÇÃO: Acumula valor em dinheiro
 
                 for pay_dto in dto.payments:
@@ -206,9 +223,10 @@ class SalesService:
                 # 4. Adiciona Itens e Baixa Estoque
                 for item_dto in dto.items:
                     product = await self.product_repo.get_by_id(item_dto.product_id)
-                    if not product:
-                        logger.warning(f"Produto {item_dto.product_id} não encontrado na venda {sale.id}. Ignorando item.")
-                        continue 
+                    if not product or product.market_id != market_id:
+                        raise BusinessRuleException(
+                            f"Erro na venda {dto.offline_id or str(dto.id)[:8]}: produto nao encontrado na loja."
+                        )
 
                     # Baixa Estoque (Movimentação do tipo VENDA)
                     product.add_movement(
@@ -223,12 +241,8 @@ class SalesService:
 
                 # 5. CORREÇÃO: Atualiza Saldo do Caixa (Se houve dinheiro)
                 if cash_amount_to_add_to_box > 0:
-                    box = await self.box_repo.get_by_id(dto.box_id)
-                    if box:
-                        box.current_balance += cash_amount_to_add_to_box
-                        await self.box_repo.save(box, commit=False)
-                    else:
-                        logger.warning(f"Caixa {dto.box_id} não encontrado ao tentar atualizar saldo.")
+                    box.current_balance += cash_amount_to_add_to_box
+                    await self.box_repo.save(box, commit=False)
 
                 # 6. Salva Venda e Processa Fiado
                 if fiado_pending_list:
@@ -258,7 +272,7 @@ class SalesService:
                         due_date=datetime.now(),
                         paid_at=sale.synced_at
                     )
-                    await self.financial_repo.save(financial)
+                    await self.financial_repo.save(financial, commit=False)
                     saved_sale = await self.sale_repo.save(sale, commit=True)
 
                 results.append(self._map_sale_to_response(saved_sale))

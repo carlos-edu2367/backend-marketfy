@@ -3,11 +3,14 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from infra.database.setup import get_db
-from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository
+from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository, SQLAlchemyMarketRepository
+from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
 from application.services.identity_service import IdentityService
 from application.services.subscription_service import SubscriptionService
+from application.services.plan_access_service import PlanAccessService, PlanFeature
 from application.dtos import UserCreateDTO, MarketCreateDTO, UserResponseDTO, SubscribeDTO
 from infra.web.dependencies import get_identity_service, get_current_user, get_subscription_service
+from infra.security.authorization import is_admin_user
 
 router = APIRouter()
 
@@ -26,8 +29,22 @@ async def register_user(
 async def create_market(
     dto: MarketCreateDTO,
     service: IdentityService = Depends(get_identity_service),
-    current_user = Depends(get_current_user)
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
+    # Gate de plano: valida assinatura e limite de lojas antes de criar
+    from infra.repositories.sqlalchemy_repos import SQLAlchemyUserRepository, SQLAlchemyPlanRepository
+
+    plan_service = PlanAccessService(
+        user_repo=SQLAlchemyUserRepository(db),
+        plan_repo=SQLAlchemyPlanRepository(db),
+        subscription_repo=SQLAlchemyBillingSubscriptionRepository(db),
+    )
+    current_markets = await SQLAlchemyMarketRepository(db).count_by_owner(current_user.id)
+    access = await plan_service.check_limit(current_user.id, PlanFeature.MARKETS, current_markets)
+    if not access.allowed:
+        raise HTTPException(status_code=403, detail=access.reason)
+
     try:
         return await service.create_market(current_user.id, dto)
     except Exception as e:
@@ -75,9 +92,8 @@ async def subscribe_to_plan(
         
         # Se um ID de override foi enviado
         if dto.user_id_override:
-            # Verifica se quem chamou é ADMIN (segurança)
-            user_role = getattr(current_user.role, 'value', current_user.role)
-            if user_role != "admin":
+            # Verifica se quem chamou é ADMIN via política central
+            if not is_admin_user(current_user):
                 raise HTTPException(status_code=403, detail="Apenas administradores podem atribuir planos a terceiros.")
             
             # Busca o usuário alvo
