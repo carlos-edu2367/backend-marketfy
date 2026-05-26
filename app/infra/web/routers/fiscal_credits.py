@@ -7,9 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from application.services.audit_service import AuditService
 from application.services.fiscal.fiscal_credits_service import FiscalCreditsService
 from application.services.fiscal.fiscal_notification_service import FiscalNotificationService
 from application.services.fiscal.fiscal_quota_service import FiscalQuotaService
+from application.services.plan_access_service import PlanAccessService
+from domain.identity import User
 from infra.clients.mercado_pago_client import (
     MercadoPagoAuthError,
     MercadoPagoClient,
@@ -19,12 +22,12 @@ from infra.clients.mercado_pago_client import (
 from infra.config.settings import get_settings
 from infra.database.setup import get_db
 from infra.repositories.audit_repo import SQLAlchemyAuditLogRepository
+from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
 from infra.repositories.fiscal_repo import SQLAlchemyFiscalNotificationRepository, SQLAlchemyFiscalUsageRepository
+from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository, SQLAlchemyUserRepository
 from infra.security.market_access import MarketPermission
 from infra.security.rate_limiter import enforce_rate_limit_async
 from infra.web.dependencies import get_current_user, require_market_access
-from application.services.audit_service import AuditService
-from domain.identity import User
 
 router = APIRouter()
 
@@ -47,6 +50,11 @@ def _credits_service(db: AsyncSession) -> FiscalCreditsService:
         sandbox=settings.MP_SANDBOX,
         base_url=settings.MP_BASE_URL,
     )
+    plan_access = PlanAccessService(
+        SQLAlchemyUserRepository(db),
+        SQLAlchemyPlanRepository(db),
+        SQLAlchemyBillingSubscriptionRepository(db),
+    )
     return FiscalCreditsService(
         credits_repo=usage_repo,
         quota_repo=usage_repo,
@@ -55,6 +63,7 @@ def _credits_service(db: AsyncSession) -> FiscalCreditsService:
         notification_service=FiscalNotificationService(SQLAlchemyFiscalNotificationRepository(db)),
         audit_service=AuditService(SQLAlchemyAuditLogRepository(db)),
         settings=settings,
+        plan_access_service=plan_access,
     )
 
 

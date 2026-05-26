@@ -81,7 +81,7 @@ class FiscalQuotaService:
                 addon_limit=counter.addon_limit,
             )
 
-        consuming_addon = counter.used_count >= counter.included_limit
+        consuming_addon = available_included == 0
 
         logger.info(
             "fiscal_quota_reserved",
@@ -117,7 +117,7 @@ class FiscalQuotaService:
         idempotency_key = (
             f"consume:{owner_id}:{period}:{fiscal_document_id}"
             if fiscal_document_id
-            else None
+            else f"consume:{owner_id}:{period}:{uuid.uuid4()}"
         )
         entry = FiscalUsageLedger(
             owner_id=owner_id,
@@ -182,21 +182,30 @@ class FiscalQuotaService:
         except Exception:
             pass
 
-    async def get_quota_status(self, owner_id: uuid.UUID, period: str) -> QuotaStatus:
+    async def get_quota_status(
+        self,
+        owner_id: uuid.UUID,
+        period: str,
+        fallback_included_limit: int = 0,
+    ) -> QuotaStatus:
         counter = await self.repo.get_counter(owner_id, period)
         if not counter:
+            # Counter só existe após a primeira emissão do período. Usa o limite do
+            # plano como fallback para exibição correta antes da primeira emissão.
+            addon_carryover = await self.repo.sum_active_packages_remaining(owner_id)
             return QuotaStatus(
                 period=period,
-                included_limit=0,
-                addon_limit=0,
+                included_limit=fallback_included_limit,
+                addon_limit=addon_carryover,
                 used_count=0,
                 reserved_count=0,
-                remaining=0,
+                remaining=fallback_included_limit + addon_carryover,
                 percentage_used=0.0,
             )
         remaining = counter.available_quota()
         total = counter.included_limit + counter.addon_limit
-        pct = (counter.used_count / max(1, total)) * 100 if total > 0 else 0.0
+        # Inclui reserved_count no percentual para refletir emissões em andamento.
+        pct = ((counter.used_count + counter.reserved_count) / max(1, total)) * 100 if total > 0 else 0.0
         return QuotaStatus(
             period=period,
             included_limit=counter.included_limit,

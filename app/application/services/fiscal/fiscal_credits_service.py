@@ -30,6 +30,7 @@ class FiscalCreditsService:
         quota_repo=None,
         notification_service=None,
         audit_service=None,
+        plan_access_service=None,
     ):
         self.credits_repo = credits_repo
         self.mp_client = mp_client
@@ -38,6 +39,7 @@ class FiscalCreditsService:
         self.notification_service = notification_service
         self.audit_service = audit_service
         self.settings = settings
+        self.plan_access_service = plan_access_service
 
     def get_packages(self) -> list[EmissionCreditPackage]:
         return list(EMISSION_PACKAGES.values())
@@ -107,7 +109,12 @@ class FiscalCreditsService:
 
     async def get_credits_balance(self, owner_id: uuid.UUID, period: Optional[str] = None) -> CreditsBalance:
         period = period or datetime.utcnow().strftime("%Y%m")
-        quota = await self.quota_service.get_quota_status(owner_id, period)
+        fallback_included_limit = 0
+        if self.plan_access_service:
+            fallback_included_limit = await self.plan_access_service.get_fiscal_monthly_limit(owner_id)
+        quota = await self.quota_service.get_quota_status(
+            owner_id, period, fallback_included_limit=fallback_included_limit
+        )
         return CreditsBalance(
             period=quota.period,
             included_limit=quota.included_limit,
