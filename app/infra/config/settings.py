@@ -186,6 +186,16 @@ class Settings(BaseSettings):
             raise ValueError("NEECTIFY_API_KEY e obrigatoria em producao com FISCAL_PROVIDER=neectify_fiscal.")
         if not self.MP_ACCESS_TOKEN or not self.MP_WEBHOOK_SECRET:
             raise ValueError("MP_ACCESS_TOKEN e MP_WEBHOOK_SECRET sao obrigatorios em producao.")
+        if self.MP_SANDBOX:
+            raise ValueError(
+                "MP_SANDBOX deve ser False em producao. "
+                "Com MP_SANDBOX=True o checkout usa sandbox_init_point e nenhum pagamento aparece no painel de producao."
+            )
+        if self.MP_ACCESS_TOKEN.startswith("TEST-"):
+            raise ValueError(
+                "MP_ACCESS_TOKEN parece ser um token de teste (prefixo TEST-). "
+                "Em producao use o Access Token de producao (prefixo APP_USR-)."
+            )
         if not self.PUBLIC_FRONTEND_URL or not self.PUBLIC_FRONTEND_URL.startswith("https://"):
             raise ValueError("PUBLIC_FRONTEND_URL HTTPS e obrigatoria em producao.")
         if not self.PUBLIC_API_BASE_URL or not self.PUBLIC_API_BASE_URL.startswith("https://"):
