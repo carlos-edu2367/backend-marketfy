@@ -38,3 +38,12 @@ async def get_db():
             yield session
         finally:
             await session.close()
+
+
+# Compatibilidade para o worker do ARQ e os jobs assíncronos
+async_session_factory = AsyncSessionLocal
+
+
+async def init_db():
+    """No-op para compatibilidade de inicialização no worker."""
+    pass
