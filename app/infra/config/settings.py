@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     COOKIE_SAMESITE: str = "lax"
 
     # CORS e URLs publicas
-    BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000", "https://app.sgmmarketfy.com"]
+    BACKEND_CORS_ORIGINS: list[str] | str = ["http://localhost:3000", "https://app.sgmmarketfy.com"]
     PUBLIC_FRONTEND_URL: Optional[str] = None
     PUBLIC_API_BASE_URL: Optional[str] = None
 
@@ -131,7 +131,23 @@ class Settings(BaseSettings):
     @classmethod
     def parse_cors_origins(cls, value: Any) -> list[str]:
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            value_str = value.strip()
+            # Clean outer quotes if any (e.g. '"[...]"' from docker-compose / dotenv mismatch)
+            if value_str.startswith('"') and value_str.endswith('"'):
+                value_str = value_str[1:-1].strip()
+            
+            # Check if it looks like a JSON array/list
+            if value_str.startswith('[') and value_str.endswith(']'):
+                import json
+                try:
+                    parsed = json.loads(value_str)
+                    if isinstance(parsed, list):
+                        return [str(item).strip() for item in parsed]
+                except Exception:
+                    pass
+            
+            # Otherwise, split by comma
+            return [origin.strip() for origin in value_str.split(",") if origin.strip()]
         return value
 
     @field_validator("COOKIE_SAMESITE", mode="before")
