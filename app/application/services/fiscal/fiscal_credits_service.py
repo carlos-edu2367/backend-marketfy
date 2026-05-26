@@ -245,7 +245,11 @@ class FiscalCreditsService:
 
     def _preference_payload(self, db_package: FiscalEmissionPackage, package: EmissionCreditPackage) -> dict:
         api_base = (getattr(self.settings, "PUBLIC_API_BASE_URL", "") or "").rstrip("/")
-        return {
+        back_success = getattr(self.settings, "FISCAL_CREDITS_BACK_URL_SUCCESS", "") or ""
+        back_failure = getattr(self.settings, "FISCAL_CREDITS_BACK_URL_FAILURE", "") or ""
+        back_pending = getattr(self.settings, "FISCAL_CREDITS_BACK_URL_PENDING", "") or ""
+
+        payload: dict = {
             "items": [{
                 "id": package.slug,
                 "title": f"Creditos NFC-e - {package.emission_count} emissoes",
@@ -255,17 +259,27 @@ class FiscalCreditsService:
                 "unit_price": float(package.price_gross),
             }],
             "external_reference": str(db_package.id),
-            "notification_url": f"{api_base}/webhooks/mercado-pago",
-            "back_urls": {
-                "success": getattr(self.settings, "FISCAL_CREDITS_BACK_URL_SUCCESS", ""),
-                "failure": getattr(self.settings, "FISCAL_CREDITS_BACK_URL_FAILURE", ""),
-                "pending": getattr(self.settings, "FISCAL_CREDITS_BACK_URL_PENDING", ""),
-            },
-            "auto_return": "approved",
             "statement_descriptor": "MARKETFY",
             "expires": True,
             "expiration_date_to": (datetime.utcnow() + timedelta(hours=24)).isoformat() + "Z",
         }
+
+        # Só inclui notification_url se houver base URL configurada; URL vazia ou
+        # localhost não-roteável faz o MP rejeitar/bloquear o flow silenciosamente.
+        if api_base and api_base.startswith("http"):
+            payload["notification_url"] = f"{api_base}/webhooks/mercado-pago"
+
+        # back_urls e auto_return só fazem sentido quando as URLs estão configuradas.
+        if back_success or back_failure or back_pending:
+            payload["back_urls"] = {
+                "success": back_success,
+                "failure": back_failure,
+                "pending": back_pending,
+            }
+            if back_success:
+                payload["auto_return"] = "approved"
+
+        return payload
 
     def _checkout_url_from_preference_id(self, preference_id: str) -> str:
         if getattr(self.settings, "MP_SANDBOX", True):

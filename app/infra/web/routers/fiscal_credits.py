@@ -38,7 +38,7 @@ class CheckoutRequest(BaseModel):
 
 
 class CustomCheckoutRequest(BaseModel):
-    quantity: int = Field(..., ge=10, le=10_000)
+    quantity: int = Field(..., ge=1, le=100_000)
     idempotency_key: str = Field(..., min_length=8, max_length=160)
 
 
@@ -185,8 +185,18 @@ async def credits_balance(
     }
 
 
+@router.get("/credits/config", tags=["Fiscal Credits"])
+async def credits_config():
+    settings = get_settings()
+    return {
+        "min_qty": settings.FISCAL_CREDIT_MIN_QTY,
+        "max_qty": settings.FISCAL_CREDIT_MAX_QTY,
+        "unit_price": str(settings.FISCAL_CREDIT_UNIT_PRICE),
+    }
+
+
 @router.get("/credits/price", tags=["Fiscal Credits"])
-async def preview_price(qty: int = Query(..., ge=1, le=10_000)):
+async def preview_price(qty: int = Query(..., ge=1, le=100_000)):
     settings = get_settings()
     if qty < settings.FISCAL_CREDIT_MIN_QTY:
         raise HTTPException(
@@ -217,6 +227,16 @@ async def create_custom_checkout(
         window_seconds=60,
     )
     settings = get_settings()
+    if payload.quantity < settings.FISCAL_CREDIT_MIN_QTY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Minimo {settings.FISCAL_CREDIT_MIN_QTY} creditos por compra.",
+        )
+    if payload.quantity > settings.FISCAL_CREDIT_MAX_QTY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximo {settings.FISCAL_CREDIT_MAX_QTY} creditos por compra.",
+        )
     price_gross = (settings.FISCAL_CREDIT_UNIT_PRICE * payload.quantity).quantize(
         Decimal("0.01"), ROUND_HALF_UP
     )
