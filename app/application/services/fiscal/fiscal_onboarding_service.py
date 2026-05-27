@@ -373,6 +373,49 @@ class FiscalOnboardingService:
             "cert_status": activate_result.get("status"),
         }
 
+    async def register_neectify_webhook(
+        self,
+        market_id: uuid.UUID,
+        callback_url: str,
+    ) -> dict:
+        """
+        Registra o webhook do Marketfy no Neectify Fiscal via POST /v1/webhooks.
+
+        Deve ser chamado após sync_issuer e sync_cert, quando o callback_url
+        do Marketfy (BILLING_CORE_WEBHOOK_CALLBACK_URL) já está disponível.
+        """
+        if not self._neectify:
+            raise RuntimeError("NeectifyFiscalProvider não configurado.")
+
+        payload = {
+            "url": callback_url,
+            "events": [
+                "nfce.authorized",
+                "nfce.rejected",
+                "nfce.failed",
+                "nfce.cancelled",
+                "certificate.expiring",
+                "usage.threshold_reached",
+            ],
+            "description": "Marketfy callback — status de NFC-e e alertas",
+        }
+
+        try:
+            result = await self._neectify._client.request("POST", "/v1/webhooks", json=payload)
+        except FiscalValidationError as exc:
+            logger.error(
+                "neectify_register_webhook_failed",
+                extra={"extra_data": {"market_id": str(market_id), "error": str(exc)}},
+            )
+            raise
+
+        webhook_id = result.get("id", "")
+        logger.info(
+            "neectify_webhook_registered",
+            extra={"extra_data": {"market_id": str(market_id), "webhook_id": webhook_id}},
+        )
+        return {"webhook_id": webhook_id, "url": callback_url}
+
     async def get_neectify_status(self, market_id: uuid.UUID) -> dict:
         """Retorna campos de onboarding Neectify do config."""
         cfg = await self._config_repo.get_by_market(market_id)

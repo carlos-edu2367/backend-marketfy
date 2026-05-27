@@ -15,11 +15,12 @@ from typing import Optional, Dict, Any
 
 class EmitResultStatus(Enum):
     AUTHORIZED = "authorized"
-    REJECTED = "rejected"           # Rejeição SEFAZ (sem retry útil sem correção)
+    REJECTED = "rejected"                # Rejeição SEFAZ (sem retry útil sem correção)
+    CANCELED = "canceled"                # NFC-e cancelada — estado terminal
     PROVIDER_ERROR = "provider_error"    # Erro recuperável no provider
     SEFAZ_UNAVAILABLE = "sefaz_unavailable"
     TIMEOUT = "timeout"
-    DUPLICATE_REF = "duplicate_ref"     # Ref já usada — precisa reconciliar
+    DUPLICATE_REF = "duplicate_ref"      # Ref já usada — precisa reconciliar
     UNKNOWN = "unknown"
 
 
@@ -55,6 +56,10 @@ class ProviderEmitResult:
     @property
     def is_rejected(self) -> bool:
         return self.status == EmitResultStatus.REJECTED
+
+    @property
+    def is_canceled(self) -> bool:
+        return self.status == EmitResultStatus.CANCELED
 
     @property
     def needs_reconciliation(self) -> bool:

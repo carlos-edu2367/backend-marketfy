@@ -132,6 +132,18 @@ class FiscalReconciliationService:
             await self._append_event(doc, "reconciled_rejected",
                                       f"Rejeitado: {consult_result.sefaz_message}",
                                       source=FiscalEventSource.WORKER)
+
+        elif consult_result.status == EmitResultStatus.CANCELED:
+            doc.set_rejected(
+                sefaz_code="",
+                sefaz_msg="NFC-e cancelada (reconciliado).",
+            )
+            doc.last_attempt_id = attempt.id
+            await self.doc_repo.save(doc)
+            await self._append_event(doc, "reconciled_canceled",
+                                      "Status reconciliado: cancelado.", source=FiscalEventSource.WORKER)
+            logger.info("fiscal_reconciled_canceled", extra={"extra_data": {"doc_id": str(doc_id)}})
+
         else:
             # Estado ainda incerto — reagendar retry
             doc.status = FiscalDocumentStatus.PROVIDER_ERROR

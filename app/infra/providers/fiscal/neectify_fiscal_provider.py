@@ -29,17 +29,13 @@ from infra.providers.fiscal.base import (
 
 logger = logging.getLogger("neectify_fiscal_provider")
 
-_NEECTIFY_STATUS_MAP = {
-    "authorized": EmitResultStatus.AUTHORIZED,
-    "rejected": EmitResultStatus.REJECTED,
-    "cancelled": EmitResultStatus.AUTHORIZED,  # tratado como terminal upstream
-    "failed_permanent": EmitResultStatus.REJECTED,
-}
 _PENDING_STATUSES = {
     "received", "queued", "xml_generated", "signed",
     "xsd_validated", "sent", "processing",
-    "cancel_requested", "failed_transient",
+    "failed_transient",
 }
+
+_CANCELED_STATUSES = {"cancelled", "cancel_requested"}
 
 
 class NeectifyFiscalProvider(FiscalProviderGateway):
@@ -208,6 +204,8 @@ class NeectifyFiscalProvider(FiscalProviderGateway):
             emit_status = EmitResultStatus.AUTHORIZED
         elif neectify_status in ("rejected", "failed_permanent"):
             emit_status = EmitResultStatus.REJECTED
+        elif neectify_status in _CANCELED_STATUSES:
+            emit_status = EmitResultStatus.CANCELED
         elif neectify_status in _PENDING_STATUSES:
             emit_status = EmitResultStatus.UNKNOWN
         else:

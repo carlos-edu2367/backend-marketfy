@@ -180,8 +180,16 @@ class Settings(BaseSettings):
             raise ValueError("ACCESS_TOKEN_EXPIRE_MINUTES deve ser no maximo 30 em producao.")
         if not self.FISCAL_SECRET_KEY or len(self.FISCAL_SECRET_KEY) < 32:
             raise ValueError("FISCAL_SECRET_KEY e obrigatoria em producao.")
-        if self.FISCAL_PROVIDER == "neectify_fiscal" and not self.NEECTIFY_API_KEY:
-            raise ValueError("NEECTIFY_API_KEY e obrigatoria em producao com FISCAL_PROVIDER=neectify_fiscal.")
+        if self.FISCAL_PROVIDER == "neectify_fiscal":
+            if not self.NEECTIFY_API_KEY:
+                raise ValueError("NEECTIFY_API_KEY e obrigatoria em producao com FISCAL_PROVIDER=neectify_fiscal.")
+            # Formato esperado: nf_{env}_{public_id}_{secret} — split por "_" max 3 deve dar 4 partes
+            _parts = self.NEECTIFY_API_KEY.split("_", 3)
+            if len(_parts) < 4 or not self.NEECTIFY_API_KEY.startswith("nf_"):
+                raise ValueError(
+                    "NEECTIFY_API_KEY com formato invalido. "
+                    "Esperado: nf_{env}_{public_id}_{secret} (ex: nf_live_abc123_...)"
+                )
 
         if not self.PUBLIC_FRONTEND_URL or not self.PUBLIC_FRONTEND_URL.startswith("https://"):
             raise ValueError("PUBLIC_FRONTEND_URL HTTPS e obrigatoria em producao.")

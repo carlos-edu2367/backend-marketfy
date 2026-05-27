@@ -76,7 +76,9 @@ async def _rate_limit_for_request(request: Request):
         elif method == "POST" and path == "/api/v1/billing/webhooks/internal":
             await enforce_rate_limit_async(request, "billing-webhook", limit=200, window_seconds=60)
         elif method == "POST" and path == "/api/v1/fiscal/webhooks/focus-nfe":
-            await enforce_rate_limit_async(request, "fiscal-webhook", limit=500, window_seconds=60)
+            await enforce_rate_limit_async(request, "fiscal-webhook-focus", limit=500, window_seconds=60)
+        elif method == "POST" and path == "/api/v1/fiscal/webhooks/neectify":
+            await enforce_rate_limit_async(request, "fiscal-webhook-neectify", limit=500, window_seconds=60)
         elif method == "POST" and path == "/api/v1/webhooks/billing-core":
             await enforce_rate_limit_async(request, "billing-core-webhook", limit=200, window_seconds=60)
     except HTTPException as exc:

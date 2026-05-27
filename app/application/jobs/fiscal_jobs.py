@@ -183,12 +183,12 @@ async def emit_nfce_job(
                                  f"Autorizado: {(result.access_key or '')[:20]}...",
                                  FiscalEventSource.PROVIDER)
 
-            # Enfileirar download de artefatos
+            # Enfileirar download de artefatos (baixa prioridade — não bloqueia o caixa)
             if "arq" in ctx:
                 await ctx["arq"].enqueue_job(
                     "download_artifacts_job",
                     doc_id=doc_id, market_id=market_id,
-                    _queue_name="fiscal:high",
+                    _queue_name="fiscal:reconcile",
                     _defer_by=timedelta(seconds=2),
                 )
 
@@ -219,6 +219,17 @@ async def emit_nfce_job(
                            extra={"extra_data": {"doc_id": doc_id, "code": result.error_code}})
             return {"status": "rejected", "error": result.error_message}
 
+        elif result.is_canceled:
+            doc.set_rejected(
+                sefaz_code="",
+                sefaz_msg="NFC-e cancelada antes da autorização.",
+            )
+            await doc_repo.save(doc)
+            await _append_event(event_repo, doc, "canceled",
+                                 "NFC-e cancelada (retorno do provider).",
+                                 FiscalEventSource.PROVIDER)
+            return {"status": "canceled"}
+
         elif result.needs_reconciliation:
             # Timeout ou ref duplicada — reconciliar antes de reenviar
             doc.status = FiscalDocumentStatus.PROVIDER_ERROR
@@ -226,7 +237,6 @@ async def emit_nfce_job(
             await _append_event(event_repo, doc, "needs_reconciliation",
                                  f"Estado incerto: {result.status.value}",
                                  FiscalEventSource.WORKER)
-            # Agendar reconciliação
             if "arq" in ctx:
                 await ctx["arq"].enqueue_job(
                     "reconcile_nfce_job",
@@ -237,12 +247,19 @@ async def emit_nfce_job(
             return {"status": "pending_reconciliation"}
 
         else:
-            # Erro recuperável — reagendar
+            # Erro recuperável — agendar reconciliação com backoff
             doc.status = FiscalDocumentStatus.PROVIDER_ERROR
             await doc_repo.save(doc)
             await _append_event(event_repo, doc, "provider_error",
                                  result.error_message or "Erro provider",
                                  FiscalEventSource.PROVIDER)
+            if result.is_recoverable and "arq" in ctx:
+                await ctx["arq"].enqueue_job(
+                    "reconcile_nfce_job",
+                    doc_id=doc_id, market_id=market_id, owner_id=owner_id,
+                    _queue_name="fiscal:reconcile",
+                    _defer_by=timedelta(seconds=60),
+                )
             return {"status": "provider_error", "recoverable": result.is_recoverable}
 
 
@@ -281,14 +298,15 @@ async def reconcile_nfce_job(
         if not cfg:
             return {"status": "config_missing"}
 
-        cipher = SecretCipher(settings.FISCAL_SECRET_KEY or settings.SECRET_KEY)
-        api_token = cipher.decrypt(cfg.csc_token_ciphertext or "") or \
-                    getattr(settings, "FOCUS_NFE_API_TOKEN", "")
+        provider_name = settings.FISCAL_PROVIDER
+        if provider_name == "neectify_fiscal":
+            api_token = settings.NEECTIFY_API_KEY or ""
+        else:
+            cipher = SecretCipher(settings.FISCAL_SECRET_KEY or settings.SECRET_KEY)
+            api_token = cipher.decrypt(cfg.csc_token_ciphertext or "") or \
+                        getattr(settings, "FOCUS_NFE_API_TOKEN", "")
 
-        provider = get_fiscal_provider(
-            getattr(settings, "FISCAL_PROVIDER", "focus_nfe"),
-            cfg.environment.value,
-        )
+        provider = get_fiscal_provider(provider_name, cfg.environment.value)
 
         svc = FiscalReconciliationService(doc_repo, attempt_repo, event_repo, provider)
         doc = await svc.reconcile_document(doc_uuid, api_token)
@@ -331,14 +349,15 @@ async def download_artifacts_job(ctx: dict, doc_id: str, market_id: str) -> dict
         if not cfg:
             return {"error": "config_missing"}
 
-        cipher = SecretCipher(settings.FISCAL_SECRET_KEY or settings.SECRET_KEY)
-        api_token = cipher.decrypt(cfg.csc_token_ciphertext or "") or \
-                    getattr(settings, "FOCUS_NFE_API_TOKEN", "")
+        provider_name = settings.FISCAL_PROVIDER
+        if provider_name == "neectify_fiscal":
+            api_token = settings.NEECTIFY_API_KEY or ""
+        else:
+            cipher = SecretCipher(settings.FISCAL_SECRET_KEY or settings.SECRET_KEY)
+            api_token = cipher.decrypt(cfg.csc_token_ciphertext or "") or \
+                        getattr(settings, "FOCUS_NFE_API_TOKEN", "")
 
-        provider = get_fiscal_provider(
-            getattr(settings, "FISCAL_PROVIDER", "focus_nfe"),
-            cfg.environment.value,
-        )
+        provider = get_fiscal_provider(provider_name, cfg.environment.value)
         storage = FiscalArtifactStorage()
         svc = FiscalArtifactService(artifact_repo, storage, provider)
 
