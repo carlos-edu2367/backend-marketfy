@@ -74,10 +74,11 @@ class NeectifyFiscalProvider(FiscalProviderGateway):
         environment: str,
     ) -> dict:
         """POST /v1/issuers/{issuer_id}/certificates  (multipart/form-data)"""
+        neectify_env = "production" if str(environment) in ("producao", "production") else "homologation"
         files = {
             "file": ("certificate.pfx", pfx_bytes, "application/octet-stream"),
             "password": (None, password),
-            "environment": (None, environment),
+            "environment": (None, neectify_env),
         }
         return await self._client.request(
             "POST",
@@ -312,9 +313,10 @@ class NeectifyFiscalProvider(FiscalProviderGateway):
         """Implementa FiscalProviderGateway.inutilize_numbering."""
         cnpj_digits = cnpj.replace(".", "").replace("/", "").replace("-", "")
         idempotency_key = f"marketfy:inutilize:{cnpj_digits}:{series}:{start_number}:{end_number}"
+        neectify_env = "production" if str(environment) in ("producao", "production") else "homologation"
         payload = {
             "cnpj": cnpj_digits,
-            "environment": environment,
+            "environment": neectify_env,
             "series": series,
             "number_start": start_number,
             "number_end": end_number,
