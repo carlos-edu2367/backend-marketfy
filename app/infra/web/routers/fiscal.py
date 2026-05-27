@@ -937,7 +937,12 @@ async def neectify_sync_cert(
         raise HTTPException(400, "Endpoint disponível apenas com FISCAL_PROVIDER=neectify_fiscal.")
 
     pfx_bytes = await certificate_file.read()
-    validate_pfx_upload(pfx_bytes, certificate_file.filename or "")
+    validate_pfx_upload(
+        certificate_file.filename or "",
+        certificate_file.content_type,
+        len(pfx_bytes),
+        market_id,
+    )
 
     provider = get_fiscal_provider(settings.FISCAL_PROVIDER)
 
