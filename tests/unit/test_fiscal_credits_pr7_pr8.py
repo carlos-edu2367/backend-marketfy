@@ -200,7 +200,7 @@ def test_quota_status_addon_total_defaults_zero():
 async def test_custom_checkout_price_calculated_server_side():
     """O preço não vem do cliente: é calculado internamente via settings."""
     bc = AsyncMock()
-    bc.create_payment.return_value = {"job_id": "job-custom", "message": "created"}
+    bc.create_payment_link.return_value = {"job_id": "job-custom", "message": "created"}
     user_repo = AsyncMock()
     from domain.shared import Email, CPF
     from domain.identity import User, UserRole
@@ -234,7 +234,9 @@ async def test_custom_checkout_price_calculated_server_side():
     call_kwargs = repo.create_package.call_args.kwargs
     assert call_kwargs["package_slug"] == "custom_250"
     assert call_kwargs["quantity"] == 250
-    bc.create_payment.assert_called_once()
+    bc.create_payment_link.assert_called_once()
+    bc.create_payment.assert_not_called()
+    assert "customer_provider_id" not in bc.create_payment_link.call_args.kwargs
 
 
 @pytest.mark.asyncio

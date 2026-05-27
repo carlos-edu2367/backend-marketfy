@@ -147,13 +147,13 @@ async def test_ensure_customer_provider_id_raises_value_error_if_no_doc():
 
 
 @pytest.mark.asyncio
-async def test_initiate_purchase_calls_create_payment():
+async def test_initiate_purchase_calls_create_payment_link():
     user = FakeUser(asaas_customer_id="cus_123")
     user_repo = AsyncMock()
     user_repo.get_by_id.return_value = user
 
     bc_client = AsyncMock()
-    bc_client.create_payment.return_value = {"job_id": "job_123", "message": "created"}
+    bc_client.create_payment_link.return_value = {"job_id": "job_123", "message": "created"}
 
     repo = _repo()
     svc = _service(repo=repo, bc_client=bc_client, user_repo=user_repo)
@@ -161,7 +161,10 @@ async def test_initiate_purchase_calls_create_payment():
     res = await svc.initiate_purchase(user.id, uuid.uuid4(), "pack_100", "idem-1")
 
     assert res.job_id == "job_123"
-    bc_client.create_payment.assert_called_once()
+    bc_client.create_payment_link.assert_called_once()
+    bc_client.create_payment.assert_not_called()
+    bc_client.create_customer.assert_not_called()
+    assert "customer_provider_id" not in bc_client.create_payment_link.call_args.kwargs
     repo.update_package_job_id.assert_called_once_with(res.package_id, job_id="job_123")
 
 
@@ -179,7 +182,7 @@ async def test_initiate_purchase_idempotent_same_key():
     res = await svc.initiate_purchase(user.id, uuid.uuid4(), "pack_100", "idem-same")
 
     assert res.job_id == "job_existing"
-    bc_client.create_payment.assert_not_called()
+    bc_client.create_payment_link.assert_not_called()
 
 
 @pytest.mark.asyncio

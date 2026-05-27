@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
@@ -81,27 +81,15 @@ class FiscalCreditsService:
             bc_idempotency_key=idempotency_key,
         )
 
-        user = await self.user_repo.get_by_id(owner_id)
-        if not user:
-            raise ValueError(f"Usuario nao encontrado: {owner_id}")
-
-        customer_provider_id = await self._ensure_customer_provider_id(user)
-
-        due_date = (
-            date.today()
-            + timedelta(days=self.settings.BILLING_CORE_PAYMENT_DUE_DAYS)
-        ).isoformat()
-
-        result = await self.bc_client.create_payment(
-            customer_provider_id=customer_provider_id,
+        result = await self.bc_client.create_payment_link(
             value=str(package.price_gross),
             billing_type="UNDEFINED",
-            due_date=due_date,
-            description=f"Créditos NF-e — {package.slug}",
+            description=f"Creditos NF-e - {package.slug}",
             system=self.settings.BILLING_CORE_SYSTEM,
             system_payment_id=str(db_package.id),
             webhook_link=self.settings.BILLING_CORE_WEBHOOK_CALLBACK_URL,
             idempotency_key=str(db_package.id),
+            due_date_limit_days=self.settings.BILLING_CORE_PAYMENT_DUE_DAYS,
         )
 
         await self.credits_repo.update_package_job_id(
@@ -259,27 +247,15 @@ class FiscalCreditsService:
             bc_idempotency_key=idempotency_key,
         )
 
-        user = await self.user_repo.get_by_id(owner_id)
-        if not user:
-            raise ValueError(f"Usuario nao encontrado: {owner_id}")
-
-        customer_provider_id = await self._ensure_customer_provider_id(user)
-
-        due_date = (
-            date.today()
-            + timedelta(days=self.settings.BILLING_CORE_PAYMENT_DUE_DAYS)
-        ).isoformat()
-
-        result = await self.bc_client.create_payment(
-            customer_provider_id=customer_provider_id,
+        result = await self.bc_client.create_payment_link(
             value=str(price_gross),
             billing_type="UNDEFINED",
-            due_date=due_date,
-            description=f"Créditos NF-e — {package_slug}",
+            description=f"Creditos NF-e - {package_slug}",
             system=self.settings.BILLING_CORE_SYSTEM,
             system_payment_id=str(db_package.id),
             webhook_link=self.settings.BILLING_CORE_WEBHOOK_CALLBACK_URL,
             idempotency_key=str(db_package.id),
+            due_date_limit_days=self.settings.BILLING_CORE_PAYMENT_DUE_DAYS,
         )
 
         await self.credits_repo.update_package_job_id(
@@ -360,8 +336,10 @@ class FiscalCreditsService:
 
     async def _ensure_customer_provider_id(self, user) -> str:
         """
-        Garante que o usuário tenha um asaas_customer_id persistido localmente.
-        Caso contrário, cria-o no Billing Core e persiste o ID retornado.
+        DEPRECATED para o fluxo de creditos fiscais.
+
+        Usar apenas para assinaturas recorrentes ou fluxos legados que ainda
+        chamam endpoints do Billing Core que exigem customer_provider_id.
         """
         if getattr(user, "asaas_customer_id", None):
             return user.asaas_customer_id
@@ -416,4 +394,3 @@ class FiscalCreditsService:
             "error_code": error_code,
             "error_message": error_message,
         }
-

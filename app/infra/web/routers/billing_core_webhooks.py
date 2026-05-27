@@ -79,7 +79,7 @@ class BillingCoreWebhookProcessor:
                 return 200
 
             status_upper = payment_status.upper()
-            if status_upper in ("CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"):
+            if status_upper in ("PAID", "CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"):
                 await self.credits_service.activate_package(
                     package_id=package_id,
                     bc_payment_id=payment_id,

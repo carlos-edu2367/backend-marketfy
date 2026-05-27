@@ -125,6 +125,60 @@ async def test_create_payment_headers_and_idempotency():
 
 
 @pytest.mark.asyncio
+async def test_create_payment_link_posts_without_customer_and_with_idempotency():
+    client = BillingCoreClient()
+    mock_response = httpx.Response(202, json={"job_id": "job-link-123", "message": "created"})
+
+    with patch("httpx.AsyncClient.request", return_value=mock_response) as mock_request:
+        res = await client.create_payment_link(
+            value="41.99",
+            billing_type="UNDEFINED",
+            description="Creditos NF-e - pack_100",
+            system="marketfy",
+            system_payment_id="pkg_100_abc",
+            webhook_link="https://marketfy/callback",
+            idempotency_key="pkg_100_abc",
+            due_date_limit_days=3,
+        )
+
+        assert res["job_id"] == "job-link-123"
+        mock_request.assert_called_once()
+        args, kwargs = mock_request.call_args
+        assert args[0] == "POST"
+        assert args[1].endswith("/v1/payment-links")
+        assert kwargs["headers"]["Idempotency-Key"] == "pkg_100_abc"
+        assert "customer_provider_id" not in kwargs["json"]
+        assert kwargs["json"] == {
+            "value": "41.99",
+            "billing_type": "UNDEFINED",
+            "description": "Creditos NF-e - pack_100",
+            "system": "marketfy",
+            "system_payment_id": "pkg_100_abc",
+            "webhook_link": "https://marketfy/callback",
+            "due_date_limit_days": 3,
+        }
+
+
+@pytest.mark.asyncio
+async def test_create_payment_link_mock_when_billing_core_disabled():
+    with patch.object(settings, "BILLING_CORE_ENABLED", False):
+        client = BillingCoreClient()
+
+    res = await client.create_payment_link(
+        value="41.99",
+        billing_type="UNDEFINED",
+        description="Creditos NF-e - pack_100",
+        system="marketfy",
+        system_payment_id="pkg_100_abc",
+        webhook_link="https://marketfy/callback",
+        idempotency_key="pkg_100_abc",
+    )
+
+    assert res["job_id"].startswith("job_mock_")
+    assert "Payment link creation accepted" in res["message"]
+
+
+@pytest.mark.asyncio
 async def test_get_job_success():
     client = BillingCoreClient()
     mock_response = httpx.Response(

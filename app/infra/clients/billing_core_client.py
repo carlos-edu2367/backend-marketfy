@@ -275,6 +275,46 @@ class BillingCoreClient:
             idempotency_key=idempotency_key,
         )
 
+    async def create_payment_link(
+        self,
+        *,
+        value: str,
+        billing_type: str,
+        description: str,
+        system: str,
+        system_payment_id: str,
+        webhook_link: str,
+        idempotency_key: str,
+        due_date_limit_days: int = 3,
+    ) -> dict:
+        """Cria um Payment Link no Billing Core sem customer previo.
+
+        POST /v1/payment-links
+        O resultado do job contem checkout_url para redirecionar o comprador.
+        """
+        if not self._enabled:
+            return {
+                "job_id": f"job_mock_{uuid.uuid4().hex[:12]}",
+                "message": "Payment link creation accepted (mock)"
+            }
+
+        payload = {
+            "value": value,
+            "billing_type": billing_type,
+            "description": description,
+            "system": system,
+            "system_payment_id": system_payment_id,
+            "webhook_link": webhook_link,
+            "due_date_limit_days": due_date_limit_days,
+        }
+
+        return await self._request(
+            "POST",
+            "/v1/payment-links",
+            json=payload,
+            idempotency_key=idempotency_key,
+        )
+
     async def get_job(self, job_id: str) -> dict:
         """Consulta o status de um job de processamento no Billing Core.
 

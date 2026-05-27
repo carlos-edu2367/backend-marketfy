@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import json
 import os
 import sys
 import uuid
@@ -29,7 +31,14 @@ SECRET = "billing-core-secret"
 
 
 def _signature(raw_body: bytes, secret: str = SECRET) -> str:
-    return hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    payload = json.loads(raw_body.decode("utf-8"))
+    canonical_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        canonical_json.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return base64.b64encode(digest).decode("utf-8")
 
 
 def FakePackage(**kwargs) -> FiscalEmissionPackage:
@@ -74,19 +83,19 @@ def _credits_service(package=None, existing_ledger=None):
 def test_valid_signature_accepted():
     body = b'{"event":"payment.updated"}'
     sig = _signature(body)
-    assert validate_bc_signature(body, sig, SECRET) is True
+    assert validate_bc_signature({"event": "payment.updated"}, sig, SECRET) is True
 
 
 def test_invalid_signature_rejected():
     body = b'{"event":"payment.updated"}'
     sig = _signature(body) + "invalid"
-    assert validate_bc_signature(body, sig, SECRET) is False
+    assert validate_bc_signature({"event": "payment.updated"}, sig, SECRET) is False
 
 
 def test_missing_signature_or_secret_rejected():
-    body = b'{"event":"payment.updated"}'
-    assert validate_bc_signature(body, "", SECRET) is False
-    assert validate_bc_signature(body, "sig", "") is False
+    payload = {"event": "payment.updated"}
+    assert validate_bc_signature(payload, "", SECRET) is False
+    assert validate_bc_signature(payload, "sig", "") is False
 
 
 @pytest.mark.asyncio
@@ -147,6 +156,30 @@ async def test_payment_status_confirmed_activates_package():
         "payment_id": "pay-123",
         "system_payment_id": str(package_id),
         "payment_status": "CONFIRMED",
+    }
+    await processor.process(payload, b"{}", {})
+
+    credits_service.activate_package.assert_called_once_with(
+        package_id=package_id,
+        bc_payment_id="pay-123",
+        payment_data=payload,
+    )
+
+
+@pytest.mark.asyncio
+async def test_payment_status_paid_activates_package():
+    package_id = uuid.uuid4()
+    webhook_repo = AsyncMock()
+    webhook_repo.get_event.return_value = None
+    webhook_repo.create_event.return_value = SimpleNamespace(id=uuid.uuid4())
+    credits_service = AsyncMock()
+    processor = BillingCoreWebhookProcessor(webhook_repo, credits_service)
+
+    payload = {
+        "event": "PAYMENT_STATUS_UPDATED",
+        "payment_id": "pay-123",
+        "system_payment_id": str(package_id),
+        "payment_status": "paid",
     }
     await processor.process(payload, b"{}", {})
 
