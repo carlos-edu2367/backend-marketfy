@@ -55,6 +55,7 @@ def get_fiscal_provider(
             api_key=settings.NEECTIFY_API_KEY,
             base_url=settings.NEECTIFY_BASE_URL,
             timeout_seconds=settings.NEECTIFY_TIMEOUT_SECONDS,
+            internal_client=settings.NEECTIFY_INTERNAL_CLIENT,
         )
         _singleton_neectify = NeectifyFiscalProvider(client=client)
         logger.info("fiscal_neectify_provider_initialized",

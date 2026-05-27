@@ -33,10 +33,11 @@ class NeectifyFiscalClient:
     Instanciar uma vez por processo e reutilizar — mantém connection pool.
     """
 
-    def __init__(self, api_key: str, base_url: str, timeout_seconds: int = 30):
+    def __init__(self, api_key: str, base_url: str, timeout_seconds: int = 30, internal_client: str = "marketfy"):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
+        self._internal_client = internal_client
         self._client: Optional[httpx.AsyncClient] = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -44,7 +45,8 @@ class NeectifyFiscalClient:
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 headers={
-                    "Authorization": f"Bearer {self._api_key}",
+                    "X-API-Key": self._api_key,
+                    "X-Internal-Client": self._internal_client,
                     "Content-Type": "application/json",
                     "Accept": "application/json",
                 },
@@ -80,8 +82,8 @@ class NeectifyFiscalClient:
         """
         client = self._get_client()
         request_headers = dict(headers or {})
-        # Não logar o header Authorization
-        log_headers = {k: v for k, v in request_headers.items() if k.lower() != "authorization"}
+        # Não logar o header X-API-Key
+        log_headers = {k: v for k, v in request_headers.items() if k.lower() != "x-api-key"}
 
         timeout = httpx.Timeout(float(extra_timeout or self._timeout))
 

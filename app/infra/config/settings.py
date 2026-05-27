@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     NEECTIFY_API_KEY: str = ""
     NEECTIFY_BASE_URL: str = "https://api.neectify.com"
     NEECTIFY_TIMEOUT_SECONDS: int = 30
+    NEECTIFY_INTERNAL_CLIENT: str = "marketfy"
 
     # Billing Core — reconciliação
     RECONCILE_PENDING_MINUTES: int = 10
