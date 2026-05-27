@@ -35,6 +35,7 @@ class UserModel(Base):
     
     plan_id = Column(UUID(as_uuid=True), ForeignKey("plans.id"), nullable=True)
     plan_expiration = Column(DateTime, nullable=True)
+    asaas_customer_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow) # Restaurado
 
@@ -739,7 +740,7 @@ class FiscalEmissionPackageModel(Base):
     """Pacote adicional de emissões comprado pelo owner."""
     __tablename__ = "fiscal_emission_packages"
     __table_args__ = (
-        UniqueConstraint("mp_external_reference", name="uq_fep_mp_external_ref"),
+        UniqueConstraint("bc_idempotency_key", name="uq_fep_bc_idempotency_key"),
         Index("ix_fep_owner", "owner_id"),
         Index("ix_fep_valid", "owner_id", "valid_until"),
         Index("ix_fep_owner_status", "owner_id", "payment_status"),
@@ -757,14 +758,13 @@ class FiscalEmissionPackageModel(Base):
     billing_subscription_id = Column(String, nullable=True)
     payment_status = Column(String, default="pending", nullable=False)
     package_slug = Column(String, nullable=True)
-    mp_preference_id = Column(String, nullable=True)
-    mp_payment_id = Column(String, nullable=True)
-    mp_external_reference = Column(String, nullable=True)
+    bc_job_id = Column(String, nullable=True)
+    bc_payment_id = Column(String, nullable=True)
+    bc_idempotency_key = Column(String, nullable=True)
     price_gross = Column(Numeric(10, 2), nullable=True)
     price_net_target = Column(Numeric(10, 2), nullable=True)
     purchased_at_market_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-
 
 # =============================================================================
 # WEBHOOKS PROVIDER (PR7)

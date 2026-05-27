@@ -49,11 +49,8 @@ class Settings(BaseSettings):
     NEECTIFY_BASE_URL: str = "https://api.neectify.com"
     NEECTIFY_TIMEOUT_SECONDS: int = 30
 
-    # Mercado Pago
-    MP_ACCESS_TOKEN: str = ""
-    MP_WEBHOOK_SECRET: str = ""
-    MP_SANDBOX: bool = True
-    MP_BASE_URL: str = "https://api.mercadopago.com"
+    # Billing Core — reconciliação
+    RECONCILE_PENDING_MINUTES: int = 10
 
     # Créditos fiscais flexíveis
     FISCAL_CREDIT_UNIT_PRICE: Decimal = Decimal("0.72")
@@ -82,9 +79,12 @@ class Settings(BaseSettings):
     # Billing Core (Fase 4)
     # Registrar o Marketfy em INTERNAL_API_CLIENTS no Billing Core com esta API key.
     # ALLOWED_INTERNAL_WEBHOOK_HOSTS deve incluir BILLING_CORE_WEBHOOK_HOST.
-    BILLING_CORE_BASE_URL: Optional[str] = None
-    BILLING_CORE_API_KEY: Optional[str] = None
+    BILLING_CORE_BASE_URL: str = "http://billing-core:8000"
+    BILLING_CORE_API_KEY: str = ""
     BILLING_CORE_SYSTEM: str = "marketfy"
+    BILLING_CORE_WEBHOOK_SECRET: str = ""
+    BILLING_CORE_WEBHOOK_CALLBACK_URL: str = ""  # URL do marketfy que o BC vai chamar
+    BILLING_CORE_PAYMENT_DUE_DAYS: int = 3  # dias de vencimento após criação
     BILLING_CORE_WEBHOOK_HOST: Optional[str] = None
     BILLING_CORE_TIMEOUT_SECONDS: int = 10
     BILLING_CORE_ENABLED: bool = False
@@ -181,18 +181,7 @@ class Settings(BaseSettings):
             raise ValueError("FISCAL_SECRET_KEY e obrigatoria em producao.")
         if self.FISCAL_PROVIDER == "neectify_fiscal" and not self.NEECTIFY_API_KEY:
             raise ValueError("NEECTIFY_API_KEY e obrigatoria em producao com FISCAL_PROVIDER=neectify_fiscal.")
-        if not self.MP_ACCESS_TOKEN or not self.MP_WEBHOOK_SECRET:
-            raise ValueError("MP_ACCESS_TOKEN e MP_WEBHOOK_SECRET sao obrigatorios em producao.")
-        if self.MP_SANDBOX:
-            raise ValueError(
-                "MP_SANDBOX deve ser False em producao. "
-                "Com MP_SANDBOX=True o checkout usa sandbox_init_point e nenhum pagamento aparece no painel de producao."
-            )
-        if self.MP_ACCESS_TOKEN.startswith("TEST-"):
-            raise ValueError(
-                "MP_ACCESS_TOKEN parece ser um token de teste (prefixo TEST-). "
-                "Em producao use o Access Token de producao (prefixo APP_USR-)."
-            )
+
         if not self.PUBLIC_FRONTEND_URL or not self.PUBLIC_FRONTEND_URL.startswith("https://"):
             raise ValueError("PUBLIC_FRONTEND_URL HTTPS e obrigatoria em producao.")
         if not self.PUBLIC_API_BASE_URL or not self.PUBLIC_API_BASE_URL.startswith("https://"):
@@ -205,6 +194,10 @@ class Settings(BaseSettings):
             raise ValueError("BILLING_CORE_ENABLED=True e obrigatorio em producao.")
         if not self.BILLING_CORE_BASE_URL or not self.BILLING_CORE_API_KEY or not self.BILLING_CORE_WEBHOOK_HOST:
             raise ValueError("Billing Core habilitado exige URL, API key e webhook host.")
+        if not self.BILLING_CORE_WEBHOOK_SECRET:
+            raise ValueError("BILLING_CORE_WEBHOOK_SECRET e obrigatoria em producao.")
+        if not self.BILLING_CORE_WEBHOOK_CALLBACK_URL:
+            raise ValueError("BILLING_CORE_WEBHOOK_CALLBACK_URL e obrigatoria em producao.")
         return self
 
 

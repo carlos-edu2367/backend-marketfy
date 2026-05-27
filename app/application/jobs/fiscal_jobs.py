@@ -526,46 +526,60 @@ async def reset_monthly_fiscal_quotas(ctx: dict) -> dict:
 
 
 # =============================================================================
-# RECONCILE PENDING MERCADO PAGO PAYMENTS JOB
+# RECONCILE PENDING BILLING CORE PAYMENTS JOB
 # =============================================================================
 
-async def reconcile_pending_mp_payments(
+async def reconcile_pending_bc_payments(
     ctx: dict,
     credits_repo=None,
-    mp_client=None,
+    bc_client=None,
     fiscal_credits_service=None,
 ) -> dict:
-    cutoff = datetime.utcnow() - timedelta(minutes=10)
+    """
+    Consulta o Billing Core para pacotes com bc_payment_id definido
+    mas ainda em status 'pending', criados há mais de N minutos.
+    Respeita o rate limit (HTTP 429 / BillingCoreRateLimitError) interrompendo o lote.
+    """
     checked = 0
     activated = 0
+    failed = 0
     errors = 0
 
-    if credits_repo and mp_client and fiscal_credits_service:
-        pending_packages = await credits_repo.list_packages_pending_since(cutoff)
-        for package in pending_packages:
+    if credits_repo and bc_client and fiscal_credits_service:
+        from infra.clients.billing_core_client import BillingCoreRateLimitError
+        from infra.config.settings import get_settings
+
+        settings = get_settings()
+        cutoff = datetime.utcnow() - timedelta(minutes=settings.RECONCILE_PENDING_MINUTES)
+        packages = await credits_repo.get_pending_packages_with_payment_id_older_than(cutoff)
+
+        for package in packages:
             checked += 1
             try:
-                payments = await mp_client.search_payments_by_external_reference(str(package.id))
-                for payment in payments:
-                    if payment.get("status") == "approved":
-                        await fiscal_credits_service.activate_package(
-                            package_id=package.id,
-                            mp_payment_id=str(payment["id"]),
-                            payment_data=payment,
-                        )
-                        activated += 1
-                        break
-            except Exception as exc:
+                payment = await bc_client.get_payment(package.bc_payment_id)
+                status = (payment.get("payment_status") or "").upper()
+                if status in ("CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"):
+                    await fiscal_credits_service.activate_package(
+                        package_id=package.id,
+                        bc_payment_id=payment["payment_id"],
+                        payment_data=payment,
+                    )
+                    activated += 1
+                elif status in ("OVERDUE", "REFUNDED"):
+                    await fiscal_credits_service.mark_package_failed(package.id, reason=f"Status: {status}")
+                    failed += 1
+            except BillingCoreRateLimitError:
+                logger.warning("bc_reconcile_rate_limited", extra={"extra_data": {"package_id": str(package.id)}})
+                break
+            except Exception as e:
                 errors += 1
-                logger.warning(
-                    "mp_payment_reconcile_failed",
-                    extra={"extra_data": {"package_id": str(package.id), "error": type(exc).__name__}},
-                )
-        return {"checked": checked, "activated": activated, "errors": errors}
+                logger.error("bc_reconcile_error", extra={"extra_data": {"package_id": str(package.id), "error": str(e)}})
+
+        return {"checked": checked, "activated": activated, "failed": failed, "errors": errors}
 
     from infra.config.settings import get_settings
     from infra.database.setup import async_session_factory
-    from infra.clients.mercado_pago_client import MercadoPagoClient
+    from infra.clients.billing_core_client import BillingCoreClient
     from infra.repositories.audit_repo import SQLAlchemyAuditLogRepository
     from infra.repositories.fiscal_repo import (
         SQLAlchemyFiscalNotificationRepository,
@@ -575,29 +589,29 @@ async def reconcile_pending_mp_payments(
     from application.services.fiscal.fiscal_credits_service import FiscalCreditsService
     from application.services.fiscal.fiscal_notification_service import FiscalNotificationService
     from application.services.fiscal.fiscal_quota_service import FiscalQuotaService
+    from infra.repositories.sqlalchemy_repos import SQLAlchemyUserRepository
 
     settings = get_settings()
     async with async_session_factory() as session:
         repo = SQLAlchemyFiscalUsageRepository(session)
-        client = MercadoPagoClient(
-            settings.MP_ACCESS_TOKEN,
-            sandbox=settings.MP_SANDBOX,
-            base_url=settings.MP_BASE_URL,
-        )
+        user_repo = SQLAlchemyUserRepository(session)
+        client = BillingCoreClient()
         quota_service = FiscalQuotaService(repo)
         service = FiscalCreditsService(
             credits_repo=repo,
             quota_repo=repo,
-            mp_client=client,
+            mp_client=None,
+            bc_client=client,
+            user_repo=user_repo,
             quota_service=quota_service,
             notification_service=FiscalNotificationService(SQLAlchemyFiscalNotificationRepository(session)),
             audit_service=AuditService(SQLAlchemyAuditLogRepository(session)),
             settings=settings,
         )
-        return await reconcile_pending_mp_payments(
+        return await reconcile_pending_bc_payments(
             ctx,
             credits_repo=repo,
-            mp_client=client,
+            bc_client=client,
             fiscal_credits_service=service,
         )
 

@@ -24,7 +24,7 @@ from application.jobs.fiscal_jobs import (
     download_artifacts_job,
     emit_nfce_job,
     notify_quota_job,
-    reconcile_pending_mp_payments,
+    reconcile_pending_bc_payments,
     reconcile_nfce_job,
     reset_monthly_fiscal_quotas,
 )
@@ -66,7 +66,7 @@ class WorkerSettings:
         check_certificates_job,
         notify_quota_job,
         reset_monthly_fiscal_quotas,
-        reconcile_pending_mp_payments,
+        reconcile_pending_bc_payments,
     ]
 
     redis_settings = get_redis_settings()
@@ -99,5 +99,5 @@ class WorkerSettings:
         # cron(notify_quota_job, minute=0),
         # Reset mensal de cotas — 1º dia do mês às 00:05 UTC
         cron(reset_monthly_fiscal_quotas, day=1, hour=0, minute=5),
-        cron(reconcile_pending_mp_payments, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
+        cron(reconcile_pending_bc_payments, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
     ]

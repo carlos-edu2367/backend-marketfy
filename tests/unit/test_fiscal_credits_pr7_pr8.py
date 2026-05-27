@@ -32,9 +32,11 @@ from domain.fiscal import (
 
 @dataclass
 class FakeSettings:
-    MP_SANDBOX: bool = True
     PUBLIC_API_BASE_URL: str = "https://api.marketfy.test/api/v1"
     PUBLIC_FRONTEND_URL: str = "https://app.marketfy.test"
+    BILLING_CORE_SYSTEM: str = "marketfy"
+    BILLING_CORE_PAYMENT_DUE_DAYS: int = 3
+    BILLING_CORE_WEBHOOK_CALLBACK_URL: str = "https://api.marketfy.test/webhooks/billing-core"
 
 
 PERIOD = "202606"
@@ -54,7 +56,7 @@ def FakePackage(**kwargs) -> FiscalEmissionPackage:
 
 def _repo(existing=None):
     repo = AsyncMock()
-    repo.get_package_by_external_ref.return_value = existing
+    repo.get_package_by_idempotency_key.return_value = existing
     repo.create_package.side_effect = lambda **kw: FakePackage(
         owner_id=kw["owner_id"],
         market_id=kw["market_id"],
@@ -63,7 +65,7 @@ def _repo(existing=None):
         quantity=kw["quantity"],
         remaining=kw["remaining"],
         payment_status=kw["payment_status"],
-        mp_external_reference=kw["mp_external_reference"],
+        bc_idempotency_key=kw["bc_idempotency_key"],
         price_gross=kw["price_gross"],
         price_net_target=kw["price_net_target"],
     )
@@ -197,14 +199,28 @@ def test_quota_status_addon_total_defaults_zero():
 @pytest.mark.asyncio
 async def test_custom_checkout_price_calculated_server_side():
     """O preço não vem do cliente: é calculado internamente via settings."""
-    mp = AsyncMock()
-    mp.create_preference.return_value = {"id": "pref-custom", "init_point": "i", "sandbox_init_point": "s"}
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job-custom", "message": "created"}
+    user_repo = AsyncMock()
+    from domain.shared import Email, CPF
+    from domain.identity import User, UserRole
+    user = User(
+        name="Carlos",
+        email=Email("c@test.com"),
+        cpf=CPF("12345678901"),
+        password_hash="hash",
+        role=UserRole.OWNER,
+        is_active=True,
+    )
+    user_repo.get_by_id.return_value = user
     repo = _repo()
-    svc = _service(repo=repo, mp_client=mp)
+    svc = _service(repo=repo, mp_client=AsyncMock())
+    svc.bc_client = bc
+    svc.user_repo = user_repo
 
     price = Decimal("0.42") * 250
     result = await svc.initiate_custom_purchase(
-        owner_id=uuid.uuid4(),
+        owner_id=user.id,
         market_id=uuid.uuid4(),
         quantity=250,
         price_gross=price,
@@ -218,11 +234,12 @@ async def test_custom_checkout_price_calculated_server_side():
     call_kwargs = repo.create_package.call_args.kwargs
     assert call_kwargs["package_slug"] == "custom_250"
     assert call_kwargs["quantity"] == 250
+    bc.create_payment.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_custom_checkout_idempotency():
-    """Mesma idempotency_key retorna init_point sem criar novo pacote."""
+    """Mesma idempotency_key retorna job_id sem criar novo pacote."""
     existing = FakePackage(
         owner_id=uuid.uuid4(),
         market_id=uuid.uuid4(),
@@ -230,10 +247,14 @@ async def test_custom_checkout_idempotency():
         quantity=37,
         remaining=37,
         payment_status="pending",
-        mp_preference_id="pref-existing-custom",
+        bc_job_id="job-existing-custom",
+        bc_idempotency_key="cust-dup",
     )
-    mp = AsyncMock()
-    svc = _service(repo=_repo(existing=existing), mp_client=mp)
+    bc = AsyncMock()
+    user_repo = AsyncMock()
+    svc = _service(repo=_repo(existing=existing), mp_client=AsyncMock())
+    svc.bc_client = bc
+    svc.user_repo = user_repo
 
     result = await svc.initiate_custom_purchase(
         owner_id=existing.owner_id,
@@ -244,20 +265,34 @@ async def test_custom_checkout_idempotency():
     )
 
     assert result.package_id == existing.id
-    assert "pref-existing-custom" in result.init_point
-    mp.create_preference.assert_not_called()
+    assert result.job_id == "job-existing-custom"
+    bc.create_payment.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_custom_checkout_slug_format():
     """package_slug deve ser custom_{qty}."""
-    mp = AsyncMock()
-    mp.create_preference.return_value = {"id": "p", "init_point": "i", "sandbox_init_point": "s"}
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job-custom", "message": "created"}
+    user_repo = AsyncMock()
+    from domain.shared import Email, CPF
+    from domain.identity import User, UserRole
+    user = User(
+        name="Carlos",
+        email=Email("c@test.com"),
+        cpf=CPF("12345678901"),
+        password_hash="hash",
+        role=UserRole.OWNER,
+        is_active=True,
+    )
+    user_repo.get_by_id.return_value = user
     repo = _repo()
-    svc = _service(repo=repo, mp_client=mp)
+    svc = _service(repo=repo, mp_client=AsyncMock())
+    svc.bc_client = bc
+    svc.user_repo = user_repo
 
     await svc.initiate_custom_purchase(
-        owner_id=uuid.uuid4(),
+        owner_id=user.id,
         market_id=uuid.uuid4(),
         quantity=42,
         price_gross=Decimal("17.64"),
@@ -266,6 +301,7 @@ async def test_custom_checkout_slug_format():
 
     call_kwargs = repo.create_package.call_args.kwargs
     assert call_kwargs["package_slug"] == "custom_42"
+
 
 
 # =============================================================================
@@ -330,7 +366,7 @@ async def test_activate_package_passes_included_limit_zero():
 
     await svc.activate_package(
         package_id=package.id,
-        mp_payment_id="pay-123",
+        bc_payment_id="pay-123",
         payment_data={},
     )
 

@@ -569,6 +569,7 @@ class SQLAlchemyFiscalUsageRepository:
         owner_id: uuid.UUID,
         period: str,
         included_limit: int = 0,
+        commit: bool = True,
     ) -> FiscalUsageCounter:
         counter = await self.get_counter(owner_id, period)
         if counter:
@@ -581,16 +582,17 @@ class SQLAlchemyFiscalUsageRepository:
             included_limit=included_limit,
         )
         self.session.add(m)
-        try:
-            await self.session.commit()
-            await self.session.refresh(m)
-        except Exception:
-            await self.session.rollback()
-            # Pode ter ocorrido race condition — tenta buscar o registro criado por outro worker
-            counter = await self.get_counter(owner_id, period)
-            if counter:
-                return counter
-            raise
+        if commit:
+            try:
+                await self.session.commit()
+                await self.session.refresh(m)
+            except Exception:
+                await self.session.rollback()
+                # Pode ter ocorrido race condition — tenta buscar o registro criado por outro worker
+                counter = await self.get_counter(owner_id, period)
+                if counter:
+                    return counter
+                raise
         return _to_counter(m)
 
     async def upsert_counter(
@@ -686,7 +688,7 @@ class SQLAlchemyFiscalUsageRepository:
         await self.session.commit()
 
     async def increment_addon_limit(
-        self, owner_id: uuid.UUID, period: str, amount: int
+        self, owner_id: uuid.UUID, period: str, amount: int, commit: bool = True
     ) -> None:
         await self.session.execute(
             update(FiscalUsageCounterModel)
@@ -697,7 +699,8 @@ class SQLAlchemyFiscalUsageRepository:
             )
             .values(addon_limit=FiscalUsageCounterModel.addon_limit + amount)
         )
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
 
     async def decrement_addon_limit(
         self, owner_id: uuid.UUID, period: str, amount: int = 1
@@ -843,9 +846,9 @@ class SQLAlchemyFiscalUsageRepository:
         m.billing_subscription_id = pkg.billing_subscription_id
         m.payment_status = pkg.payment_status
         m.package_slug = pkg.package_slug
-        m.mp_preference_id = pkg.mp_preference_id
-        m.mp_payment_id = pkg.mp_payment_id
-        m.mp_external_reference = pkg.mp_external_reference
+        m.bc_job_id = pkg.bc_job_id
+        m.bc_payment_id = pkg.bc_payment_id
+        m.bc_idempotency_key = pkg.bc_idempotency_key
         m.price_gross = pkg.price_gross
         m.price_net_target = pkg.price_net_target
         m.purchased_at_market_id = pkg.purchased_at_market_id
@@ -857,13 +860,22 @@ class SQLAlchemyFiscalUsageRepository:
         m = await self.session.get(FiscalEmissionPackageModel, package_id)
         return _to_package(m) if m else None
 
-    async def get_package_by_external_ref(self, external_ref: str) -> Optional[FiscalEmissionPackage]:
+    async def get_package_by_idempotency_key(self, idempotency_key: str) -> Optional[FiscalEmissionPackage]:
         q = select(FiscalEmissionPackageModel).where(
-            FiscalEmissionPackageModel.mp_external_reference == external_ref
+            FiscalEmissionPackageModel.bc_idempotency_key == idempotency_key
         )
         r = await self.session.execute(q)
         m = r.scalars().first()
         return _to_package(m) if m else None
+
+    async def get_package_by_job_id(self, job_id: str) -> Optional[FiscalEmissionPackage]:
+        q = select(FiscalEmissionPackageModel).where(
+            FiscalEmissionPackageModel.bc_job_id == job_id
+        )
+        r = await self.session.execute(q)
+        m = r.scalars().first()
+        return _to_package(m) if m else None
+
 
     async def create_package(
         self,
@@ -876,7 +888,7 @@ class SQLAlchemyFiscalUsageRepository:
         price_gross,
         price_net_target,
         payment_status: str,
-        mp_external_reference: str,
+        bc_idempotency_key: str,
     ) -> FiscalEmissionPackage:
         m = FiscalEmissionPackageModel(
             id=uuid.uuid4(),
@@ -889,7 +901,7 @@ class SQLAlchemyFiscalUsageRepository:
             price_gross=price_gross,
             price_net_target=price_net_target,
             payment_status=payment_status,
-            mp_external_reference=mp_external_reference,
+            bc_idempotency_key=bc_idempotency_key,
         )
         self.session.add(m)
         try:
@@ -897,7 +909,7 @@ class SQLAlchemyFiscalUsageRepository:
             await self.session.refresh(m)
         except IntegrityError:
             await self.session.rollback()
-            existing = await self.get_package_by_external_ref(mp_external_reference)
+            existing = await self.get_package_by_idempotency_key(bc_idempotency_key)
             if existing:
                 return existing
             raise
@@ -906,37 +918,65 @@ class SQLAlchemyFiscalUsageRepository:
     async def update_package_preference(
         self,
         package_id: uuid.UUID,
-        mp_preference_id: str,
+        bc_job_id: str,
     ) -> None:
         await self.session.execute(
             update(FiscalEmissionPackageModel)
             .where(FiscalEmissionPackageModel.id == package_id)
-            .values(mp_preference_id=mp_preference_id)
+            .values(bc_job_id=bc_job_id)
         )
         await self.session.commit()
+
+    async def update_package_job_id(
+        self,
+        package_id: uuid.UUID,
+        job_id: str,
+    ) -> None:
+        await self.session.execute(
+            update(FiscalEmissionPackageModel)
+            .where(FiscalEmissionPackageModel.id == package_id)
+            .values(bc_job_id=job_id)
+        )
+        await self.session.commit()
+
+    async def update_package_payment_id(
+        self,
+        package_id: uuid.UUID,
+        bc_payment_id: str,
+    ) -> None:
+        await self.session.execute(
+            update(FiscalEmissionPackageModel)
+            .where(FiscalEmissionPackageModel.id == package_id)
+            .values(bc_payment_id=bc_payment_id)
+        )
+        await self.session.commit()
+
 
     async def activate_package(
         self,
         package_id: uuid.UUID,
-        mp_payment_id: str,
+        bc_payment_id: str,
         payment_status: str,
         valid_from: datetime,
         valid_until: datetime,
-    ) -> None:
-        await self.session.execute(
+        commit: bool = True,
+    ) -> int:
+        result = await self.session.execute(
             update(FiscalEmissionPackageModel)
             .where(
                 FiscalEmissionPackageModel.id == package_id,
                 FiscalEmissionPackageModel.payment_status == "pending",
             )
             .values(
-                mp_payment_id=mp_payment_id,
+                bc_payment_id=bc_payment_id,
                 payment_status=payment_status,
                 valid_from=valid_from,
                 valid_until=valid_until,
             )
         )
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
+        return result.rowcount
 
     async def mark_package_failed(self, package_id: uuid.UUID, reason: str = "") -> None:
         await self.session.execute(
@@ -968,10 +1008,24 @@ class SQLAlchemyFiscalUsageRepository:
             .where(
                 FiscalEmissionPackageModel.payment_status == "pending",
                 FiscalEmissionPackageModel.created_at <= cutoff,
-                FiscalEmissionPackageModel.mp_preference_id != None,
+                FiscalEmissionPackageModel.bc_job_id != None,
             )
             .order_by(FiscalEmissionPackageModel.created_at)
             .limit(100)
+        )
+        r = await self.session.execute(q)
+        return [_to_package(m) for m in r.scalars().all()]
+
+    async def get_pending_packages_with_payment_id_older_than(self, cutoff: datetime, limit: int = 50) -> List[FiscalEmissionPackage]:
+        q = (
+            select(FiscalEmissionPackageModel)
+            .where(
+                FiscalEmissionPackageModel.payment_status == "pending",
+                FiscalEmissionPackageModel.created_at <= cutoff,
+                FiscalEmissionPackageModel.bc_payment_id != None,
+            )
+            .order_by(FiscalEmissionPackageModel.created_at)
+            .limit(limit)
         )
         r = await self.session.execute(q)
         return [_to_package(m) for m in r.scalars().all()]
@@ -1006,9 +1060,9 @@ def _to_package(m: FiscalEmissionPackageModel) -> FiscalEmissionPackage:
         payment_status=m.payment_status,
         market_id=getattr(m, "market_id", None),
         package_slug=getattr(m, "package_slug", None),
-        mp_preference_id=getattr(m, "mp_preference_id", None),
-        mp_payment_id=getattr(m, "mp_payment_id", None),
-        mp_external_reference=getattr(m, "mp_external_reference", None),
+        bc_job_id=getattr(m, "bc_job_id", None),
+        bc_payment_id=getattr(m, "bc_payment_id", None),
+        bc_idempotency_key=getattr(m, "bc_idempotency_key", None),
         price_gross=getattr(m, "price_gross", None),
         price_net_target=getattr(m, "price_net_target", None),
         purchased_at_market_id=getattr(m, "purchased_at_market_id", None),

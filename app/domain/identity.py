@@ -64,6 +64,13 @@ class User(Entity):
     is_active: bool = True
     plan_id: Optional[uuid.UUID] = None 
     plan_expiration: Optional[datetime] = None
+    cnpj: Optional[CNPJ] = None
+    asaas_customer_id: Optional[str] = None
+
+    @property
+    def full_name(self) -> str:
+        return self.name
+
 
     def check_plan_validity(self):
         """Verifica se o usuário (Dono) possui um plano válido e ativo."""

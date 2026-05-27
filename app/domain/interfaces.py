@@ -22,6 +22,9 @@ class UserRepositoryInterface(ABC):
     async def count_active_users(self) -> int: pass # New for Analytics
     @abstractmethod
     async def count_new_users(self, since: datetime) -> int: pass # New for Analytics
+    @abstractmethod
+    async def update_asaas_customer_id(self, user_id: uuid.UUID, asaas_customer_id: str, commit: bool = True) -> None: pass
+
 
 class PlanRepositoryInterface(ABC):
     @abstractmethod

@@ -164,6 +164,7 @@ class FiscalQuotaService:
         amount: int,
         idempotency_key: str,
         included_limit: int = 0,
+        commit: bool = True,
     ) -> None:
         """Ativa créditos addon após pagamento confirmado. Idempotente."""
         existing = await self.repo.get_ledger_entry_by_idempotency(idempotency_key)
@@ -177,9 +178,10 @@ class FiscalQuotaService:
             owner_id=owner_id,
             period=period,
             included_limit=included_limit,
+            commit=commit,
         )
 
-        await self.repo.increment_addon_limit(owner_id, period, amount)
+        await self.repo.increment_addon_limit(owner_id, period, amount, commit=commit)
         entry = FiscalUsageLedger(
             owner_id=owner_id,
             period_yyyymm=period,
@@ -187,10 +189,7 @@ class FiscalQuotaService:
             quantity=amount,
             idempotency_key=idempotency_key,
         )
-        try:
-            await self.repo.append_ledger(entry)
-        except Exception:
-            pass
+        await self.repo.append_ledger(entry, commit=commit)
 
     async def get_quota_status(
         self,

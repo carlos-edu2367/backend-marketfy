@@ -34,7 +34,7 @@ from infra.web.routers import (
     fiscal_webhooks,
     identity,
     inventory,
-    mercado_pago_webhooks,
+    billing_core_webhooks,
     sales,
 )
 
@@ -76,8 +76,8 @@ async def _rate_limit_for_request(request: Request):
             await enforce_rate_limit_async(request, "billing-webhook", limit=200, window_seconds=60)
         elif method == "POST" and path == "/api/v1/fiscal/webhooks/focus-nfe":
             await enforce_rate_limit_async(request, "fiscal-webhook", limit=500, window_seconds=60)
-        elif method == "POST" and path == "/api/v1/webhooks/mercado-pago":
-            await enforce_rate_limit_async(request, "mercado-pago-webhook", limit=200, window_seconds=60)
+        elif method == "POST" and path == "/api/v1/webhooks/billing-core":
+            await enforce_rate_limit_async(request, "billing-core-webhook", limit=200, window_seconds=60)
     except HTTPException as exc:
         if exc.status_code == 429:
             metrics_registry.record_rate_limit(path)
@@ -275,7 +275,7 @@ app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["Analytic
 app.include_router(fiscal_credits.router, prefix="/api/v1/fiscal", tags=["Fiscal Credits"])
 app.include_router(fiscal.router, prefix="/api/v1/fiscal", tags=["Fiscal"])
 app.include_router(fiscal_webhooks.router, prefix="/api/v1/fiscal/webhooks", tags=["Fiscal Webhooks"])
-app.include_router(mercado_pago_webhooks.router, prefix="/api/v1/webhooks", tags=["Mercado Pago Webhooks"])
+app.include_router(billing_core_webhooks.router, prefix="/api/v1/webhooks", tags=["Billing Core Webhooks"])
 app.include_router(finance_report.router, prefix="/api/v1/finance-reports", tags=["Finance Reports"])
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["Billing"])
 

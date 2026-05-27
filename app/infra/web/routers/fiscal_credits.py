@@ -3,9 +3,11 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal, ROUND_HALF_UP
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from application.services.audit_service import AuditService
 from application.services.fiscal.fiscal_credits_service import FiscalCreditsService
@@ -13,12 +15,15 @@ from application.services.fiscal.fiscal_notification_service import FiscalNotifi
 from application.services.fiscal.fiscal_quota_service import FiscalQuotaService
 from application.services.plan_access_service import PlanAccessService
 from domain.identity import User
-from infra.clients.mercado_pago_client import (
-    MercadoPagoAuthError,
-    MercadoPagoClient,
-    MercadoPagoUnavailableError,
-    MercadoPagoValidationError,
+from uuid import UUID
+from infra.clients.billing_core_client import (
+    BillingCoreClient,
+    BillingCoreAuthError,
+    BillingCoreValidationError,
+    BillingCoreUnavailableError,
+    BillingCoreRateLimitError,
 )
+
 from infra.config.settings import get_settings
 from infra.database.setup import get_db
 from infra.repositories.audit_repo import SQLAlchemyAuditLogRepository
@@ -42,6 +47,27 @@ class CustomCheckoutRequest(BaseModel):
     idempotency_key: str = Field(..., min_length=8, max_length=160)
 
 
+class PackageInfo(BaseModel):
+    slug: str
+    emission_count: int
+    price_gross: str
+
+
+class CheckoutResponse(BaseModel):
+    package_id: UUID
+    job_id: str
+    message: str
+    package: PackageInfo
+
+
+class CheckoutStatusResponse(BaseModel):
+    status: str
+    checkout_url: str | None
+    bc_payment_id: str | None
+    error_code: str | None
+    error_message: str | None
+
+
 def _decimal_to_str(value: Decimal | None) -> str | None:
     return str(value) if value is not None else None
 
@@ -50,26 +76,26 @@ def _credits_service(db: AsyncSession) -> FiscalCreditsService:
     settings = get_settings()
     usage_repo = SQLAlchemyFiscalUsageRepository(db)
     quota_service = FiscalQuotaService(usage_repo)
-    mp_client = MercadoPagoClient(
-        settings.MP_ACCESS_TOKEN,
-        sandbox=settings.MP_SANDBOX,
-        base_url=settings.MP_BASE_URL,
-    )
+    bc_client = BillingCoreClient()
+    user_repo = SQLAlchemyUserRepository(db)
     plan_access = PlanAccessService(
-        SQLAlchemyUserRepository(db),
+        user_repo,
         SQLAlchemyPlanRepository(db),
         SQLAlchemyBillingSubscriptionRepository(db),
     )
     return FiscalCreditsService(
         credits_repo=usage_repo,
         quota_repo=usage_repo,
-        mp_client=mp_client,
+        mp_client=None,
+        bc_client=bc_client,
+        user_repo=user_repo,
         quota_service=quota_service,
         notification_service=FiscalNotificationService(SQLAlchemyFiscalNotificationRepository(db)),
         audit_service=AuditService(SQLAlchemyAuditLogRepository(db)),
         settings=settings,
         plan_access_service=plan_access,
     )
+
 
 
 @router.get("/credits/packages", tags=["Fiscal Credits"])
@@ -88,7 +114,7 @@ async def list_credit_packages(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.post("/{market_id}/credits/checkout", tags=["Fiscal Credits"])
+@router.post("/{market_id}/credits/checkout", status_code=202, response_model=CheckoutResponse, tags=["Fiscal Credits"])
 async def create_checkout(
     request: Request,
     market_id: uuid.UUID,
@@ -112,24 +138,49 @@ async def create_checkout(
             idempotency_key=payload.idempotency_key,
         )
     except ValueError as exc:
+        if str(exc) == "customer_document_missing":
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": {
+                        "code": "customer_document_missing",
+                        "message": "CPF ou CNPJ do usuário é obrigatório para efetuar pagamentos."
+                    }
+                }
+            )
         raise HTTPException(status_code=400, detail=str(exc))
-    except MercadoPagoAuthError:
-        raise HTTPException(status_code=502, detail="Checkout indisponivel.")
-    except MercadoPagoValidationError:
-        raise HTTPException(status_code=502, detail="Checkout indisponivel.")
-    except MercadoPagoUnavailableError:
-        raise HTTPException(status_code=503, detail="Checkout temporariamente indisponivel.")
+    except (BillingCoreAuthError, BillingCoreValidationError) as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "code": "payment_gateway_unavailable",
+                    "message": "Gateway de pagamento temporariamente indisponível. Tente novamente."
+                }
+            }
+        )
+    except BillingCoreUnavailableError:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "code": "payment_gateway_unavailable",
+                    "message": "Gateway de pagamento temporariamente indisponível. Tente novamente."
+                }
+            }
+        )
 
     return {
-        "package_id": str(result.package_id),
-        "init_point": result.init_point,
+        "package_id": result.package_id,
+        "job_id": result.job_id,
+        "message": "Pagamento enviado para processamento.",
         "package": {
             "slug": result.package.slug,
             "emission_count": result.package.emission_count,
             "price_gross": _decimal_to_str(result.package.price_gross),
-            "price_net_target": _decimal_to_str(result.package.price_net_target),
         },
     }
+
 
 
 @router.get("/{market_id}/credits/history", tags=["Fiscal Credits"])
@@ -211,7 +262,7 @@ async def preview_price(qty: int = Query(..., ge=1, le=100_000)):
     }
 
 
-@router.post("/{market_id}/credits/checkout/custom", tags=["Fiscal Credits"])
+@router.post("/{market_id}/credits/checkout/custom", status_code=202, tags=["Fiscal Credits"])
 async def create_custom_checkout(
     request: Request,
     market_id: uuid.UUID,
@@ -249,16 +300,93 @@ async def create_custom_checkout(
             price_gross=price_gross,
             idempotency_key=payload.idempotency_key,
         )
-    except MercadoPagoAuthError:
-        raise HTTPException(status_code=502, detail="Checkout indisponivel.")
-    except MercadoPagoValidationError:
-        raise HTTPException(status_code=502, detail="Checkout indisponivel.")
-    except MercadoPagoUnavailableError:
-        raise HTTPException(status_code=503, detail="Checkout temporariamente indisponivel.")
+    except ValueError as exc:
+        if str(exc) == "customer_document_missing":
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": {
+                        "code": "customer_document_missing",
+                        "message": "CPF ou CNPJ do usuário é obrigatório para efetuar pagamentos."
+                    }
+                }
+            )
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (BillingCoreAuthError, BillingCoreValidationError) as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "code": "payment_gateway_unavailable",
+                    "message": "Gateway de pagamento temporariamente indisponível. Tente novamente."
+                }
+            }
+        )
+    except BillingCoreUnavailableError:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "code": "payment_gateway_unavailable",
+                    "message": "Gateway de pagamento temporariamente indisponível. Tente novamente."
+                }
+            }
+        )
 
     return {
         "package_id": str(result.package_id),
-        "init_point": result.init_point,
+        "job_id": result.job_id,
         "quantity": payload.quantity,
         "price_gross": str(price_gross),
     }
+
+
+@router.get("/{market_id}/credits/checkout/status/{job_id}", response_model=CheckoutStatusResponse, tags=["Fiscal Credits"])
+async def get_checkout_status(
+    request: Request,
+    market_id: uuid.UUID,
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    market=Depends(require_market_access(MarketPermission.FISCAL_READ)),
+):
+    await enforce_rate_limit_async(
+        request,
+        bucket=f"fiscal-checkout-status:{current_user.id}",
+        limit=60,
+        window_seconds=60,
+    )
+    svc = _credits_service(db)
+    
+    pkg = await svc.credits_repo.get_package_by_job_id(job_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Job não encontrado.")
+    if pkg.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Job não encontrado.")
+    if pkg.purchased_at_market_id != market_id and pkg.market_id != market_id:
+        raise HTTPException(status_code=404, detail="Job não encontrado.")
+
+    try:
+        status = await svc.get_checkout_status(job_id)
+        return CheckoutStatusResponse(**status)
+    except (BillingCoreAuthError, BillingCoreValidationError) as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "code": "payment_gateway_unavailable",
+                    "message": "Gateway de pagamento temporariamente indisponível. Tente novamente."
+                }
+            }
+        )
+    except BillingCoreUnavailableError:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "code": "payment_gateway_unavailable",
+                    "message": "Gateway de pagamento temporariamente indisponível. Tente novamente."
+                }
+            }
+        )
+

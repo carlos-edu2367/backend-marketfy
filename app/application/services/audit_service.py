@@ -25,6 +25,7 @@ class AuditService:
         user_agent: Optional[str] = None,
         request_id: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
+        commit: bool = True,
     ):
         from infra.database.models import AuditLogModel
 
@@ -42,4 +43,4 @@ class AuditService:
             request_id=request_id,
             metadata_json=json.dumps(sanitized, default=str),
         )
-        return await self.audit_repo.save(audit_log)
+        return await self.audit_repo.save(audit_log, commit=commit)

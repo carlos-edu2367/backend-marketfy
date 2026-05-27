@@ -19,19 +19,15 @@ if app_dir not in sys.path:
 
 from application.services.fiscal.fiscal_credits_service import FiscalCreditsService
 from domain.fiscal import EMISSION_PACKAGES, FiscalEmissionPackage
-from infra.clients.mercado_pago_client import (
-    MercadoPagoAuthError,
-    MercadoPagoClient,
-    MercadoPagoUnavailableError,
-    MercadoPagoValidationError,
-)
 
 
 @dataclass
 class FakeSettings:
-    MP_SANDBOX: bool = True
     PUBLIC_API_BASE_URL: str = "https://api.marketfy.test/api/v1"
     PUBLIC_FRONTEND_URL: str = "https://app.marketfy.test"
+    BILLING_CORE_SYSTEM: str = "marketfy"
+    BILLING_CORE_PAYMENT_DUE_DAYS: int = 3
+    BILLING_CORE_WEBHOOK_CALLBACK_URL: str = "https://api.marketfy.test/webhooks/billing-core"
 
 
 def FakePackage(**kwargs) -> FiscalEmissionPackage:
@@ -48,7 +44,7 @@ def FakePackage(**kwargs) -> FiscalEmissionPackage:
 
 def _repo(existing=None):
     repo = AsyncMock()
-    repo.get_package_by_external_ref.return_value = existing
+    repo.get_package_by_idempotency_key.return_value = existing
     repo.create_package.side_effect = lambda **kw: FakePackage(
         owner_id=kw["owner_id"],
         market_id=kw["market_id"],
@@ -57,16 +53,41 @@ def _repo(existing=None):
         quantity=kw["quantity"],
         remaining=kw["remaining"],
         payment_status=kw["payment_status"],
-        mp_external_reference=kw["mp_external_reference"],
+        bc_idempotency_key=kw["bc_idempotency_key"],
         price_gross=kw["price_gross"],
         price_net_target=kw["price_net_target"],
     )
     repo.update_package_preference.return_value = None
+    repo.update_package_job_id.return_value = None
+    repo.update_package_payment_id.return_value = None
     repo.list_packages_by_owner.return_value = []
     return repo
 
 
-def _service(repo=None, mp_client=None, quota_service=None, settings=None):
+def _service(repo=None, mp_client=None, quota_service=None, settings=None, bc_client=None, user_repo=None):
+    from domain.shared import Email, CPF
+    from domain.identity import User, UserRole
+
+    mock_user = User(
+        name="Carlos",
+        email=Email("c@test.com"),
+        cpf=CPF("12345678901"),
+        password_hash="hash",
+        role=UserRole.OWNER,
+        is_active=True,
+    )
+    if user_repo is None:
+        user_repo = AsyncMock()
+        user_repo.get_by_id.return_value = mock_user
+
+    if bc_client is None:
+        bc_client = AsyncMock()
+        bc_client.create_payment.return_value = {
+            "job_id": "job-123",
+            "message": "created",
+        }
+        bc_client.create_customer.return_value = "asaas-customer-123"
+
     return FiscalCreditsService(
         credits_repo=repo or _repo(),
         mp_client=mp_client or AsyncMock(),
@@ -74,6 +95,8 @@ def _service(repo=None, mp_client=None, quota_service=None, settings=None):
         notification_service=AsyncMock(),
         audit_service=AsyncMock(),
         settings=settings or FakeSettings(),
+        bc_client=bc_client,
+        user_repo=user_repo,
     )
 
 
@@ -96,59 +119,56 @@ def test_pack_500_price_gross():
 
 @pytest.mark.asyncio
 async def test_initiate_purchase_creates_preference():
-    mp = AsyncMock()
-    mp.create_preference.return_value = {
-        "id": "pref-123",
-        "init_point": "https://mp/init",
-        "sandbox_init_point": "https://mp/sandbox",
+    bc = AsyncMock()
+    bc.create_payment.return_value = {
+        "job_id": "job-123",
+        "message": "created",
     }
     repo = _repo()
-    svc = _service(repo=repo, mp_client=mp)
+    svc = _service(repo=repo, bc_client=bc)
 
     result = await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-1")
 
     assert result.package.slug == "pack_100"
-    assert result.init_point == "https://mp/sandbox"
-    mp.create_preference.assert_called_once()
-    repo.update_package_preference.assert_called_once()
+    assert result.job_id == "job-123"
+    bc.create_payment.assert_called_once()
+    repo.update_package_job_id.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_initiate_purchase_external_reference_is_package_id():
-    mp = AsyncMock()
-    mp.create_preference.return_value = {"id": "pref-1", "init_point": "i", "sandbox_init_point": "s"}
-    svc = _service(mp_client=mp)
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job-1", "message": "created"}
+    svc = _service(bc_client=bc)
 
     result = await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-2")
 
-    payload = mp.create_preference.call_args.args[0]
-    assert payload["external_reference"] == str(result.package_id)
+    payload = bc.create_payment.call_args.kwargs
+    assert payload["system_payment_id"] == str(result.package_id)
 
 
 @pytest.mark.asyncio
 async def test_initiate_purchase_notification_url_correct():
-    mp = AsyncMock()
-    mp.create_preference.return_value = {"id": "pref-1", "init_point": "i", "sandbox_init_point": "s"}
-    svc = _service(mp_client=mp)
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job-1", "message": "created"}
+    svc = _service(bc_client=bc)
 
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-3")
 
-    payload = mp.create_preference.call_args.args[0]
-    assert payload["notification_url"] == "https://api.marketfy.test/api/v1/webhooks/mercado-pago"
+    payload = bc.create_payment.call_args.kwargs
+    assert payload["webhook_link"] == "https://api.marketfy.test/webhooks/billing-core"
 
 
 @pytest.mark.asyncio
 async def test_initiate_purchase_back_urls_from_settings():
-    mp = AsyncMock()
-    mp.create_preference.return_value = {"id": "pref-1", "init_point": "i", "sandbox_init_point": "s"}
-    svc = _service(mp_client=mp)
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job-1", "message": "created"}
+    svc = _service(bc_client=bc)
 
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_250", "idem-4")
 
-    payload = mp.create_preference.call_args.args[0]
-    assert payload["back_urls"]["success"] == "https://app.marketfy.test/fiscal/credits/return?status=success"
-    assert payload["back_urls"]["failure"] == "https://app.marketfy.test/fiscal/credits/return?status=failure"
-    assert payload["back_urls"]["pending"] == "https://app.marketfy.test/fiscal/credits/return?status=pending"
+    payload = bc.create_payment.call_args.kwargs
+    assert payload["system"] == "marketfy"
 
 
 @pytest.mark.asyncio
@@ -160,29 +180,29 @@ async def test_initiate_purchase_idempotent_same_key():
         quantity=100,
         remaining=100,
         payment_status="pending",
-        mp_preference_id="pref-existing",
+        bc_job_id="job-existing",
     )
-    mp = AsyncMock()
-    svc = _service(repo=_repo(existing=existing), mp_client=mp)
+    bc = AsyncMock()
+    svc = _service(repo=_repo(existing=existing), bc_client=bc)
 
     result = await svc.initiate_purchase(existing.owner_id, existing.market_id, "pack_100", "idem-same")
 
     assert result.package_id == existing.id
-    assert "pref-existing" in result.init_point
-    mp.create_preference.assert_not_called()
+    assert result.job_id == "job-existing"
+    bc.create_payment.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_initiate_purchase_different_key_new_preference():
-    mp = AsyncMock()
-    mp.create_preference.return_value = {"id": "pref-new", "init_point": "i", "sandbox_init_point": "s"}
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job-new", "message": "created"}
     repo = _repo()
-    svc = _service(repo=repo, mp_client=mp)
+    svc = _service(repo=repo, bc_client=bc)
 
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-a")
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-b")
 
-    assert mp.create_preference.call_count == 2
+    assert bc.create_payment.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -193,21 +213,29 @@ async def test_invalid_package_slug_raises_error():
 
 
 @pytest.mark.asyncio
-async def test_sandbox_returns_sandbox_init_point():
-    mp = AsyncMock()
-    mp.create_preference.return_value = {"id": "pref-1", "init_point": "prod", "sandbox_init_point": "sandbox"}
-    svc = _service(mp_client=mp, settings=FakeSettings(MP_SANDBOX=True))
-    result = await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-sandbox")
-    assert result.init_point == "sandbox"
+async def test_due_date_calculation_from_settings():
+    from datetime import date
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job-1", "message": "created"}
+    svc = _service(bc_client=bc)
+
+    await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-due-date")
+
+    payload = bc.create_payment.call_args.kwargs
+    expected_due_date = (date.today() + timedelta(days=3)).isoformat()
+    assert payload["due_date"] == expected_due_date
 
 
 @pytest.mark.asyncio
-async def test_production_returns_init_point():
-    mp = AsyncMock()
-    mp.create_preference.return_value = {"id": "pref-1", "init_point": "prod", "sandbox_init_point": "sandbox"}
-    svc = _service(mp_client=mp, settings=FakeSettings(MP_SANDBOX=False))
-    result = await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-prod")
-    assert result.init_point == "prod"
+async def test_payment_value_mapping():
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job-val", "message": "created"}
+    svc = _service(bc_client=bc)
+
+    await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_500", "idem-val")
+
+    payload = bc.create_payment.call_args.kwargs
+    assert payload["value"] == "126.20"
 
 
 @pytest.mark.asyncio
@@ -247,52 +275,50 @@ async def test_get_credits_balance_correct_remaining():
 
 
 @pytest.mark.asyncio
-async def test_preference_expiration_24h():
-    mp = AsyncMock()
-    mp.create_preference.return_value = {"id": "pref-1", "init_point": "i", "sandbox_init_point": "s"}
-    svc = _service(mp_client=mp)
+async def test_ensure_customer_reuses_existing_id():
+    bc = AsyncMock()
+    user_repo = AsyncMock()
+    from domain.shared import Email, CPF
+    from domain.identity import User, UserRole
+    user = User(
+        name="Carlos",
+        email=Email("c@test.com"),
+        cpf=CPF("12345678901"),
+        password_hash="hash",
+        role=UserRole.OWNER,
+        is_active=True,
+        asaas_customer_id="asaas-existing-123"
+    )
+    user_repo.get_by_id.return_value = user
+    svc = _service(bc_client=bc, user_repo=user_repo)
 
-    await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-exp")
+    await svc.initiate_purchase(user.id, uuid.uuid4(), "pack_100", "idem-ensure")
 
-    payload = mp.create_preference.call_args.args[0]
-    expiration = datetime.fromisoformat(payload["expiration_date_to"].replace("Z", ""))
-    delta = expiration - datetime.utcnow()
-    assert timedelta(hours=23, minutes=59) <= delta <= timedelta(hours=24, minutes=1)
-
-
-@pytest.mark.asyncio
-async def test_statement_descriptor_is_marketfy():
-    mp = AsyncMock()
-    mp.create_preference.return_value = {"id": "pref-1", "init_point": "i", "sandbox_init_point": "s"}
-    svc = _service(mp_client=mp)
-
-    await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-desc")
-
-    payload = mp.create_preference.call_args.args[0]
-    assert payload["statement_descriptor"] == "MARKETFY"
-
-
-@pytest.mark.asyncio
-async def test_mp_client_auth_error_propagated():
-    transport = httpx.MockTransport(lambda request: httpx.Response(401, json={"message": "bad token"}))
-    client = MercadoPagoClient("secret", transport=transport)
-    with pytest.raises(MercadoPagoAuthError):
-        await client.create_preference({"items": []})
+    bc.create_customer.assert_not_called()
+    payload = bc.create_payment.call_args.kwargs
+    assert payload["customer_provider_id"] == "asaas-existing-123"
 
 
 @pytest.mark.asyncio
-async def test_mp_client_validation_error_propagated():
-    transport = httpx.MockTransport(lambda request: httpx.Response(422, json={"message": "invalid"}))
-    client = MercadoPagoClient("secret", transport=transport)
-    with pytest.raises(MercadoPagoValidationError):
-        await client.create_preference({"items": []})
+async def test_missing_document_raises_value_error():
+    user_repo = AsyncMock()
+    from domain.shared import Email
+    from domain.identity import User, UserRole
+    user = User(
+        name="Carlos",
+        email=Email("c@test.com"),
+        cpf=None,
+        password_hash="hash",
+        role=UserRole.OWNER,
+        is_active=True,
+    )
+
+    user_repo.get_by_id.return_value = user
+    svc = _service(user_repo=user_repo)
+
+    with pytest.raises(ValueError, match="customer_document_missing"):
+        await svc.initiate_purchase(user.id, uuid.uuid4(), "pack_100", "idem-nodoc")
 
 
-@pytest.mark.asyncio
-async def test_mp_client_timeout_propagated():
-    async def handler(request):
-        raise httpx.TimeoutException("timeout", request=request)
 
-    client = MercadoPagoClient("secret", transport=httpx.MockTransport(handler))
-    with pytest.raises(MercadoPagoUnavailableError):
-        await client.create_preference({"items": []})
+

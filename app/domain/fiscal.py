@@ -486,9 +486,9 @@ class FiscalEmissionPackage(Entity):
     payment_status: str = "pending"
     market_id: Optional[uuid.UUID] = None  # rastreio de onde foi comprado
     package_slug: Optional[str] = None
-    mp_preference_id: Optional[str] = None
-    mp_payment_id: Optional[str] = None
-    mp_external_reference: Optional[str] = None
+    bc_job_id: Optional[str] = None
+    bc_payment_id: Optional[str] = None
+    bc_idempotency_key: Optional[str] = None
     price_gross: Optional[Decimal] = None
     price_net_target: Optional[Decimal] = None
     purchased_at_market_id: Optional[uuid.UUID] = None
@@ -570,6 +570,8 @@ class PurchaseInitResult:
     package_id: uuid.UUID
     init_point: str
     package: EmissionCreditPackage
+    job_id: Optional[str] = None
+
 
 
 @dataclass(frozen=True)

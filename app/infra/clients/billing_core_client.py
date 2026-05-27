@@ -1,29 +1,8 @@
-"""Cliente HTTP interno para o Billing Core.
-
-Fase 4 / PR 14.
-
-Regras de segurança:
-  - API key e URL nunca retornadas ao frontend.
-  - Logs não incluem API key, payloads sensíveis ou dados de pagamento.
-  - Timeouts curtos e retry apenas para erros seguros.
-  - X-System: marketfy obrigatório em todas as requisições.
-  - Idempotency-Key obrigatório em POST /v1/subscriptions.
-
-Contrato conhecido (billing_core.md):
-  POST /v1/subscriptions — cria assinatura
-    Payload: system, system_sub_id, customer_provider_id, description,
-             value, subscription_type, expires_at, webhook_link
-    Retorna: necessita validação manual — assumimos { job_id: str, ... }
-
-  GET /v1/jobs/{job_id} — polling de status
-    Retorna: necessita validação manual
-
-Campos marcados como "necessita validação manual" indicam que o
-billing_core.md não documenta o formato exato de resposta.
-"""
+"""Cliente HTTP interno para o Billing Core."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -38,11 +17,34 @@ settings = get_settings()
 
 
 class BillingCoreError(Exception):
-    """Erro controlado na comunicação com o Billing Core."""
-
-    def __init__(self, message: str, status_code: Optional[int] = None):
+    """Base exception for Billing Core communication."""
+    def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+class BillingCoreAuthError(BillingCoreError):
+    """Credenciais inválidas ou sem permissão (401/403)."""
+    pass
+
+
+class BillingCoreValidationError(BillingCoreError):
+    """Erro de validação ou payload incorreto (400/422)."""
+    def __init__(self, message: str, details: dict | None = None, status_code: int | None = None):
+        super().__init__(message, status_code=status_code)
+        self.details = details or {}
+
+
+class BillingCoreUnavailableError(BillingCoreError):
+    """Billing Core temporariamente indisponível (timeout, rede ou 5xx)."""
+    pass
+
+
+class BillingCoreRateLimitError(BillingCoreError):
+    """Estouro de limite de requisições (429)."""
+    def __init__(self, message: str, retry_after: int | None = None, status_code: int | None = None):
+        super().__init__(message, status_code=status_code)
+        self.retry_after = retry_after
 
 
 class BillingCoreClient:
@@ -63,7 +65,7 @@ class BillingCoreClient:
     def _headers(self, idempotency_key: Optional[str] = None) -> Dict[str, str]:
         headers = {
             "X-System": self._system,
-            "X-Api-Key": self._api_key,
+            "X-API-Key": self._api_key,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
@@ -80,8 +82,240 @@ class BillingCoreClient:
         else:
             logger.warning(f"[BillingCore] {method} {path} → {status} (erro controlado)")
 
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict | None = None,
+        params: dict | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        if not self._base_url or not self._api_key:
+            raise BillingCoreUnavailableError(
+                "Billing Core não configurado. Defina BILLING_CORE_BASE_URL e BILLING_CORE_API_KEY."
+            )
+
+        headers = self._headers(idempotency_key=idempotency_key)
+        self._log_request(method, path)
+
+        last_exc: Exception | None = None
+        _RETRYABLE_STATUS = {429, 503, 504}
+        _MAX_RETRIES = 3
+
+        for attempt in range(_MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=float(self._timeout)) as client:
+                    url = f"{self._base_url.rstrip('/')}/{path.lstrip('/')}"
+                    response = await client.request(
+                        method,
+                        url,
+                        json=json,
+                        params=params,
+                        headers=headers,
+                    )
+            except httpx.TimeoutException as exc:
+                last_exc = exc
+                if attempt < _MAX_RETRIES - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                logger.warning(
+                    "billing_core_timeout",
+                    extra={"extra_data": {"method": method, "path": path, "attempt": attempt + 1}},
+                )
+                raise BillingCoreUnavailableError("Timeout ao contatar Billing Core.") from exc
+            except (httpx.NetworkError, httpx.RequestError) as exc:
+                last_exc = exc
+                if attempt < _MAX_RETRIES - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                logger.warning(
+                    "billing_core_network_error",
+                    extra={"extra_data": {"method": method, "path": path, "attempt": attempt + 1}},
+                )
+                raise BillingCoreUnavailableError(f"Erro de rede ao contatar Billing Core: {type(exc).__name__}") from exc
+
+            status = response.status_code
+            self._log_response(method, path, status)
+
+            if status in (200, 201, 202):
+                if status == 204 or not response.content:
+                    return {}
+                return response.json()
+
+            if status in (401, 403):
+                raise BillingCoreAuthError(
+                    f"Credenciais Billing Core inválidas ou sem permissão: {status}.",
+                    status_code=status,
+                )
+
+            if status in (400, 422):
+                try:
+                    details = response.json()
+                except Exception:
+                    details = {}
+                raise BillingCoreValidationError(
+                    "Payload inválido para o Billing Core.",
+                    details=details,
+                    status_code=status,
+                )
+
+            if status == 429:
+                retry_after_str = response.headers.get("Retry-After")
+                retry_after = int(retry_after_str) if retry_after_str and retry_after_str.isdigit() else None
+                if attempt < _MAX_RETRIES - 1:
+                    delay = float(retry_after) if retry_after is not None else float(2 ** attempt)
+                    await asyncio.sleep(delay)
+                    continue
+                raise BillingCoreRateLimitError(
+                    "Limite de requisições excedido no Billing Core (429).",
+                    retry_after=retry_after,
+                    status_code=status,
+                )
+
+            if status in (503, 504):
+                if attempt < _MAX_RETRIES - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise BillingCoreUnavailableError(
+                    f"Billing Core indisponível: {status}.",
+                    status_code=status,
+                )
+
+            # Para qualquer outro erro de status (ex: 404, 409, 500 sem retry)
+            raise BillingCoreError(
+                f"Billing Core retornou status {status} inesperado.",
+                status_code=status,
+            )
+
+        if last_exc:
+            raise BillingCoreUnavailableError(
+                f"Billing Core indisponível após {_MAX_RETRIES} tentativas."
+            ) from last_exc
+        raise BillingCoreUnavailableError("Billing Core indisponível.")
+
     # ------------------------------------------------------------------
-    # POST /v1/subscriptions
+    # NOVOS MÉTODOS PR 1
+    # ------------------------------------------------------------------
+
+    async def create_customer(
+        self,
+        *,
+        nome_completo: str,
+        email: str,
+        system_customer_id: str,
+        system: str,
+        cpf: str | None = None,
+        cnpj: str | None = None,
+    ) -> dict:
+        """Cria um cliente no Billing Core.
+
+        POST /v1/customers
+        Idempotente por CPF/CNPJ.
+        """
+        if not cpf and not cnpj:
+            raise ValueError("Deve fornecer cpf ou cnpj.")
+        if cpf and cnpj:
+            raise ValueError("Forneça apenas cpf ou cnpj, não ambos.")
+
+        if not self._enabled:
+            return {"provider_customer_id": f"cus_mock_{uuid.uuid4().hex[:12]}"}
+
+        payload = {
+            "nome_completo": nome_completo,
+            "email": email,
+            "system_customer_id": system_customer_id,
+            "system": system,
+        }
+        if cpf:
+            payload["cpf"] = cpf
+        if cnpj:
+            payload["cnpj"] = cnpj
+
+        return await self._request("POST", "/v1/customers", json=payload)
+
+    async def create_payment(
+        self,
+        *,
+        customer_provider_id: str,
+        value: str,
+        billing_type: str,
+        due_date: str,
+        description: str,
+        system: str,
+        system_payment_id: str,
+        webhook_link: str,
+        idempotency_key: str,
+    ) -> dict:
+        """Cria um pagamento avulso no Billing Core.
+
+        POST /v1/payments
+        """
+        if not self._enabled:
+            return {
+                "job_id": f"job_mock_{uuid.uuid4().hex[:12]}",
+                "message": "Payment creation accepted (mock)"
+            }
+
+        payload = {
+            "customer_provider_id": customer_provider_id,
+            "value": value,
+            "billing_type": billing_type,
+            "due_date": due_date,
+            "description": description,
+            "system": system,
+            "system_payment_id": system_payment_id,
+            "webhook_link": webhook_link,
+        }
+
+        return await self._request(
+            "POST",
+            "/v1/payments",
+            json=payload,
+            idempotency_key=idempotency_key,
+        )
+
+    async def get_job(self, job_id: str) -> dict:
+        """Consulta o status de um job de processamento no Billing Core.
+
+        GET /v1/jobs/{job_id}
+        """
+        if not self._enabled:
+            return {
+                "job_id": job_id,
+                "status": "done",
+                "job_name": "create_payment",
+                "attempt": 1,
+                "max_tries": 3,
+                "request_id": f"req_{uuid.uuid4().hex[:12]}",
+                "created_at": datetime.utcnow().isoformat(),
+                "started_at": datetime.utcnow().isoformat(),
+                "finished_at": datetime.utcnow().isoformat(),
+                "error_code": None,
+                "error_message": None,
+            }
+
+        return await self._request("GET", f"/v1/jobs/{job_id}")
+
+    async def get_payment(self, payment_id: str) -> dict:
+        """Consulta o estado de um pagamento no Billing Core.
+
+        GET /v1/payments/{payment_id}
+        """
+        if not self._enabled:
+            return {
+                "payment_id": payment_id,
+                "status": "paid",
+                "value": "100.00",
+                "billing_type": "UNDEFINED",
+                "due_date": datetime.utcnow().isoformat(),
+                "description": "Mock payment",
+            }
+
+        return await self._request("GET", f"/v1/payments/{payment_id}")
+
+    # ------------------------------------------------------------------
+    # MÉTODOS DE COMPATIBILIDADE - PLANOS (FASE 4)
     # ------------------------------------------------------------------
 
     async def create_subscription(
@@ -95,21 +329,9 @@ class BillingCoreClient:
         webhook_link: str,
         idempotency_key: str,
     ) -> Dict[str, Any]:
-        """Cria assinatura no Billing Core.
-
-        Retorno esperado: { job_id: str, ... }
-        O formato exato do retorno necessita validação manual com o Billing Core.
-
-        Raises:
-            BillingCoreError: quando o Billing Core retorna erro ou não está disponível.
-        """
+        """Cria assinatura no Billing Core (Planos)."""
         if not self._enabled:
             return self._mock_create_subscription(system_sub_id, subscription_type)
-
-        if not self._base_url or not self._api_key:
-            raise BillingCoreError(
-                "Billing Core não configurado. Defina BILLING_CORE_BASE_URL e BILLING_CORE_API_KEY."
-            )
 
         payload = {
             "system": self._system,
@@ -122,88 +344,16 @@ class BillingCoreClient:
             "webhook_link": webhook_link,
         }
 
-        path = "/v1/subscriptions"
-        self._log_request("POST", path)
-
-        try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=self._timeout,
-            ) as client:
-                response = await client.post(
-                    path,
-                    json=payload,
-                    headers=self._headers(idempotency_key=idempotency_key),
-                )
-                self._log_response("POST", path, response.status_code)
-
-                if response.status_code not in (200, 201, 202):
-                    raise BillingCoreError(
-                        f"Billing Core retornou {response.status_code} em POST /v1/subscriptions.",
-                        status_code=response.status_code,
-                    )
-
-                return response.json()
-
-        except httpx.TimeoutException:
-            raise BillingCoreError("Timeout ao contatar Billing Core.")
-        except httpx.NetworkError as exc:
-            raise BillingCoreError(f"Erro de rede ao contatar Billing Core: {type(exc).__name__}")
-        except BillingCoreError:
-            raise
-        except Exception as exc:
-            raise BillingCoreError(f"Erro inesperado ao contatar Billing Core: {type(exc).__name__}")
-
-    # ------------------------------------------------------------------
-    # GET /v1/jobs/{job_id}
-    # ------------------------------------------------------------------
+        return await self._request(
+            "POST",
+            "/v1/subscriptions",
+            json=payload,
+            idempotency_key=idempotency_key,
+        )
 
     async def get_job_status(self, job_id: str) -> Dict[str, Any]:
-        """Polling de status de job.
-
-        Retorno esperado: { status: str, result: dict, ... }
-        O formato exato necessita validação manual com o Billing Core.
-        """
-        if not self._enabled:
-            return {"job_id": job_id, "status": "done", "note": "mock"}
-
-        if not self._base_url or not self._api_key:
-            raise BillingCoreError("Billing Core não configurado.")
-
-        path = f"/v1/jobs/{job_id}"
-        self._log_request("GET", path)
-
-        try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=self._timeout,
-            ) as client:
-                response = await client.get(path, headers=self._headers())
-                self._log_response("GET", path, response.status_code)
-
-                if response.status_code == 404:
-                    raise BillingCoreError(f"Job {job_id} não encontrado.", status_code=404)
-
-                if response.status_code != 200:
-                    raise BillingCoreError(
-                        f"Billing Core retornou {response.status_code} em GET /v1/jobs/{job_id}.",
-                        status_code=response.status_code,
-                    )
-
-                return response.json()
-
-        except httpx.TimeoutException:
-            raise BillingCoreError(f"Timeout ao consultar job {job_id}.")
-        except httpx.NetworkError as exc:
-            raise BillingCoreError(f"Erro de rede: {type(exc).__name__}")
-        except BillingCoreError:
-            raise
-        except Exception as exc:
-            raise BillingCoreError(f"Erro inesperado: {type(exc).__name__}")
-
-    # ------------------------------------------------------------------
-    # Mocks para desenvolvimento / testes
-    # ------------------------------------------------------------------
+        """Polling de status de job (Planos)."""
+        return await self.get_job(job_id)
 
     def _mock_create_subscription(self, system_sub_id: str, subscription_type: str) -> Dict[str, Any]:
         mock_job_id = f"mock-job-{uuid.uuid4().hex[:8]}"

@@ -58,6 +58,7 @@ class SQLAlchemyUserRepository(UserRepositoryInterface):
         model.is_active = user.is_active
         model.plan_id = user.plan_id
         model.plan_expiration = user.plan_expiration
+        model.asaas_customer_id = user.asaas_customer_id
         
         if commit:
             await self.session.commit()
@@ -73,6 +74,13 @@ class SQLAlchemyUserRepository(UserRepositoryInterface):
         result = await self.session.execute(query)
         return result.scalar() or 0
 
+    async def update_asaas_customer_id(self, user_id: uuid.UUID, asaas_customer_id: str, commit: bool = True) -> None:
+        model = await self.session.get(UserModel, user_id)
+        if model:
+            model.asaas_customer_id = asaas_customer_id
+            if commit:
+                await self.session.commit()
+
     def _to_entity(self, m: UserModel) -> User:
         u = User(
             name=m.name,
@@ -82,11 +90,13 @@ class SQLAlchemyUserRepository(UserRepositoryInterface):
             role=UserRole(m.role),
             is_active=m.is_active,
             plan_id=m.plan_id,
-            plan_expiration=m.plan_expiration
+            plan_expiration=m.plan_expiration,
+            asaas_customer_id=m.asaas_customer_id
         )
         u.id = m.id
         u.created_at = m.created_at
         return u
+
 
 # ==================================================================================
 # PLAN REPOSITORY
