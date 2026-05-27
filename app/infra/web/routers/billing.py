@@ -9,16 +9,19 @@ Endpoints:
 
 Segurança:
   - API key e URL do Billing Core nunca retornados ao frontend.
-  - Webhook valida X-System e X-Api-Key (ou header de autenticação do Billing Core).
+  - Webhook valida X-Webhook-Signature-256 (HMAC-SHA256/base64, JSON canônico).
   - Toda validação de plano ocorre no backend.
   - Fallback seguro quando Billing Core indisponível.
 """
 
+import base64
+import hashlib
+import hmac
+import json
 import uuid
 from datetime import datetime
-from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from application.dtos import (
@@ -226,40 +229,41 @@ async def receive_billing_webhook(
     request: Request,
     service: SubscriptionService = Depends(_get_subscription_service),
     audit: AuditService = Depends(get_audit_service),
-    x_system: Optional[str] = Header(None, alias="X-System"),
-    x_api_key: Optional[str] = Header(None, alias="X-Api-Key"),
 ):
     """Recebe eventos do Billing Core de forma idempotente.
 
     Validações obrigatórias:
-      1. X-System deve ser "marketfy".
-      2. X-Api-Key deve corresponder à chave configurada.
-      3. event_id obrigatório para idempotência.
+      1. X-Webhook-Signature-256 — HMAC-SHA256 do JSON canônico em base64,
+         assinado com BILLING_CORE_WEBHOOK_SECRET (= INTERNAL_WEBHOOK_SIGNATURE
+         do Billing Core).
+      2. event_id obrigatório para idempotência.
 
     O payload bruto é persistido antes do processamento para auditoria.
     Se o evento já foi processado (mesmo event_id), retorna sucesso idempotente.
-
-    NOTA: O formato exato do payload de webhook necessita validação manual
-    com o Billing Core. Esta implementação usa os campos mínimos conhecidos
-    e aceita campos extras.
     """
-    # 1. Validar X-System
-    expected_system = settings.BILLING_CORE_SYSTEM
-    if x_system != expected_system:
-        logger.warning(f"[webhook] X-System inválido: '{x_system}' (esperado: '{expected_system}')")
-        raise HTTPException(status_code=403, detail="X-System inválido.")
-
-    # 2. Validar API key (se configurada)
-    expected_key = settings.BILLING_CORE_API_KEY
-    if expected_key and x_api_key != expected_key:
-        logger.warning("[webhook] API key inválida no webhook do Billing Core.")
-        raise HTTPException(status_code=403, detail="Autenticação inválida.")
-
-    # 3. Parsear payload
+    # 1. Parsear payload
     try:
         raw_body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Payload inválido (JSON esperado).")
+
+    # 2. Validar assinatura X-Webhook-Signature-256
+    signature = request.headers.get("X-Webhook-Signature-256")
+    expected_secret = settings.BILLING_CORE_WEBHOOK_SECRET
+    if not signature or not expected_secret:
+        logger.warning("[webhook] Assinatura ou segredo ausente no webhook do Billing Core.")
+        raise HTTPException(status_code=401, detail="Assinatura inválida.")
+
+    canonical_json = json.dumps(raw_body, sort_keys=True, separators=(",", ":"))
+    expected_digest = hmac.new(
+        expected_secret.encode("utf-8"),
+        canonical_json.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    expected_b64 = base64.b64encode(expected_digest).decode("utf-8")
+    if not hmac.compare_digest(expected_b64, signature):
+        logger.warning("[webhook] Assinatura X-Webhook-Signature-256 inválida no webhook do Billing Core.")
+        raise HTTPException(status_code=401, detail="Assinatura inválida.")
 
     try:
         payload = BillingWebhookEventDTO(**raw_body)

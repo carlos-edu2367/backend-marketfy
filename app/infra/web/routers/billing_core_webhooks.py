@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -18,19 +19,27 @@ router = APIRouter()
 
 
 def validate_bc_signature(
-    raw_body: bytes,
+    payload: dict,
     header: str,
     secret: str,
 ) -> bool:
+    """Valida a assinatura X-Webhook-Signature-256 enviada pelo Billing Core.
+
+    O Billing Core assina o JSON canônico do payload (sort_keys, sem espaços)
+    com HMAC-SHA256 e envia o resultado codificado em base64 no header
+    X-Webhook-Signature-256. Esta função reconstrói a mesma assinatura a partir
+    do payload já parseado para comparação segura.
+    """
     if not header or not secret:
         return False
-    expected = hmac.new(
+    canonical_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    expected_digest = hmac.new(
         secret.encode("utf-8"),
-        raw_body,
+        canonical_json.encode("utf-8"),
         hashlib.sha256,
-    ).hexdigest()
-
-    return hmac.compare_digest(expected, header)
+    ).digest()
+    expected_b64 = base64.b64encode(expected_digest).decode("utf-8")
+    return hmac.compare_digest(expected_b64, header)
 
 
 class BillingCoreWebhookProcessor:
@@ -108,15 +117,12 @@ async def billing_core_webhook(request: Request, db: AsyncSession = Depends(get_
     except json.JSONDecodeError:
         payload = {}
 
-    # TODO(contract-validation):
-    # Este contrato foi assumido conforme documentação atual.
-    # Confirmar oficialmente com o time do Billing Core.
-    signature = request.headers.get("X-Billing-Core-Signature") or request.headers.get("x-billing-core-signature")
+    signature = request.headers.get("X-Webhook-Signature-256")
     if not signature:
         logger.warning("billing_core_webhook_missing_signature")
         return Response(status_code=401)
 
-    if not validate_bc_signature(raw_body, signature, settings.BILLING_CORE_WEBHOOK_SECRET):
+    if not validate_bc_signature(payload, signature, settings.BILLING_CORE_WEBHOOK_SECRET):
         logger.warning("billing_core_webhook_invalid_signature")
         return Response(status_code=401)
 
