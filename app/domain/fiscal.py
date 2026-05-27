@@ -248,6 +248,33 @@ class FiscalTenantConfig(Entity):
             errors.append("Endereço completo obrigatório.")
         if not self.nfce_series:
             errors.append("Série NFC-e não definida.")
+
+        # Validações específicas para o Neectify Fiscal
+        if self.provider == "neectify_fiscal":
+            if self.cnpj:
+                from domain.validators import validate_cnpj
+                cnpj_digits = self.cnpj.replace(".", "").replace("/", "").replace("-", "")
+                if not validate_cnpj(cnpj_digits):
+                    errors.append("CNPJ inválido matematicamente.")
+            
+            if self.address_json:
+                import json
+                try:
+                    address_data = json.loads(self.address_json) if isinstance(self.address_json, str) else self.address_json
+                except (ValueError, TypeError):
+                    address_data = {}
+                
+                if address_data:
+                    uf = address_data.get("uf") or ""
+                    city_code = address_data.get("city_code") or address_data.get("municipality_code") or ""
+                    
+                    if uf != "GO":
+                        errors.append("Neectify Fiscal suporta apenas o estado de Goiás (UF: 'GO').")
+                    
+                    allowed_municipalities = {"5208707", "5201405", "5209705", "5218003"}
+                    if city_code not in allowed_municipalities:
+                        errors.append("Município não suportado no MVP SEFAZ-GO para Neectify Fiscal.")
+
         return errors
 
     def is_ready_for_emission(self) -> bool:

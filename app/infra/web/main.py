@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy.exc import IntegrityError
 
-from domain.fiscal import FiscalAuthError
+from domain.fiscal import FiscalAuthError, FiscalValidationError
 from domain.shared import BusinessRuleException
 from infra.config.logger import get_logger
 from infra.config.settings import get_settings
@@ -213,6 +213,35 @@ async def fiscal_auth_exception_handler(request: Request, exc: FiscalAuthError):
             "fiscal_provider_auth_error",
             "Falha de autenticacao com o provedor fiscal.",
             get_request_id(),
+        ),
+        headers={"X-Request-ID": get_request_id() or ""},
+    )
+
+
+@app.exception_handler(FiscalValidationError)
+async def fiscal_validation_exception_handler(request: Request, exc: FiscalValidationError):
+    logger.warning(
+        "fiscal_provider_validation_error",
+        extra={
+            "extra_data": {
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": 422,
+                "detail": sanitize_log_data(exc.details),
+            }
+        },
+    )
+    details = exc.details.get("detail") if isinstance(exc.details, dict) and "detail" in exc.details else exc.details
+    if not details:
+        details = [{"loc": ["body"], "msg": str(exc), "type": "value_error"}]
+        
+    return JSONResponse(
+        status_code=422,
+        content=error_response(
+            "validation_error",
+            "Dados invalidos no provedor fiscal.",
+            get_request_id(),
+            details,
         ),
         headers={"X-Request-ID": get_request_id() or ""},
     )

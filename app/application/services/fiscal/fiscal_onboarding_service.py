@@ -298,6 +298,46 @@ class FiscalOnboardingService:
         if not cfg:
             raise ValueError("Configuração fiscal não encontrada para este mercado.")
 
+        # ── Pre-validação do Neectify Fiscal ───────────────────────────
+        # 1. Validar CNPJ matematicamente
+        from domain.validators import validate_cnpj
+        cnpj_digits = (cfg.cnpj or "").replace(".", "").replace("/", "").replace("-", "")
+        if not validate_cnpj(cnpj_digits):
+            raise FiscalValidationError(
+                "CNPJ inválido matematicamente.",
+                details={"detail": [{"loc": ["body", "cnpj"], "msg": "issuer.invalid_cnpj", "type": "value_error"}]}
+            )
+
+        # 2. Validar endereço e estado
+        import json
+        address_data = {}
+        if cfg.address_json:
+            try:
+                address_data = json.loads(cfg.address_json) if isinstance(cfg.address_json, str) else cfg.address_json
+            except (ValueError, TypeError):
+                pass
+                
+        uf = address_data.get("uf") or market_data.get("uf") or ""
+        city_code = address_data.get("city_code") or address_data.get("municipality_code") or ""
+        
+        if uf != "GO":
+            raise FiscalValidationError(
+                "Estado não suportado pelo Neectify Fiscal. Apenas o estado de Goiás (UF: 'GO') é aceito.",
+                details={"detail": [{"loc": ["body", "uf"], "msg": "issuer.uf_not_supported", "type": "value_error"}]}
+            )
+            
+        allowed_municipalities = {
+            "5208707": "Goiania",
+            "5201405": "Aparecida de Goiânia",
+            "5209705": "Hidrolândia",
+            "5218003": "Porangatu",
+        }
+        if city_code not in allowed_municipalities:
+            raise FiscalValidationError(
+                "Município não homologado no Neectify Fiscal (MVP SEFAZ-GO). Municípios aceitos: Goiânia, Aparecida de Goiânia, Hidrolândia e Porangatu.",
+                details={"detail": [{"loc": ["body", "municipality_code"], "msg": "issuer.invalid_municipality", "type": "value_error"}]}
+            )
+
         issuer_payload = _build_issuer_payload(cfg, market_data)
 
         try:
@@ -438,6 +478,7 @@ class FiscalOnboardingService:
 def _build_issuer_payload(cfg: FiscalTenantConfig, market_data: dict) -> dict:
     """Mapeia FiscalTenantConfig + dados do mercado para o payload POST /v1/issuers."""
     import json
+    import re
 
     address_data: dict = {}
     if cfg.address_json:
@@ -456,24 +497,33 @@ def _build_issuer_payload(cfg: FiscalTenantConfig, market_data: dict) -> dict:
         cfg.tax_regime.value if cfg.tax_regime else "", "simples_nacional"
     )
 
+    # Obter dados consistentes do endereço
+    uf = address_data.get("uf") or market_data.get("uf") or ""
+    city_code = address_data.get("city_code") or address_data.get("municipality_code") or ""
+    city_name = address_data.get("city_name") or address_data.get("municipality_name") or ""
+
+    # Limpar caracteres não numéricos
+    cnpj_clean = re.sub(r"\D", "", cfg.cnpj or "")
+    zip_clean = re.sub(r"\D", "", address_data.get("zip_code") or "")
+
     payload: dict = {
         "legal_name": cfg.legal_name or "",
         "trade_name": market_data.get("trade_name") or cfg.trade_name or "",
-        "cnpj": (cfg.cnpj or "").replace(".", "").replace("/", "").replace("-", ""),
+        "cnpj": cnpj_clean,
         "state_registration": cfg.state_registration or "",
         "tax_regime": tax_regime,
-        "uf": address_data.get("uf") or market_data.get("uf") or "",
-        "municipality_code": address_data.get("city_code") or address_data.get("municipality_code") or "",
-        "municipality_name": address_data.get("city_name") or address_data.get("municipality_name") or "",
+        "uf": uf,
+        "municipality_code": city_code,
+        "municipality_name": city_name,
         "address": {
             "street": address_data.get("street") or "",
             "number": address_data.get("number") or "",
             "complement": address_data.get("complement"),
             "district": address_data.get("district") or "",
-            "zip_code": (address_data.get("zip_code") or "").replace("-", ""),
-            "city_code": address_data.get("city_code") or address_data.get("municipality_code") or "",
-            "city_name": address_data.get("city_name") or address_data.get("municipality_name") or "",
-            "uf": address_data.get("uf") or market_data.get("uf") or "",
+            "zip_code": zip_clean,
+            "city_code": city_code,
+            "city_name": city_name,
+            "uf": uf,
         },
     }
     return payload

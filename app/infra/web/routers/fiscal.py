@@ -894,11 +894,6 @@ async def neectify_sync_issuer(
         result = await svc.sync_issuer(market_id=market_id, market_data=market_data)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    except Exception as e:
-        from domain.fiscal import FiscalValidationError
-        if isinstance(e, FiscalValidationError):
-            raise HTTPException(422, str(e))
-        raise
 
     await record_audit_event(
         audit, request, actor=current_user, action="fiscal.neectify.sync_issuer",
@@ -962,11 +957,6 @@ async def neectify_sync_cert(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    except Exception as e:
-        from domain.fiscal import FiscalValidationError
-        if isinstance(e, FiscalValidationError):
-            raise HTTPException(422, str(e))
-        raise
 
     await record_audit_event(
         audit, request, actor=current_user, action="fiscal.neectify.sync_cert",

@@ -471,3 +471,127 @@ async def test_checklist_keys_are_correct():
     status = await svc.get_onboarding_status(uuid.uuid4())
     actual_keys = {c.key for c in status.checklist}
     assert actual_keys == expected_keys
+
+
+# ---------------------------------------------------------------------------
+# Validações estritas do Neectify Fiscal
+# ---------------------------------------------------------------------------
+
+def test_validate_cnpj_mathematically():
+    from domain.validators import validate_cnpj
+    
+    # CNPJ válido de teste (matematicamente correto)
+    assert validate_cnpj("12345678000195") is True
+    assert validate_cnpj("12.345.678/0001-95") is True
+    
+    # CNPJ com dígitos errados
+    assert validate_cnpj("12345678000190") is False
+    # CNPJs com todos os dígitos iguais
+    assert validate_cnpj("11111111111111") is False
+    # Tamanho inválido
+    assert validate_cnpj("12345") is False
+
+
+def test_validate_for_production_neectify_strict():
+    # 1. Com CNPJ inválido
+    cfg = _make_config(provider="neectify_fiscal", cnpj="12345678000190")
+    errors = cfg.validate_for_production()
+    assert any("CNPJ inválido" in e for e in errors)
+    
+    # 2. Com UF fora de GO
+    cfg = _make_config(
+        provider="neectify_fiscal",
+        cnpj="12345678000195",
+        address_json={"uf": "SP", "city_code": "3550308"}  # São Paulo
+    )
+    errors = cfg.validate_for_production()
+    assert any("Goiás (UF: 'GO')" in e for e in errors)
+    
+    # 3. Com município não homologado em GO
+    cfg = _make_config(
+        provider="neectify_fiscal",
+        cnpj="12345678000195",
+        address_json={"uf": "GO", "city_code": "5200050"}  # Abadia de Goiás
+    )
+    errors = cfg.validate_for_production()
+    assert any("Município não suportado" in e for e in errors)
+    
+    # 4. Totalmente correto (Goiânia)
+    cfg = _make_config(
+        provider="neectify_fiscal",
+        cnpj="12345678000195",
+        address_json={"uf": "GO", "city_code": "5208707"}  # Goiânia
+    )
+    errors = cfg.validate_for_production()
+    assert not any("CNPJ" in e or "Goiás" in e or "Município" in e for e in errors)
+
+
+@pytest.mark.asyncio
+async def test_sync_issuer_neectify_strict_validations():
+    from domain.fiscal import FiscalValidationError
+    
+    # 1. CNPJ inválido
+    cfg = _make_config(provider="neectify_fiscal", cnpj="12345678000190")
+    svc = _make_service(cfg=cfg)
+    svc._neectify = AsyncMock()
+    
+    with pytest.raises(FiscalValidationError) as exc:
+        await svc.sync_issuer(uuid.uuid4(), {})
+    assert "CNPJ inválido matematicamente" in str(exc.value)
+    
+    # 2. Estado inválido (SP)
+    cfg = _make_config(
+        provider="neectify_fiscal",
+        cnpj="12345678000195",
+        address_json={"uf": "SP", "city_code": "3550308"}
+    )
+    svc = _make_service(cfg=cfg)
+    svc._neectify = AsyncMock()
+    
+    with pytest.raises(FiscalValidationError) as exc:
+        await svc.sync_issuer(uuid.uuid4(), {})
+    assert "Estado não suportado" in str(exc.value)
+    
+    # 3. Município não homologado em GO
+    cfg = _make_config(
+        provider="neectify_fiscal",
+        cnpj="12345678000195",
+        address_json={"uf": "GO", "city_code": "5200050"}
+    )
+    svc = _make_service(cfg=cfg)
+    svc._neectify = AsyncMock()
+    
+    with pytest.raises(FiscalValidationError) as exc:
+        await svc.sync_issuer(uuid.uuid4(), {})
+    assert "Município não homologado" in str(exc.value)
+
+
+def test_build_issuer_payload_cleaning_and_consistency():
+    from application.services.fiscal.fiscal_onboarding_service import _build_issuer_payload
+    
+    cfg = _make_config(
+        provider="neectify_fiscal",
+        cnpj="12.345.678/0001-95",
+        address_json={
+            "uf": "GO",
+            "city_code": "5208707",
+            "city_name": "Goiânia",
+            "zip_code": "74.223-010",
+            "street": "Avenida 85"
+        }
+    )
+    
+    payload = _build_issuer_payload(cfg, {})
+    
+    # Valida limpeza de strings
+    assert payload["cnpj"] == "12345678000195"
+    assert payload["address"]["zip_code"] == "74223010"
+    
+    # Valida consistência absoluta de endereço (raiz vs address aninhado)
+    assert payload["uf"] == "GO"
+    assert payload["address"]["uf"] == "GO"
+    assert payload["municipality_code"] == "5208707"
+    assert payload["address"]["city_code"] == "5208707"
+    assert payload["municipality_name"] == "Goiânia"
+    assert payload["address"]["city_name"] == "Goiânia"
+

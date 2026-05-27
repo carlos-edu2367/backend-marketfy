@@ -33,3 +33,32 @@ def test_fiscal_auth_error_returns_upstream_error_response(monkeypatch):
     assert response.json()["error"]["message"] == (
         "Falha de autenticacao com o provedor fiscal."
     )
+
+
+def test_fiscal_validation_error_returns_unprocessable_entity(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("SECRET_KEY", "test-secret-key")
+
+    from domain.fiscal import FiscalValidationError
+    from infra.web.main import app
+
+    path = "/__test__/fiscal-validation-error"
+    if not any(getattr(route, "path", None) == path for route in app.routes):
+        @app.get(path)
+        async def _raise_fiscal_validation_error():
+            raise FiscalValidationError(
+                "Dados invalidos no provedor.",
+                details={"detail": [{"loc": ["body", "cnpj"], "msg": "issuer.invalid_cnpj", "type": "value_error"}]}
+            )
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get(path)
+
+    assert response.status_code == 422
+    data = response.json()
+    assert data["error"]["code"] == "validation_error"
+    assert data["error"]["message"] == "Dados invalidos no provedor fiscal."
+    assert len(data["error"]["details"]) == 1
+    assert data["error"]["details"][0]["msg"] == "issuer.invalid_cnpj"
+
