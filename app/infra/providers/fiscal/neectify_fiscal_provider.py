@@ -73,16 +73,15 @@ class NeectifyFiscalProvider(FiscalProviderGateway):
         password: str,
         environment: str,
     ) -> dict:
-        """POST /v1/certificates  (multipart/form-data)"""
+        """POST /v1/issuers/{issuer_id}/certificates  (multipart/form-data)"""
         files = {
             "file": ("certificate.pfx", pfx_bytes, "application/octet-stream"),
             "password": (None, password),
-            "issuer_id": (None, issuer_id),
             "environment": (None, environment),
         }
         return await self._client.request(
             "POST",
-            "/v1/certificates",
+            f"/v1/issuers/{issuer_id}/certificates",
             files=files,
         )
 

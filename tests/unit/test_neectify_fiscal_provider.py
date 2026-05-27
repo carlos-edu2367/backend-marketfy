@@ -163,10 +163,11 @@ def test_upload_certificate_multipart():
     ))
 
     assert result["id"] == CERT_ID
-    # Verificar que a requisição foi multipart
+    # Verificar que a requisição foi multipart e para o endpoint correto
     req = captured_requests[0]
     content_type = req.headers.get("content-type", "")
     assert "multipart" in content_type
+    assert req.url.path == f"/v1/issuers/{ISSUER_ID}/certificates"
 
 
 # ---------------------------------------------------------------------------
