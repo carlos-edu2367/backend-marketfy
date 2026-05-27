@@ -981,7 +981,6 @@ async def neectify_sync_cert(
     except ValueError as e:
         raise HTTPException(400, str(e))
     except FiscalValidationError as exc:
-        # O Neectify Fiscal rejeitou o certificado (422) — retornamos o detalhe ao frontend.
         err = exc.details.get("error", {})
         detail = err.get("message") or str(exc)
         raise HTTPException(
@@ -995,6 +994,19 @@ async def neectify_sync_cert(
     except FiscalAuthError as exc:
         logger.error("neectify_sync_cert_auth_error", extra={"extra_data": {"market_id": str(market_id), "error": str(exc)}})
         raise HTTPException(503, "Falha de autenticação com o Neectify Fiscal. Verifique a API key.")
+    except Exception as exc:
+        import httpx
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            logger.error(
+                "neectify_sync_cert_http_error",
+                extra={"extra_data": {"market_id": str(market_id), "http_status": status}},
+            )
+            if status == 404:
+                raise HTTPException(422, "Emitente não encontrado no Neectify Fiscal. Execute sync-issuer novamente.")
+            raise HTTPException(502, f"Neectify Fiscal retornou HTTP {status}.")
+        logger.exception("neectify_sync_cert_unexpected_error", extra={"extra_data": {"market_id": str(market_id)}})
+        raise HTTPException(500, "Erro inesperado ao enviar certificado.")
 
     await record_audit_event(
         audit, request, actor=current_user, action="fiscal.neectify.sync_cert",
