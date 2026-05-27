@@ -143,6 +143,10 @@ class NeectifyFiscalClient:
                     details = resp.json()
                 except Exception:
                     details = {}
+                logger.error(
+                    "neectify_422_response",
+                    extra={"extra_data": {"method": method, "path": path, "body": details}},
+                )
                 raise FiscalValidationError(
                     f"Payload inválido para {method} {path}",
                     details=details,
