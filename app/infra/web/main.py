@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy.exc import IntegrityError
 
+from domain.fiscal import FiscalAuthError
 from domain.shared import BusinessRuleException
 from infra.config.logger import get_logger
 from infra.config.settings import get_settings
@@ -187,6 +188,30 @@ async def business_rule_exception_handler(request: Request, exc: BusinessRuleExc
     return JSONResponse(
         status_code=400,
         content=error_response("business_rule", str(exc), get_request_id()),
+        headers={"X-Request-ID": get_request_id() or ""},
+    )
+
+
+@app.exception_handler(FiscalAuthError)
+async def fiscal_auth_exception_handler(request: Request, exc: FiscalAuthError):
+    logger.warning(
+        "fiscal_provider_auth_error",
+        extra={
+            "extra_data": {
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": 502,
+                "detail": sanitize_log_data({"detail": str(exc)}),
+            }
+        },
+    )
+    return JSONResponse(
+        status_code=502,
+        content=error_response(
+            "fiscal_provider_auth_error",
+            "Falha de autenticacao com o provedor fiscal.",
+            get_request_id(),
+        ),
         headers={"X-Request-ID": get_request_id() or ""},
     )
 
