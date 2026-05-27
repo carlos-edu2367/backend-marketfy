@@ -19,8 +19,8 @@ def validate_pfx_upload(
     market_id: Optional[uuid.UUID] = None,
 ) -> str:
     suffix = Path(filename or "").suffix.lower()
-    if suffix != ".pfx":
-        raise ValueError("O certificado deve ser um arquivo .pfx")
+    if suffix not in {".pfx", ".p12"}:
+        raise ValueError("O certificado deve ser um arquivo .pfx ou .p12")
 
     if size_bytes <= 0:
         raise ValueError("O certificado enviado está vazio.")

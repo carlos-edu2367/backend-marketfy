@@ -28,6 +28,7 @@ from infra.security.market_access import MarketPermission
 from application.services.audit_service import AuditService
 from domain.identity import User
 from domain.shared import BusinessRuleException
+from domain.fiscal import FiscalAuthError, FiscalValidationError
 from infra.observability.audit import record_audit_event
 from infra.observability.metrics import metrics_registry
 from infra.config.logger import get_logger
@@ -894,6 +895,23 @@ async def neectify_sync_issuer(
         result = await svc.sync_issuer(market_id=market_id, market_data=market_data)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except FiscalValidationError as exc:
+        err = exc.details.get("error", {})
+        detail = err.get("message") or str(exc)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": err.get("code", "issuer.validation_error"),
+                "message": detail,
+                "details": err.get("details", {}),
+            },
+        )
+    except FiscalAuthError as exc:
+        logger.error(
+            "neectify_sync_issuer_auth_error",
+            extra={"extra_data": {"market_id": str(market_id), "error": str(exc)}},
+        )
+        raise HTTPException(503, "Falha de autenticação com o Neectify Fiscal. Verifique a API key.")
 
     await record_audit_event(
         audit, request, actor=current_user, action="fiscal.neectify.sync_issuer",
@@ -962,6 +980,21 @@ async def neectify_sync_cert(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except FiscalValidationError as exc:
+        # O Neectify Fiscal rejeitou o certificado (422) — retornamos o detalhe ao frontend.
+        err = exc.details.get("error", {})
+        detail = err.get("message") or str(exc)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": err.get("code", "certificate.validation_error"),
+                "message": detail,
+                "details": err.get("details", {}),
+            },
+        )
+    except FiscalAuthError as exc:
+        logger.error("neectify_sync_cert_auth_error", extra={"extra_data": {"market_id": str(market_id), "error": str(exc)}})
+        raise HTTPException(503, "Falha de autenticação com o Neectify Fiscal. Verifique a API key.")
 
     await record_audit_event(
         audit, request, actor=current_user, action="fiscal.neectify.sync_cert",
