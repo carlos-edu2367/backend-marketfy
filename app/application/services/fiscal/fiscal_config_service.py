@@ -98,7 +98,10 @@ class FiscalConfigService:
         # Certificado A1
         if certificate_bytes:
             cert_key, fingerprint, valid_until = await self._store_certificate(
-                market_id, certificate_bytes, certificate_filename or "cert.pfx"
+                market_id,
+                certificate_bytes,
+                certificate_filename or "cert.pfx",
+                password=data.get("certificate_password"),
             )
             cfg.certificate_storage_key = cert_key
             cfg.certificate_fingerprint = fingerprint
@@ -195,7 +198,11 @@ class FiscalConfigService:
         return cfg
 
     async def _store_certificate(
-        self, market_id: uuid.UUID, cert_bytes: bytes, filename: str
+        self,
+        market_id: uuid.UUID,
+        cert_bytes: bytes,
+        filename: str,
+        password: Optional[str] = None,
     ) -> tuple[str, Optional[str], Optional[datetime]]:
         """
         Armazena certificado em storage privado.
@@ -212,14 +219,32 @@ class FiscalConfigService:
         # Fingerprint básico (SHA-256 do conteúdo)
         fingerprint = hashlib.sha256(cert_bytes).hexdigest()
 
-        # Tentar extrair validade via cryptography (opcional)
+        # Tenta extrair validade via cryptography (opcional).
+        # Deve tentar UTF-8 e Latin-1 pois ACs brasileiras usam ambos os encodings.
         valid_until = None
         try:
             from cryptography.hazmat.primitives.serialization import pkcs12
-            p12 = pkcs12.load_pkcs12(cert_bytes, None)
-            if p12.cert and p12.cert.certificate:
-                valid_until = p12.cert.certificate.not_valid_after_utc.replace(tzinfo=None)
+
+            pwd_candidates: list[bytes | None] = [None]
+            if password:
+                utf8 = password.encode("utf-8")
+                pwd_candidates = [utf8]
+                try:
+                    latin1 = password.encode("latin-1")
+                    if latin1 != utf8:
+                        pwd_candidates.append(latin1)
+                except UnicodeEncodeError:
+                    pass
+
+            for pwd_bytes in pwd_candidates:
+                try:
+                    p12 = pkcs12.load_pkcs12(cert_bytes, pwd_bytes)
+                    if p12.cert and p12.cert.certificate:
+                        valid_until = p12.cert.certificate.not_valid_after_utc.replace(tzinfo=None)
+                    break
+                except Exception:
+                    continue
         except Exception:
-            pass  # cryptography não instalado ou senha necessária
+            pass  # cryptography não instalado
 
         return storage_key, fingerprint, valid_until

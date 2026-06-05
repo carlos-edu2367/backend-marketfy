@@ -138,17 +138,24 @@ class NeectifyFiscalClient:
                     f"Neectify Fiscal retornou HTTP {resp.status_code}: credencial inválida ou sem permissão."
                 )
 
-            if resp.status_code == 422:
+            if resp.status_code in (400, 422):
                 try:
                     details = resp.json()
                 except Exception:
                     details = {}
                 logger.error(
-                    "neectify_422_response",
-                    extra={"extra_data": {"method": method, "path": path, "body": details}},
+                    "neectify_validation_error",
+                    extra={
+                        "extra_data": {
+                            "method": method,
+                            "path": path,
+                            "status": resp.status_code,
+                            "body": details,
+                        }
+                    },
                 )
                 raise FiscalValidationError(
-                    f"Payload inválido para {method} {path}",
+                    f"Requisição rejeitada pelo Neectify Fiscal ({resp.status_code}): {method} {path}",
                     details=details,
                 )
 
