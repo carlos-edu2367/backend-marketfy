@@ -1,7 +1,7 @@
 import os
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -158,6 +158,34 @@ async def test_debt_payment_generates_financial_transaction_with_method_in_descr
     assert transaction.paid_at == paid_at
     assert "pix" in transaction.description
     assert transaction.customer_id == customer.id
+
+
+@pytest.mark.asyncio
+async def test_debt_payment_strips_timezone_from_paid_at():
+    """Garante que paid_at timezone-aware (vindo do frontend via ISO string com Z) é
+    convertido para naive antes de gravar na tabela TIMESTAMP WITHOUT TIME ZONE."""
+    market_id = uuid.uuid4()
+    customer = Customer(
+        market_id=market_id,
+        name="Cliente TZ",
+        credit_limit=Decimal("500.00"),
+        current_debt=Decimal("100.00"),
+    )
+    customer.id = uuid.uuid4()
+    financial_repo = FakeFinancialRepo()
+    service = FinanceService(FakeCustomerRepo(customer), financial_repo)
+
+    paid_at_aware = datetime(2026, 6, 4, 12, 57, 8, tzinfo=timezone.utc)
+    await service.register_debt_payment(
+        market_id,
+        customer.id,
+        DebtPaymentDTO(amount=Decimal("50.00"), payment_method="dinheiro", paid_at=paid_at_aware),
+    )
+
+    transaction = financial_repo.saved[0]
+    assert transaction.paid_at.tzinfo is None, "paid_at deve ser naive para compatibilidade com TIMESTAMP WITHOUT TIME ZONE"
+    assert transaction.due_date.tzinfo is None
+    assert transaction.paid_at == paid_at_aware.replace(tzinfo=None)
 
 
 @pytest.mark.asyncio

@@ -296,6 +296,7 @@ async def test_add_addon_credits_creates_counter_when_missing():
         owner_id=owner_id,
         period=PERIOD,
         included_limit=0,
+        commit=True,
     )
     repo.increment_addon_limit.assert_called_once()
 

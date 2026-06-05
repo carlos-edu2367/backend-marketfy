@@ -121,7 +121,7 @@ class InMemoryAuditRepo:
     def __init__(self):
         self.saved = []
 
-    async def save(self, audit_log):
+    async def save(self, audit_log, commit=True):
         self.saved.append(audit_log)
         return audit_log
 

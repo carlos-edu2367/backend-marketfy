@@ -107,6 +107,8 @@ class FinanceService:
         if self.transaction_repo:
             payment_method = dto.payment_method or "nao_informado"
             paid_at = dto.paid_at or datetime.utcnow()
+            if getattr(paid_at, "tzinfo", None):
+                paid_at = paid_at.replace(tzinfo=None)
             transaction = FinancialTransaction(
                 market_id=market_id,
                 description=f"{dto.description} ({payment_method})",

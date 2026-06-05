@@ -30,7 +30,7 @@ def _prod_settings_kwargs(**overrides):
         "BILLING_CORE_WEBHOOK_SECRET": "s" * 32,
         "BILLING_CORE_WEBHOOK_CALLBACK_URL": "https://api.marketfy.example/callback",
         "BILLING_CORE_WEBHOOK_HOST": "https://api.marketfy.example",
-        "NEECTIFY_API_KEY": "n" * 32,
+        "NEECTIFY_API_KEY": "nf_live_abc123_" + "x" * 32,
         "ACCESS_TOKEN_EXPIRE_MINUTES": 15,
         "RATE_LIMIT_BACKEND": "redis",
     }
