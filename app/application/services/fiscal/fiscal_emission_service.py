@@ -109,10 +109,88 @@ class FiscalEmissionService:
         # 3. Idempotência — buscar documento existente
         doc = await self.doc_repo.get_by_sale(market_id, sale_id)
         if doc:
-            if doc.is_terminal():
+            if doc.status in (FiscalDocumentStatus.AUTHORIZED, FiscalDocumentStatus.PROCESSING, FiscalDocumentStatus.CANCELED):
                 return self._doc_to_response(doc)
-            # Já existe e não é terminal — retornar status atual
+
+            # Para os demais estados (QUEUED, PROVIDER_ERROR, REJECTED, etc.), permitimos reenfileirar.
+            # Vamos re-validar a venda (caso os itens ou dados tenham mudado)
+            sale = await self.sale_repo.get_by_id(sale_id)
+            if not sale:
+                raise BusinessRuleException("Venda não encontrada.")
+            if str(sale.market_id) != str(market_id):
+                raise BusinessRuleException("Venda não pertence a este mercado.")
+
+            validation = self.pre_validator.validate(
+                sale_items=sale.items,
+                payments=sale.payments,
+                customer_cpf=getattr(sale, "customer_cpf", None),
+                sale_status=getattr(sale, "status", None),
+                fiscal_config=cfg,
+            )
+
+            if not validation.is_valid:
+                doc.status = FiscalDocumentStatus.REJECTED
+                doc.sefaz_message = "; ".join(validation.errors[:3])
+                await self.doc_repo.save(doc)
+                await self._append_event(doc, "pre_validation_failed",
+                                          f"Pré-validação: {doc.sefaz_message}")
+                return self._doc_to_response(doc)
+
+            # Determina se precisamos reservar cota:
+            # Se estava em status que liberou a cota (ex: REJECTED), precisamos reservar.
+            # Se estava em QUEUED, PROVIDER_ERROR ou SEFAZ_UNAVAILABLE, a cota já está reservada.
+            needs_quota_reservation = doc.status not in (
+                FiscalDocumentStatus.QUEUED,
+                FiscalDocumentStatus.PROVIDER_ERROR,
+                FiscalDocumentStatus.SEFAZ_UNAVAILABLE,
+            )
+
+            doc.status = FiscalDocumentStatus.QUEUED
+            await self.doc_repo.save(doc)
+
+            period = datetime.utcnow().strftime("%Y%m")
+            consuming_addon = False
+
+            if needs_quota_reservation:
+                included_limit = 0
+                if self.plan_access_service:
+                    included_limit = await self.plan_access_service.get_fiscal_monthly_limit(owner_id)
+                try:
+                    reserve_result = await self.quota_service.check_and_reserve(
+                        owner_id=owner_id,
+                        market_id=market_id,
+                        period=period,
+                        included_limit=included_limit,
+                    )
+                    consuming_addon = reserve_result.consuming_addon
+                except FiscalQuotaExceededError:
+                    doc.status = FiscalDocumentStatus.OFFLINE_RECEIPT_ISSUED
+                    doc.sefaz_message = "Limite mensal de emissões atingido. Adquira créditos extras."
+                    await self.doc_repo.save(doc)
+                    await self._append_event(doc, "quota_exceeded", doc.sefaz_message)
+                    return self._doc_to_response(doc)
+
+            # Enfileirar job
+            await self._enqueue_emit(
+                doc.id, market_id, owner_id,
+                period=period,
+                consuming_addon=consuming_addon,
+            )
+
+            await self._append_event(doc, "queued", "Reemissão enfileirada.",
+                                      source=FiscalEventSource.MARKETFY)
+
+            logger.info(
+                "fiscal_emission_requeued",
+                extra={"extra_data": {
+                    "doc_id": str(doc.id),
+                    "market_id": str(market_id),
+                    "sale_id": str(sale_id),
+                    "provider_ref": doc.provider_ref,
+                }},
+            )
             return self._doc_to_response(doc)
+
 
         # 4. Pré-validação
         validation = self.pre_validator.validate(
@@ -229,7 +307,8 @@ class FiscalEmissionService:
         consuming_addon: bool = False,
     ):
         if self.arq_pool:
-            await self.arq_pool.enqueue_job(
+            logger.info(f"Enqueueing emit_nfce_job for doc_id={doc_id} into fiscal:high")
+            job = await self.arq_pool.enqueue_job(
                 "emit_nfce_job",
                 doc_id=str(doc_id),
                 market_id=str(market_id),
@@ -238,10 +317,69 @@ class FiscalEmissionService:
                 consuming_addon=consuming_addon,
                 _queue_name="fiscal:high",
             )
+            logger.info(f"Job successfully created in Redis with Job ID: {job.job_id if job else 'None'}")
         else:
-            logger.error("arq_pool_unavailable_failed_to_enqueue",
-                         extra={"extra_data": {"doc_id": str(doc_id)}})
-            raise BusinessRuleException("Fila de processamento fiscal indisponível. A emissão não pôde ser agendada.")
+            logger.warning("arq_pool_unavailable_skipping_queue",
+                           extra={"extra_data": {"doc_id": str(doc_id)}})
+
+    async def reprocess_document(
+        self,
+        market_id: uuid.UUID,
+        doc_id: uuid.UUID,
+        owner_id: uuid.UUID,
+    ) -> dict:
+        """Recoloca documento na fila para reprocessamento, garantindo cota se necessário."""
+        doc = await self.doc_repo.get_by_id(doc_id)
+        if not doc or str(doc.market_id) != str(market_id):
+            raise BusinessRuleException("Documento fiscal não encontrado.")
+            
+        if doc.is_terminal() and doc.status != FiscalDocumentStatus.REJECTED:
+            raise BusinessRuleException(f"Documento em estado terminal '{doc.status.value}' não pode ser reprocessado.")
+
+        # Determina se precisa reservar cota:
+        # Se estava em status que liberou a cota (ex: REJECTED), precisamos reservar.
+        # Se estava em QUEUED, PROVIDER_ERROR ou SEFAZ_UNAVAILABLE, a cota já está reservada.
+        needs_quota_reservation = doc.status not in (
+            FiscalDocumentStatus.QUEUED,
+            FiscalDocumentStatus.PROVIDER_ERROR,
+            FiscalDocumentStatus.SEFAZ_UNAVAILABLE,
+        )
+
+        doc.status = FiscalDocumentStatus.QUEUED
+        await self.doc_repo.save(doc)
+
+        period = datetime.utcnow().strftime("%Y%m")
+        consuming_addon = False
+
+        if needs_quota_reservation:
+            included_limit = 0
+            if self.plan_access_service:
+                included_limit = await self.plan_access_service.get_fiscal_monthly_limit(owner_id)
+            try:
+                reserve_result = await self.quota_service.check_and_reserve(
+                    owner_id=owner_id,
+                    market_id=market_id,
+                    period=period,
+                    included_limit=included_limit,
+                )
+                consuming_addon = reserve_result.consuming_addon
+            except FiscalQuotaExceededError:
+                doc.status = FiscalDocumentStatus.OFFLINE_RECEIPT_ISSUED
+                doc.sefaz_message = "Limite mensal de emissões atingido. Adquira créditos extras."
+                await self.doc_repo.save(doc)
+                await self._append_event(doc, "quota_exceeded", doc.sefaz_message)
+                return self._doc_to_response(doc)
+
+        # Enfileirar job
+        await self._enqueue_emit(
+            doc.id, market_id, owner_id,
+            period=period,
+            consuming_addon=consuming_addon,
+        )
+
+        await self._append_event(doc, "queued", "Reprocessamento enfileirado.",
+                                  source=FiscalEventSource.MARKETFY)
+        return self._doc_to_response(doc)
 
     async def _append_event(
         self,

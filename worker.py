@@ -73,9 +73,6 @@ class WorkerSettings:
 
     queue_name = "fiscal:high"
 
-    # Processar também as outras filas fiscais
-    queues = ALL_QUEUES
-
     max_jobs = int(os.environ.get("FISCAL_WORKER_CONCURRENCY", "5"))
     job_timeout = int(os.environ.get("FISCAL_JOB_TIMEOUT", "30"))
     max_tries = 3

@@ -361,3 +361,24 @@ async def metrics(request: Request):
         if token != settings.METRICS_ACCESS_TOKEN and bearer != settings.METRICS_ACCESS_TOKEN:
             raise HTTPException(status_code=404, detail="Nao encontrado.")
     return PlainTextResponse(metrics_registry.to_prometheus_text(), media_type="text/plain")
+
+
+@app.on_event("startup")
+async def startup_event():
+    try:
+        from infra.queues.arq_config import get_arq_pool
+        app.state.arq_pool = await get_arq_pool()
+        logger.info("ARQ pool initialized and stored in app.state.arq_pool")
+    except Exception as exc:
+        logger.error("Failed to initialize ARQ pool on startup", exc_info=exc)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if hasattr(app.state, "arq_pool") and app.state.arq_pool:
+        try:
+            await app.state.arq_pool.close()
+            logger.info("ARQ pool closed successfully")
+        except Exception as exc:
+            logger.error("Failed to close ARQ pool on shutdown", exc_info=exc)
+

@@ -97,14 +97,9 @@ def _get_emission_service(db, arq_pool=None):
     )
 
 
-async def _get_arq_pool():
-    """Obtém pool ARQ, retorna None se ARQ não disponível."""
-    try:
-        from infra.queues.arq_config import get_arq_pool
-        return await get_arq_pool()
-    except Exception as exc:
-        logger.error("get_arq_pool_failed", exc_info=exc)
-        return None
+def _get_arq_pool(request: Request):
+    """Obtém pool ARQ da app state, se disponível."""
+    return getattr(request.app.state, "arq_pool", None)
 
 
 # =============================================================================
@@ -304,7 +299,7 @@ async def request_emission(
     Retorna imediatamente com status queued/processing.
     A emissão real ocorre no worker fiscal.
     """
-    arq_pool = await _get_arq_pool()
+    arq_pool = _get_arq_pool(request)
     if arq_pool is None:
         raise HTTPException(
             status_code=503,
@@ -459,20 +454,22 @@ async def reprocess_document(
     doc.status = FiscalDocumentStatus.QUEUED
     await doc_repo.save(doc)
 
-    arq_pool = await _get_arq_pool()
+    arq_pool = _get_arq_pool(request)
     if arq_pool is None:
         raise HTTPException(
             status_code=503,
             detail="Serviço de emissão indisponível (conexão com Redis falhou).",
         )
 
-    await arq_pool.enqueue_job(
-        "emit_nfce_job",
-        doc_id=str(doc_id),
-        market_id=str(market_id),
-        owner_id=str(current_user.id),
-        _queue_name="fiscal:high",
-    )
+    svc = _get_emission_service(db, arq_pool)
+    try:
+        await svc.reprocess_document(
+            market_id=market_id,
+            doc_id=doc_id,
+            owner_id=current_user.id,
+        )
+    except BusinessRuleException as e:
+        raise HTTPException(400, str(e))
 
     await record_audit_event(
         audit, request, actor=current_user, action="fiscal.document.reprocessed",

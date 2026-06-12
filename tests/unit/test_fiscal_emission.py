@@ -234,7 +234,7 @@ async def test_idempotency_returns_existing_terminal_doc():
 
 
 @pytest.mark.asyncio
-async def test_idempotency_returns_queued_doc_without_re_enqueueing():
+async def test_idempotency_returns_queued_doc_with_re_enqueueing():
     market_id = uuid.uuid4()
     sale_id = uuid.uuid4()
     existing_doc = FiscalDocument(
@@ -248,7 +248,7 @@ async def test_idempotency_returns_queued_doc_without_re_enqueueing():
     svc = _make_service(cfg=cfg, sale=sale, existing_doc=existing_doc, arq_pool=arq_pool)
     result = await svc.request_emission(market_id, sale_id, uuid.uuid4())
     assert result["status"] == FiscalDocumentStatus.QUEUED.value
-    arq_pool.enqueue_job.assert_not_called()
+    arq_pool.enqueue_job.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
