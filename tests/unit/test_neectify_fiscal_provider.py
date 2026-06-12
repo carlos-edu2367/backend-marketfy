@@ -581,7 +581,7 @@ def test_emission_service_payload_uses_neectify_format():
     """Verifica que build_neectify_payload produz o formato correto para Neectify."""
     import sys
     import os
-
+    from datetime import datetime
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../app"))
     from application.services.fiscal.fiscal_pre_validator import FiscalPreValidator
 
@@ -606,6 +606,7 @@ def test_emission_service_payload_uses_neectify_format():
     sale.customer_cpf = "42978931023"
     sale.items = [item]
     sale.payments = [payment]
+    sale.created_at = datetime(2026, 6, 12, 15, 0, 0)
 
     fiscal_config = MagicMock()
     fiscal_config.environment = MagicMock()
@@ -622,11 +623,16 @@ def test_emission_service_payload_uses_neectify_format():
     assert payload["issuer_id"] == ISSUER_ID
     assert payload["environment"] == "homologation"
     assert payload["external_id"] == str(sale.id)
+    assert payload["sale"]["occurred_at"] == "2026-06-12T15:00:00Z"
     assert len(payload["items"]) == 1
+    assert payload["items"][0]["sku"] == str(item.product_id)
     assert payload["items"][0]["ncm"] == "22021000"
-    assert payload["items"][0]["unit_value"] == 5.50
+    assert payload["items"][0]["unit_amount"] == "5.50"
+    assert payload["items"][0]["total_amount"] == "11.00"
+    assert payload["items"][0]["quantity"] == "2.0000"
     assert len(payload["payments"]) == 1
-    assert payload["payments"][0]["payment_method"] == "credit_card"
+    assert payload["payments"][0]["method"] == "credit_card"
+    assert payload["payments"][0]["amount"] == "11.00"
     assert payload["consumer"]["document"] == "42978931023"
 
 

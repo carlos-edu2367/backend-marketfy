@@ -238,8 +238,8 @@ class FiscalPreValidator:
         for pay in sale.payments:
             method_val = pay.method.value if hasattr(pay.method, "value") else str(pay.method)
             entry: dict = {
-                "payment_method": self.map_neectify_payment_method(method_val),
-                "amount": float(pay.amount),
+                "method": self.map_neectify_payment_method(method_val),
+                "amount": f"{float(pay.amount):.2f}",
             }
             payments_payload.append(entry)
 
@@ -247,16 +247,16 @@ class FiscalPreValidator:
         for item in sale.items:
             ncm = getattr(item, "ncm_snapshot", None) or getattr(fiscal_config, "default_ncm", "")
             cfop = getattr(fiscal_config, "default_cfop", "5102")
-            product_name = getattr(item, "product_name_snapshot", None) or str(item.product_id)
+            product_name = getattr(item, "product_name_snapshot", None) or getattr(item, "product_name", None) or str(item.product_id)
             items_payload.append({
-                "code": str(item.product_id),
+                "sku": str(item.product_id),
                 "description": product_name[:120],
-                "ncm": str(ncm).replace(".", "").replace(" ", ""),
-                "cfop": cfop,
+                "quantity": f"{float(item.quantity):.4f}",
                 "unit": "UN",
-                "quantity": float(item.quantity),
-                "unit_value": float(item.unit_price),
-                "total_value": float(item.total),
+                "unit_amount": f"{float(item.unit_price):.2f}",
+                "total_amount": f"{float(item.total):.2f}",
+                "cfop": cfop,
+                "ncm": str(ncm).replace(".", "").replace(" ", ""),
             })
 
         payload: dict = {
@@ -264,14 +264,12 @@ class FiscalPreValidator:
             "environment": neectify_env,
             "external_id": str(sale.id),
             "sale": {
-                "document_type": "nfce",
-                "payment_type": "immediate",
+                "occurred_at": sale.created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
             "items": items_payload,
             "payments": payments_payload,
-            "fiscal_options": {
-                "nature_of_operation": "Venda Comercial",
-            },
+            "fiscal_options": {},
+            "metadata": {},
         }
 
         if hasattr(sale, "customer_cpf") and sale.customer_cpf:

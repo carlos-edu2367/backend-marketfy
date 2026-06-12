@@ -102,7 +102,8 @@ async def _get_arq_pool():
     try:
         from infra.queues.arq_config import get_arq_pool
         return await get_arq_pool()
-    except Exception:
+    except Exception as exc:
+        logger.error("get_arq_pool_failed", exc_info=exc)
         return None
 
 
