@@ -75,11 +75,12 @@ class OnboardingStatus:
 
 class FiscalOnboardingService:
 
-    def __init__(self, config_repo, doc_repo, tax_profile_repo, neectify_provider=None):
+    def __init__(self, config_repo, doc_repo, tax_profile_repo, neectify_provider=None, cipher=None):
         self._config_repo = config_repo
         self._doc_repo = doc_repo
         self._tax_profile_repo = tax_profile_repo
         self._neectify = neectify_provider  # NeectifyFiscalProvider (opcional em tests)
+        self._cipher = cipher  # SecretCipher — usado por sync_config p/ decriptar o CSC
 
     async def get_onboarding_status(self, market_id: uuid.UUID) -> OnboardingStatus:
         """
@@ -363,6 +364,78 @@ class FiscalOnboardingService:
             extra={"extra_data": {"market_id": str(market_id), "issuer_id": issuer_id}},
         )
         return {"issuer_id": issuer_id, "onboarding_step": NeectifyOnboardingStep.ISSUER_CREATED.value}
+
+    async def sync_config(self, market_id: uuid.UUID) -> dict:
+        """
+        Cria a configuração NFC-e (CSC, série, numeração) no Neectify Fiscal via
+        POST /v1/issuers/{id}/nfce-configs. SEM esse passo, a emissão falha com
+        422 `nfce.config_not_found`.
+
+        Idempotente: se `neectify_config_id` já existe ou o CSC ainda não foi
+        configurado, retorna sem recriar (campo `skipped` indica o motivo).
+        """
+        if not self._neectify:
+            raise RuntimeError("NeectifyFiscalProvider não configurado.")
+
+        cfg = await self._config_repo.get_by_market(market_id)
+        if not cfg:
+            raise ValueError("Configuração fiscal não encontrada para este mercado.")
+
+        issuer_id = getattr(cfg, "neectify_issuer_id", None)
+        if not issuer_id:
+            return {"config_id": None, "skipped": "issuer_not_created"}
+
+        # Idempotência: já criada anteriormente
+        if getattr(cfg, "neectify_config_id", None):
+            return {"config_id": cfg.neectify_config_id, "skipped": "already_set"}
+
+        # CSC é obrigatório para a config NFC-e (QR Code). Sem ele, apenas pula —
+        # o usuário deve configurar o CSC e re-sincronizar.
+        if not (cfg.csc_id_ciphertext and cfg.csc_token_ciphertext):
+            return {"config_id": None, "skipped": "csc_not_configured"}
+        if self._cipher is None:
+            return {"config_id": None, "skipped": "cipher_unavailable"}
+
+        csc_id = self._cipher.decrypt(cfg.csc_id_ciphertext)
+        csc_token = self._cipher.decrypt(cfg.csc_token_ciphertext)
+        if not csc_id or not csc_token:
+            return {"config_id": None, "skipped": "csc_decrypt_failed"}
+
+        # Mesma normalização de ambiente usada na emissão (build_neectify_payload).
+        environment = getattr(cfg, "environment", None)
+        env_value = environment.value if hasattr(environment, "value") else str(environment or "homologacao")
+        neectify_env = "production" if env_value in ("producao", "production") else "homologation"
+
+        payload = {
+            "environment": neectify_env,
+            "series": int(cfg.nfce_series or 1),
+            "next_number": int(getattr(cfg, "nfce_next_number", None) or 1),
+            "csc_id": str(csc_id),
+            "csc_token": str(csc_token),
+            "allow_offline_contingency": False,
+        }
+
+        try:
+            result = await self._neectify.create_nfce_config(issuer_id, payload)
+        except FiscalValidationError as exc:
+            logger.error(
+                "neectify_create_config_failed",
+                extra={"extra_data": {"market_id": str(market_id), "error": str(exc)}},
+            )
+            raise
+
+        config_id = result.get("id", "")
+        await self._config_repo.update_neectify_fields(
+            market_id=market_id,
+            config_id=config_id,
+            onboarding_step=NeectifyOnboardingStep.CONFIG_SET.value,
+        )
+
+        logger.info(
+            "neectify_config_set",
+            extra={"extra_data": {"market_id": str(market_id), "config_id": config_id}},
+        )
+        return {"config_id": config_id, "onboarding_step": NeectifyOnboardingStep.CONFIG_SET.value}
 
     async def sync_cert(
         self,

@@ -882,17 +882,28 @@ async def neectify_sync_issuer(
 
     provider = get_fiscal_provider(settings.FISCAL_PROVIDER)
 
+    from infra.security.secret_cipher import SecretCipher
+    cipher = SecretCipher(settings.FISCAL_SECRET_KEY or settings.SECRET_KEY)
+
     svc = FiscalOnboardingService(
         config_repo=config_repo,
         doc_repo=SQLAlchemyFiscalDocumentRepository(db),
         tax_profile_repo=SQLAlchemyProductTaxProfileRepository(db),
         neectify_provider=provider,
+        cipher=cipher,
     )
 
     market_data = {"trade_name": getattr(market, "name", None)}
 
     try:
         result = await svc.sync_issuer(market_id=market_id, market_data=market_data)
+        # Passo 2 do onboarding: criar a config NFC-e (CSC/série) no Fiscal.
+        # Sem isso, a emissão falha com 422 nfce.config_not_found. Idempotente:
+        # pula se o CSC ainda não foi configurado ou se já existe config.
+        config_result = await svc.sync_config(market_id=market_id)
+        result["config_id"] = config_result.get("config_id")
+        if config_result.get("skipped"):
+            result["config_skipped"] = config_result["skipped"]
     except ValueError as e:
         raise HTTPException(400, str(e))
     except FiscalValidationError as exc:
@@ -964,11 +975,15 @@ async def neectify_sync_cert(
 
     provider = get_fiscal_provider(settings.FISCAL_PROVIDER)
 
+    from infra.security.secret_cipher import SecretCipher
+    cipher = SecretCipher(settings.FISCAL_SECRET_KEY or settings.SECRET_KEY)
+
     svc = FiscalOnboardingService(
         config_repo=SQLAlchemyFiscalTenantConfigRepository(db),
         doc_repo=SQLAlchemyFiscalDocumentRepository(db),
         tax_profile_repo=SQLAlchemyProductTaxProfileRepository(db),
         neectify_provider=provider,
+        cipher=cipher,
     )
 
     try:
@@ -978,6 +993,10 @@ async def neectify_sync_cert(
             certificate_password=certificate_password,
             environment=environment,
         )
+        # Safety-net: garante a config NFC-e no Fiscal caso o CSC tenha sido
+        # definido após o sync-issuer. Idempotente (pula se já existe).
+        config_result = await svc.sync_config(market_id=market_id)
+        result["config_id"] = config_result.get("config_id")
     except ValueError as e:
         raise HTTPException(400, str(e))
     except FiscalValidationError as exc:

@@ -47,7 +47,14 @@ class NeectifyFiscalClient:
                 headers={
                     "X-API-Key": self._api_key,
                     "X-Internal-Client": self._internal_client,
-                    "Content-Type": "application/json",
+                    # NÃO fixar Content-Type aqui. Sendo default do client, o httpx
+                    # o re-injeta em TODA requisição e, por já estar presente, NÃO
+                    # é substituído pelo boundary de multipart gerado por `files=`.
+                    # Resultado: upload de certificado seria enviado como corpo
+                    # multipart rotulado "application/json" → o FastAPI do Fiscal
+                    # não acha os campos do form → 422. O httpx já define o
+                    # Content-Type correto por requisição: application/json para
+                    # `json=` e multipart/form-data (com boundary) para `files=`.
                     "Accept": "application/json",
                 },
                 timeout=httpx.Timeout(
