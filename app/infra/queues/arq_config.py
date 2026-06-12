@@ -43,7 +43,7 @@ def get_redis_settings():
     redis_url = settings.REDIS_URL
 
     if redis_url.startswith("redis://") or redis_url.startswith("rediss://"):
-        from urllib.parse import urlparse
+        from urllib.parse import urlparse, unquote
         parsed = urlparse(redis_url)
         
         host = parsed.hostname or "localhost"
@@ -56,12 +56,15 @@ def get_redis_settings():
             except ValueError:
                 pass
                 
+        username = unquote(parsed.username) if parsed.username else None
+        password = unquote(parsed.password) if parsed.password else None
+
         return RedisSettings(
             host=host,
             port=port,
             database=database,
-            username=parsed.username,
-            password=parsed.password,
+            username=username,
+            password=password,
             ssl=parsed.scheme == "rediss"
         )
 
