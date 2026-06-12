@@ -308,22 +308,70 @@ class FiscalEmissionService:
         period: str = "",
         consuming_addon: bool = False,
     ):
-        if self.arq_pool:
-            logger.info(f"Enqueueing emit_nfce_job for doc_id={doc_id} into fiscal:high")
-            job = await self.arq_pool.enqueue_job(
-                "emit_nfce_job",
-                doc_id=str(doc_id),
-                market_id=str(market_id),
-                owner_id=str(owner_id),
-                period=period,
-                consuming_addon=consuming_addon,
-                _job_id=f"emit_nfce:{doc_id}",
-                _queue_name="fiscal:high",
+        queue_name = "fiscal:high"
+        arq_job_id = f"emit_nfce:{doc_id}"
+        if self.arq_pool is not None:
+            logger.info(
+                "solicitacao de enfileiramento de job fiscal iniciada",
+                extra={"extra_data": {
+                    "doc_id": str(doc_id),
+                    "market_id": str(market_id),
+                    "owner_id": str(owner_id),
+                    "queue_name": queue_name,
+                    "arq_job_id": arq_job_id,
+                }},
             )
-            logger.info(f"Job successfully created in Redis with Job ID: {job.job_id if job else 'None'}")
+            try:
+                job = await self.arq_pool.enqueue_job(
+                    "emit_nfce_job",
+                    doc_id=str(doc_id),
+                    market_id=str(market_id),
+                    owner_id=str(owner_id),
+                    period=period,
+                    consuming_addon=consuming_addon,
+                    _job_id=arq_job_id,
+                    _queue_name=queue_name,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "problemas ao enfileirar job: erro de conexao ou redis",
+                    extra={"extra_data": {
+                        "doc_id": str(doc_id),
+                        "market_id": str(market_id),
+                        "owner_id": str(owner_id),
+                        "queue_name": queue_name,
+                        "arq_job_id": arq_job_id,
+                        "error": str(exc),
+                    }},
+                )
+                raise
+
+            if job is None:
+                logger.warning(
+                    "problemas ao enfileirar job: enfileiramento nao confirmado",
+                    extra={"extra_data": {
+                        "doc_id": str(doc_id),
+                        "market_id": str(market_id),
+                        "owner_id": str(owner_id),
+                        "queue_name": queue_name,
+                        "arq_job_id": arq_job_id,
+                    }},
+                )
+            else:
+                logger.info(
+                    "job enfileirado com sucesso",
+                    extra={"extra_data": {
+                        "doc_id": str(doc_id),
+                        "market_id": str(market_id),
+                        "owner_id": str(owner_id),
+                        "queue_name": queue_name,
+                        "job_id": job.job_id,
+                        "arq_job_id": arq_job_id,
+                    }},
+                )
         else:
-            logger.warning("arq_pool_unavailable_skipping_queue",
-                           extra={"extra_data": {"doc_id": str(doc_id)}})
+            logger.warning("problemas ao enfileirar job: arq_pool indisponivel",
+                           extra={"extra_data": {"doc_id": str(doc_id), "queue_name": queue_name}})
 
     async def reprocess_document(
         self,

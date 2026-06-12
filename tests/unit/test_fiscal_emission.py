@@ -282,6 +282,61 @@ async def test_enqueue_uses_deterministic_job_id_for_fiscal_document():
     assert arq_pool.enqueue_job.call_args.kwargs["_job_id"] == f"emit_nfce:{doc_id}"
 
 
+@pytest.mark.asyncio
+async def test_enqueue_logs_success_with_job_metadata(monkeypatch):
+    from application.services.fiscal import fiscal_emission_service as emission_module
+
+    logger_mock = MagicMock()
+    monkeypatch.setattr(emission_module, "logger", logger_mock)
+    arq_pool = AsyncMock()
+    arq_pool.enqueue_job.return_value = type("Job", (), {"job_id": "job-123"})()
+    svc = _make_service(arq_pool=arq_pool)
+    doc_id = uuid.uuid4()
+    market_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+
+    await svc._enqueue_emit(doc_id, market_id, owner_id)
+
+    logger_mock.info.assert_any_call(
+        "job enfileirado com sucesso",
+        extra={"extra_data": {
+            "doc_id": str(doc_id),
+            "market_id": str(market_id),
+            "owner_id": str(owner_id),
+            "queue_name": "fiscal:high",
+            "job_id": "job-123",
+            "arq_job_id": f"emit_nfce:{doc_id}",
+        }},
+    )
+
+
+@pytest.mark.asyncio
+async def test_enqueue_logs_problem_when_job_is_not_created(monkeypatch):
+    from application.services.fiscal import fiscal_emission_service as emission_module
+
+    logger_mock = MagicMock()
+    monkeypatch.setattr(emission_module, "logger", logger_mock)
+    arq_pool = AsyncMock()
+    arq_pool.enqueue_job.return_value = None
+    svc = _make_service(arq_pool=arq_pool)
+    doc_id = uuid.uuid4()
+    market_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+
+    await svc._enqueue_emit(doc_id, market_id, owner_id)
+
+    logger_mock.warning.assert_any_call(
+        "problemas ao enfileirar job: enfileiramento nao confirmado",
+        extra={"extra_data": {
+            "doc_id": str(doc_id),
+            "market_id": str(market_id),
+            "owner_id": str(owner_id),
+            "queue_name": "fiscal:high",
+            "arq_job_id": f"emit_nfce:{doc_id}",
+        }},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pré-validação falha
 # ---------------------------------------------------------------------------
