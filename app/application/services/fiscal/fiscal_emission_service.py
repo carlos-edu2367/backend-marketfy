@@ -216,6 +216,7 @@ class FiscalEmissionService:
                 doc.id, market_id, owner_id,
                 period=period,
                 consuming_addon=consuming_addon,
+                is_retry=True,
             )
 
             await self._append_event(doc, "queued", "Reemissão enfileirada.",
@@ -363,9 +364,17 @@ class FiscalEmissionService:
         owner_id: uuid.UUID,
         period: str = "",
         consuming_addon: bool = False,
+        is_retry: bool = False,
     ):
         queue_name = "fiscal:high"
         arq_job_id = f"emit_nfce:{doc_id}"
+        if is_retry:
+            # ARQ keeps completed job results in Redis for ~1h (keep_result_seconds).
+            # Using the same job_id within that window causes enqueue_job to return None
+            # silently, leaving the document stuck in QUEUED forever.
+            # A timestamp suffix makes each retry a distinct job while still
+            # preventing duplicates from rapid double-clicks within the same second.
+            arq_job_id = f"{arq_job_id}:{int(datetime.utcnow().timestamp())}"
         if self.arq_pool is not None:
             logger.info(
                 "solicitacao de enfileiramento de job fiscal iniciada",
@@ -482,6 +491,7 @@ class FiscalEmissionService:
             doc.id, market_id, owner_id,
             period=period,
             consuming_addon=consuming_addon,
+            is_retry=True,
         )
 
         await self._append_event(doc, "queued", "Reprocessamento enfileirado.",

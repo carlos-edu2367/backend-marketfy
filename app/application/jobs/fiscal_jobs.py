@@ -233,6 +233,10 @@ async def emit_nfce_job(
         elif result.needs_reconciliation:
             # Timeout ou ref duplicada — reconciliar antes de reenviar
             doc.status = FiscalDocumentStatus.PROVIDER_ERROR
+            # Neectify retorna seu UUID próprio em result.provider_ref (202 Accepted).
+            # Salvar aqui garante que reconcile_nfce_job consulte com o ID correto.
+            if result.provider_ref and result.provider_ref != doc.provider_ref:
+                doc.provider_ref = result.provider_ref
             await doc_repo.save(doc)
             await _append_event(event_repo, doc, "needs_reconciliation",
                                  f"Estado incerto: {result.status.value}",
