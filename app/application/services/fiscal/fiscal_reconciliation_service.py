@@ -145,10 +145,18 @@ class FiscalReconciliationService:
             logger.info("fiscal_reconciled_canceled", extra={"extra_data": {"doc_id": str(doc_id)}})
 
         else:
-            # Estado ainda incerto — reagendar retry
-            doc.status = FiscalDocumentStatus.PROVIDER_ERROR
+            # Provider encontrou o documento mas ainda está processando de forma
+            # assíncrona (queued/signed/sent na SEFAZ). Isso é uma emissão SAUDÁVEL
+            # em andamento — NÃO é um erro. Mantemos PROCESSING para que o caller
+            # (reconcile_nfce_job) reagende uma nova consulta com backoff. O circuit
+            # breaker em _MAX_ATTEMPTS converte para MANUAL_ACTION_REQUIRED se nunca
+            # resolver. Marcar PROVIDER_ERROR aqui fazia o operador ver "Erro emissão"
+            # mesmo com a nota sendo autorizada segundos depois.
+            doc.status = FiscalDocumentStatus.PROCESSING
             doc.last_attempt_id = attempt.id
             await self.doc_repo.save(doc)
+            await self._append_event(doc, "reconcile_pending",
+                                      "Ainda processando no provider — nova consulta agendada.")
 
         return doc
 

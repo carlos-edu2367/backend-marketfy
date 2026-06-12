@@ -231,15 +231,18 @@ async def emit_nfce_job(
             return {"status": "canceled"}
 
         elif result.needs_reconciliation:
-            # Timeout ou ref duplicada — reconciliar antes de reenviar
-            doc.status = FiscalDocumentStatus.PROVIDER_ERROR
+            # Emissão assíncrona aceita pelo provider (202 Accepted, status "queued").
+            # Isso é o caminho SAUDÁVEL — a NFC-e está sendo processada na SEFAZ.
+            # PROCESSING (não PROVIDER_ERROR): o operador vê "Emitindo NFC-e...",
+            # e o reconcile_nfce_job consulta o status até a SEFAZ responder.
+            doc.status = FiscalDocumentStatus.PROCESSING
             # Neectify retorna seu UUID próprio em result.provider_ref (202 Accepted).
             # Salvar aqui garante que reconcile_nfce_job consulte com o ID correto.
             if result.provider_ref and result.provider_ref != doc.provider_ref:
                 doc.provider_ref = result.provider_ref
             await doc_repo.save(doc)
-            await _append_event(event_repo, doc, "needs_reconciliation",
-                                 f"Estado incerto: {result.status.value}",
+            await _append_event(event_repo, doc, "queued_at_provider",
+                                 f"Aceito pelo provider, aguardando SEFAZ: {result.status.value}",
                                  FiscalEventSource.WORKER)
             if "arq" in ctx:
                 await ctx["arq"].enqueue_job(
@@ -286,7 +289,11 @@ async def reconcile_nfce_job(
     from infra.providers.fiscal.provider_factory import get_fiscal_provider
     from infra.security.secret_cipher import SecretCipher
     from infra.config.settings import get_settings
-    from application.services.fiscal.fiscal_reconciliation_service import FiscalReconciliationService
+    from application.services.fiscal.fiscal_reconciliation_service import (
+        FiscalReconciliationService,
+        _BACKOFF_DELAYS,
+        _MAX_ATTEMPTS,
+    )
 
     settings = get_settings()
     doc_uuid = uuid.UUID(doc_id)
@@ -314,6 +321,26 @@ async def reconcile_nfce_job(
 
         svc = FiscalReconciliationService(doc_repo, attempt_repo, event_repo, provider)
         doc = await svc.reconcile_document(doc_uuid, api_token)
+
+        # A emissão no Neectify é assíncrona: uma única consulta raramente cai
+        # depois da resposta da SEFAZ. Enquanto o documento não for terminal,
+        # reagendamos novas consultas com backoff até resolver ou o circuit breaker
+        # (_MAX_ATTEMPTS → manual_action_required) encerrar. Sem isso, o documento
+        # ficava preso e o Marketfy mostrava "Erro emissão" mesmo após autorização.
+        if not doc.is_terminal() and "arq" in ctx:
+            consult_count = await attempt_repo.count_attempts(doc_uuid, "consult")
+            # <= permite a tentativa final que dispara o circuit breaker
+            # (_MAX_ATTEMPTS → MANUAL_ACTION_REQUIRED), em vez de deixar o
+            # documento preso em PROCESSING para sempre.
+            if consult_count <= _MAX_ATTEMPTS:
+                delay = _BACKOFF_DELAYS[min(consult_count, len(_BACKOFF_DELAYS) - 1)]
+                await ctx["arq"].enqueue_job(
+                    "reconcile_nfce_job",
+                    doc_id=doc_id, market_id=market_id, owner_id=owner_id,
+                    _queue_name="fiscal:reconcile",
+                    _job_id=f"reconcile:{doc_id}:{consult_count}",
+                    _defer_by=timedelta(seconds=delay),
+                )
 
         return {"status": doc.status.value}
 

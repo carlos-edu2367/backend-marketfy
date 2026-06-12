@@ -169,6 +169,30 @@ async def test_reconcile_not_found_keeps_state():
 
 
 # ---------------------------------------------------------------------------
+# Consulta retorna AINDA PENDENTE (UNKNOWN) — emissão assíncrona em andamento
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reconcile_pending_keeps_processing_not_error():
+    """Regressão: o Neectify processa de forma assíncrona; enquanto a SEFAZ não
+    responde a consulta retorna UNKNOWN. Isso é uma emissão SAUDÁVEL em
+    andamento — NÃO pode virar PROVIDER_ERROR (que o operador lê como
+    'Erro emissão'). Deve permanecer PROCESSING para nova reconciliação."""
+    doc = _make_doc(status=FiscalDocumentStatus.PROCESSING)
+    consult = ProviderConsultResult(
+        found=True,
+        provider_ref=doc.provider_ref,
+        status=EmitResultStatus.UNKNOWN,
+        sefaz_status_code="queued",
+    )
+    svc, saved_docs = _make_service(doc=doc, consult_result=consult, attempt_count=0)
+    result = await svc.reconcile_document(doc.id, "token")
+    assert result.status == FiscalDocumentStatus.PROCESSING
+    assert result.status != FiscalDocumentStatus.PROVIDER_ERROR
+    assert not result.is_terminal()
+
+
+# ---------------------------------------------------------------------------
 # Circuit breaker — max tentativas
 # ---------------------------------------------------------------------------
 
