@@ -133,6 +133,14 @@ async def get_config(
             "has_csc": False,
             "certificate_valid_until": None,
         }
+
+    csc_id_decrypted = None
+    if cfg.csc_id_ciphertext:
+        try:
+            csc_id_decrypted = svc.cipher.decrypt(cfg.csc_id_ciphertext)
+        except Exception:
+            csc_id_decrypted = None
+
     return {
         "market_id": str(market_id),
         "enabled": cfg.enabled,
@@ -141,6 +149,10 @@ async def get_config(
         "legal_name": cfg.legal_name,
         "trade_name": cfg.trade_name,
         "cnpj": cfg.cnpj,
+        "state_registration": cfg.state_registration,
+        "crt": cfg.crt,
+        "address_json": cfg.address_json,
+        "csc_id": csc_id_decrypted,
         "tax_regime": cfg.tax_regime.value if cfg.tax_regime else None,
         "nfce_series": cfg.nfce_series,
         "default_cfop": cfg.default_cfop,
