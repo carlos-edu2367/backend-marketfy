@@ -84,6 +84,13 @@ class FiscalEmissionService:
                 event_type="emission_skipped",
                 message="Fiscal não habilitado para este mercado.",
             )
+            logger.warning(
+                "solicitacao de emissao ignorada: fiscal nao habilitado",
+                extra={"extra_data": {
+                    "market_id": str(market_id),
+                    "sale_id": str(sale_id),
+                }}
+            )
             return {
                 "fiscal_document_id": None,
                 "status": FiscalDocumentStatus.NOT_REQUESTED.value,
@@ -92,6 +99,13 @@ class FiscalEmissionService:
             }
 
         if not cfg.is_ready_for_emission():
+            logger.warning(
+                "solicitacao de emissao ignorada: configuracao incompleta",
+                extra={"extra_data": {
+                    "market_id": str(market_id),
+                    "sale_id": str(sale_id),
+                }}
+            )
             return {
                 "fiscal_document_id": None,
                 "status": FiscalDocumentStatus.MANUAL_ACTION_REQUIRED.value,
@@ -110,6 +124,14 @@ class FiscalEmissionService:
         doc = await self.doc_repo.get_by_sale(market_id, sale_id)
         if doc:
             if doc.status in (FiscalDocumentStatus.AUTHORIZED, FiscalDocumentStatus.CANCELED):
+                logger.info(
+                    f"solicitacao de emissao ignorada: documento ja {doc.status.value}",
+                    extra={"extra_data": {
+                        "doc_id": str(doc.id),
+                        "market_id": str(market_id),
+                        "sale_id": str(sale_id),
+                    }}
+                )
                 return self._doc_to_response(doc)
 
             # Para os demais estados (QUEUED, PROCESSING, PROVIDER_ERROR, REJECTED, etc.),
@@ -135,6 +157,15 @@ class FiscalEmissionService:
                 await self.doc_repo.save(doc)
                 await self._append_event(doc, "pre_validation_failed",
                                           f"Pré-validação: {doc.sefaz_message}")
+                logger.warning(
+                    "solicitacao de emissao ignorada: pre-validacao falhou",
+                    extra={"extra_data": {
+                        "doc_id": str(doc.id),
+                        "market_id": str(market_id),
+                        "sale_id": str(sale_id),
+                        "errors": validation.errors,
+                    }}
+                )
                 return self._doc_to_response(doc)
 
             # Determina se precisamos reservar cota:
@@ -170,6 +201,14 @@ class FiscalEmissionService:
                     doc.sefaz_message = "Limite mensal de emissões atingido. Adquira créditos extras."
                     await self.doc_repo.save(doc)
                     await self._append_event(doc, "quota_exceeded", doc.sefaz_message)
+                    logger.warning(
+                        "solicitacao de emissao ignorada: limite mensal atingido (cota excedida)",
+                        extra={"extra_data": {
+                            "doc_id": str(doc.id),
+                            "market_id": str(market_id),
+                            "sale_id": str(sale_id),
+                        }}
+                    )
                     return self._doc_to_response(doc)
 
             # Enfileirar job
@@ -183,7 +222,7 @@ class FiscalEmissionService:
                                       source=FiscalEventSource.MARKETFY)
 
             logger.info(
-                "fiscal_emission_requeued",
+                "job de reemissao enfileirado com sucesso",
                 extra={"extra_data": {
                     "doc_id": str(doc.id),
                     "market_id": str(market_id),
@@ -222,6 +261,15 @@ class FiscalEmissionService:
             await self.doc_repo.save(doc)
             await self._append_event(doc, "pre_validation_failed",
                                       f"Pré-validação: {doc.sefaz_message}")
+            logger.warning(
+                "solicitacao de emissao ignorada: pre-validacao falhou",
+                extra={"extra_data": {
+                    "doc_id": str(doc.id),
+                    "market_id": str(market_id),
+                    "sale_id": str(sale_id),
+                    "errors": validation.errors,
+                }}
+            )
             return self._doc_to_response(doc)
 
         doc.status = FiscalDocumentStatus.QUEUED
@@ -245,6 +293,14 @@ class FiscalEmissionService:
             doc.sefaz_message = "Limite mensal de emissões atingido. Adquira créditos extras."
             await self.doc_repo.save(doc)
             await self._append_event(doc, "quota_exceeded", doc.sefaz_message)
+            logger.warning(
+                "solicitacao de emissao ignorada: limite mensal atingido (cota excedida)",
+                extra={"extra_data": {
+                    "doc_id": str(doc.id),
+                    "market_id": str(market_id),
+                    "sale_id": str(sale_id),
+                }}
+            )
             return self._doc_to_response(doc)
 
         # 7. Enfileirar job
@@ -258,7 +314,7 @@ class FiscalEmissionService:
                                   source=FiscalEventSource.MARKETFY)
 
         logger.info(
-            "fiscal_emission_queued",
+            "job de emissao enfileirado com sucesso",
             extra={"extra_data": {
                 "doc_id": str(doc.id),
                 "market_id": str(market_id),
