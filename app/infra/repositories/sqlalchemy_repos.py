@@ -473,7 +473,8 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
     async def get_by_id(self, sale_id: uuid.UUID) -> Optional[Sale]:
         stmt = select(SaleModel).options(
             selectinload(SaleModel.items),
-            selectinload(SaleModel.payments)
+            selectinload(SaleModel.payments),
+            selectinload(SaleModel.fiscal_documents)
         ).where(SaleModel.id == sale_id)
         
         res = await self.session.execute(stmt)
@@ -483,7 +484,8 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
     async def get_by_offline_id(self, market_id: uuid.UUID, offline_id: str) -> Optional[Sale]:
         stmt = select(SaleModel).options(
             selectinload(SaleModel.items),
-            selectinload(SaleModel.payments)
+            selectinload(SaleModel.payments),
+            selectinload(SaleModel.fiscal_documents)
         ).where(
             SaleModel.market_id == market_id,
             SaleModel.offline_id == offline_id,
@@ -576,7 +578,8 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
     async def list_by_market(self, market_id: uuid.UUID, limit: int = 100, offset: int = 0) -> List[Sale]:
         stmt = select(SaleModel).options(
             selectinload(SaleModel.items),
-            selectinload(SaleModel.payments)
+            selectinload(SaleModel.payments),
+            selectinload(SaleModel.fiscal_documents)
         ).where(SaleModel.market_id == market_id).order_by(desc(SaleModel.created_at)).limit(limit).offset(offset)
         
         res = await self.session.execute(stmt)
@@ -640,6 +643,39 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                     amount=p.amount,
                     installments=p.installments
                 ))
+
+        # Reconstrói a nota fiscal usando o novo FiscalDocument se disponível
+        if getattr(m, "fiscal_documents", None):
+            sorted_docs = sorted(m.fiscal_documents, key=lambda d: d.created_at, reverse=True)
+            doc = sorted_docs[0]
+            
+            # Mapeia status do banco para os que o front espera
+            status_map = {
+                "authorized": "autorizada",
+                "rejected": "rejeitada",
+                "provider_error": "erro",
+                "sefaz_unavailable": "erro",
+                "manual_action_required": "erro",
+                "canceled": "cancelada",
+                "queued": "processando",
+                "processing": "processando",
+                "offline_receipt_issued": "processando",
+                "contingency_required": "processando",
+                "not_requested": "pendente"
+            }
+            mapped_status = status_map.get(doc.status, "processando")
+            
+            s.invoice = {
+                "id": str(doc.id),
+                "status": mapped_status,
+                "access_key": doc.access_key,
+                "number": doc.number,
+                "series": doc.series,
+                "xml_url": f"/api/v1/fiscal/artifacts/download?doc_id={doc.id}&type=xml" if doc.access_key else None,
+                "pdf_url": f"/api/v1/fiscal/artifacts/download?doc_id={doc.id}&type=pdf" if doc.access_key else None,
+                "error_message": doc.sefaz_message,
+                "emitted_at": doc.authorized_at or doc.issued_at
+            }
         return s
 # ==================================================================================
 # CUSTOMER REPOSITORY

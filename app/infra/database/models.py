@@ -199,6 +199,14 @@ class SaleModel(Base):
     items = relationship("SaleItemModel", backref="sale", lazy="selectin")
     payments = relationship("PaymentModel", backref="sale", lazy="selectin")
     invoice = relationship("InvoiceModel", back_populates="sale", uselist=True, lazy="selectin")
+    fiscal_documents = relationship(
+        "FiscalDocumentModel",
+        primaryjoin="SaleModel.id == FiscalDocumentModel.sale_id",
+        foreign_keys="[FiscalDocumentModel.sale_id]",
+        backref="sale",
+        lazy="selectin",
+        uselist=True
+    )
 
 class SaleItemModel(Base):
     __tablename__ = "sale_items"
