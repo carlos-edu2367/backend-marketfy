@@ -251,6 +251,37 @@ async def test_idempotency_returns_queued_doc_with_re_enqueueing():
     arq_pool.enqueue_job.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_idempotency_requeues_processing_doc_to_recover_missing_worker_job():
+    market_id = uuid.uuid4()
+    sale_id = uuid.uuid4()
+    existing_doc = FiscalDocument(
+        market_id=market_id,
+        sale_id=sale_id,
+        status=FiscalDocumentStatus.PROCESSING,
+    )
+    cfg = _make_config()
+    sale = FakeSale(market_id=market_id, id=sale_id)
+    arq_pool = AsyncMock()
+    svc = _make_service(cfg=cfg, sale=sale, existing_doc=existing_doc, arq_pool=arq_pool)
+    result = await svc.request_emission(market_id, sale_id, uuid.uuid4())
+    assert result["status"] == FiscalDocumentStatus.QUEUED.value
+    arq_pool.enqueue_job.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_uses_deterministic_job_id_for_fiscal_document():
+    market_id = uuid.uuid4()
+    sale = FakeSale(market_id=market_id)
+    cfg = _make_config()
+    arq_pool = AsyncMock()
+    svc = _make_service(cfg=cfg, sale=sale, quota_ok=True, arq_pool=arq_pool)
+    result = await svc.request_emission(market_id, sale.id, uuid.uuid4())
+    doc_id = result["fiscal_document_id"]
+    arq_pool.enqueue_job.assert_called_once()
+    assert arq_pool.enqueue_job.call_args.kwargs["_job_id"] == f"emit_nfce:{doc_id}"
+
+
 # ---------------------------------------------------------------------------
 # Pré-validação falha
 # ---------------------------------------------------------------------------

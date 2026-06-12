@@ -109,10 +109,11 @@ class FiscalEmissionService:
         # 3. Idempotência — buscar documento existente
         doc = await self.doc_repo.get_by_sale(market_id, sale_id)
         if doc:
-            if doc.status in (FiscalDocumentStatus.AUTHORIZED, FiscalDocumentStatus.PROCESSING, FiscalDocumentStatus.CANCELED):
+            if doc.status in (FiscalDocumentStatus.AUTHORIZED, FiscalDocumentStatus.CANCELED):
                 return self._doc_to_response(doc)
 
-            # Para os demais estados (QUEUED, PROVIDER_ERROR, REJECTED, etc.), permitimos reenfileirar.
+            # Para os demais estados (QUEUED, PROCESSING, PROVIDER_ERROR, REJECTED, etc.),
+            # permitimos reenfileirar. O job_id deterministico evita duplicar job ativo.
             # Vamos re-validar a venda (caso os itens ou dados tenham mudado)
             sale = await self.sale_repo.get_by_id(sale_id)
             if not sale:
@@ -141,6 +142,7 @@ class FiscalEmissionService:
             # Se estava em QUEUED, PROVIDER_ERROR ou SEFAZ_UNAVAILABLE, a cota já está reservada.
             needs_quota_reservation = doc.status not in (
                 FiscalDocumentStatus.QUEUED,
+                FiscalDocumentStatus.PROCESSING,
                 FiscalDocumentStatus.PROVIDER_ERROR,
                 FiscalDocumentStatus.SEFAZ_UNAVAILABLE,
             )
@@ -315,6 +317,7 @@ class FiscalEmissionService:
                 owner_id=str(owner_id),
                 period=period,
                 consuming_addon=consuming_addon,
+                _job_id=f"emit_nfce:{doc_id}",
                 _queue_name="fiscal:high",
             )
             logger.info(f"Job successfully created in Redis with Job ID: {job.job_id if job else 'None'}")
