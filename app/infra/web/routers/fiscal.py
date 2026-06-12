@@ -367,6 +367,48 @@ async def get_fiscal_status(
     return status
 
 
+@router.get("/{market_id}/sales/{sale_id}/nfce/print", tags=["fiscal"])
+async def get_nfce_print_payload(
+    market_id: uuid.UUID,
+    sale_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    market=Depends(require_market_access(MarketPermission.FISCAL_READ)),
+):
+    """
+    Retorna payload seguro de impressao DANFE NFC-e.
+
+    Fonte de verdade: XML autorizado (`nfeProc`) do provedor fiscal, lido do
+    storage privado ou baixado backend-to-backend quando o artefato ainda nao
+    foi persistido pelo job assíncrono.
+    """
+    from infra.config.settings import get_settings
+    from infra.providers.fiscal.provider_factory import get_fiscal_provider
+    from infra.repositories.fiscal_repo import (
+        SQLAlchemyFiscalArtifactRepository,
+        SQLAlchemyFiscalDocumentRepository,
+    )
+    from infra.storage.fiscal_artifact_storage import FiscalArtifactStorage
+    from application.services.fiscal.nfce_print_service import NfcePrintService
+
+    settings = get_settings()
+    provider_name = settings.FISCAL_PROVIDER
+    provider = get_fiscal_provider(provider_name)
+    api_token = settings.NEECTIFY_API_KEY or "" if provider_name == "neectify_fiscal" else ""
+
+    service = NfcePrintService(
+        doc_repo=SQLAlchemyFiscalDocumentRepository(db),
+        artifact_repo=SQLAlchemyFiscalArtifactRepository(db),
+        storage=FiscalArtifactStorage(),
+        provider=provider,
+        api_token=api_token,
+    )
+    try:
+        return await service.prepare_sale_print_payload(market_id, sale_id)
+    except BusinessRuleException as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 # =============================================================================
 # LISTAGEM E GESTÃO DE DOCUMENTOS
 # =============================================================================
