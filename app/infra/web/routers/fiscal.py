@@ -305,6 +305,11 @@ async def request_emission(
     A emissão real ocorre no worker fiscal.
     """
     arq_pool = await _get_arq_pool()
+    if arq_pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Serviço de emissão indisponível (conexão com Redis falhou).",
+        )
     svc = _get_emission_service(db, arq_pool)
 
     from domain.fiscal import FiscalQuotaExceededError
@@ -455,14 +460,19 @@ async def reprocess_document(
     await doc_repo.save(doc)
 
     arq_pool = await _get_arq_pool()
-    if arq_pool:
-        await arq_pool.enqueue_job(
-            "emit_nfce_job",
-            doc_id=str(doc_id),
-            market_id=str(market_id),
-            owner_id=str(current_user.id),
-            _queue_name="fiscal:high",
+    if arq_pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Serviço de emissão indisponível (conexão com Redis falhou).",
         )
+
+    await arq_pool.enqueue_job(
+        "emit_nfce_job",
+        doc_id=str(doc_id),
+        market_id=str(market_id),
+        owner_id=str(current_user.id),
+        _queue_name="fiscal:high",
+    )
 
     await record_audit_event(
         audit, request, actor=current_user, action="fiscal.document.reprocessed",

@@ -239,8 +239,9 @@ class FiscalEmissionService:
                 _queue_name="fiscal:high",
             )
         else:
-            logger.warning("arq_pool_unavailable_skipping_queue",
-                           extra={"extra_data": {"doc_id": str(doc_id)}})
+            logger.error("arq_pool_unavailable_failed_to_enqueue",
+                         extra={"extra_data": {"doc_id": str(doc_id)}})
+            raise BusinessRuleException("Fila de processamento fiscal indisponível. A emissão não pôde ser agendada.")
 
     async def _append_event(
         self,

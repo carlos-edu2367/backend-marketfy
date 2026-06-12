@@ -18,10 +18,10 @@ from typing import Any, Dict
 from infra.config.settings import get_settings
 
 QUEUE_FISCAL_HIGH = "fiscal:high"
-QUEUE_FISCAL_RETRY = "fiscal:retry"
-QUEUE_FISCAL_RECONCILE = "fiscal:reconcile"
-QUEUE_FISCAL_NOTIFICATIONS = "fiscal:notifications"
-QUEUE_FISCAL_MAINTENANCE = "fiscal:maintenance"
+QUEUE_FISCAL_RETRY = "fiscal:high"  # Remapeado para a fila única fiscal:high para que o único worker processe
+QUEUE_FISCAL_RECONCILE = "fiscal:high"  # Remapeado para a fila única fiscal:high para que o único worker processe
+QUEUE_FISCAL_NOTIFICATIONS = "fiscal:high"  # Remapeado para a fila única fiscal:high para que o único worker processe
+QUEUE_FISCAL_MAINTENANCE = "fiscal:high"  # Remapeado para a fila única fiscal:high para que o único worker processe
 
 ALL_QUEUES = [
     QUEUE_FISCAL_HIGH,
@@ -65,7 +65,8 @@ def get_redis_settings():
             database=database,
             username=username,
             password=password,
-            ssl=parsed.scheme == "rediss"
+            ssl=parsed.scheme == "rediss",
+            ssl_cert_reqs="none" if parsed.scheme == "rediss" else None
         )
 
     return RedisSettings()

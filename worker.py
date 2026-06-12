@@ -29,7 +29,7 @@ from application.jobs.fiscal_jobs import (
     reset_monthly_fiscal_quotas,
 )
 from arq.cron import cron
-from infra.queues.arq_config import get_redis_settings
+from infra.queues.arq_config import get_redis_settings, ALL_QUEUES
 from infra.config.logger import get_logger
 
 logger = get_logger("worker")
@@ -74,13 +74,7 @@ class WorkerSettings:
     queue_name = "fiscal:high"
 
     # Processar também as outras filas fiscais
-    queues = [
-        "fiscal:high",
-        "fiscal:retry",
-        "fiscal:reconcile",
-        "fiscal:notifications",
-        "fiscal:maintenance",
-    ]
+    queues = ALL_QUEUES
 
     max_jobs = int(os.environ.get("FISCAL_WORKER_CONCURRENCY", "5"))
     job_timeout = int(os.environ.get("FISCAL_JOB_TIMEOUT", "30"))
