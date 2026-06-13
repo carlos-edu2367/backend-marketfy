@@ -57,7 +57,14 @@ NEECTIFY_PAYMENT_METHODS = {
     "transferencia_bancaria": "bank_transfer",
     "fiado": "other",
     "outros": "other",
-    "sem_pagamento": "other",
+    "sem_pagamento": "no_payment",
+}
+
+# Descrição (xPag) enviada quando o método cai em "other" (tPag=99 na SEFAZ).
+# Sem isso a SEFAZ rejeita com cStat 441.
+NEECTIFY_OTHER_PAYMENT_LABELS = {
+    "fiado": "Fiado",
+    "outros": "Outros",
 }
 
 _NCM_RE = re.compile(r"^\d{8}$")
@@ -237,10 +244,16 @@ class FiscalPreValidator:
         payments_payload = []
         for pay in sale.payments:
             method_val = pay.method.value if hasattr(pay.method, "value") else str(pay.method)
+            neectify_method = self.map_neectify_payment_method(method_val)
             entry: dict = {
-                "method": self.map_neectify_payment_method(method_val),
+                "method": neectify_method,
                 "amount": f"{float(pay.amount):.2f}",
             }
+            # tPag=99 (Outros) exige descrição (xPag) ou a SEFAZ rejeita (cStat 441).
+            if neectify_method == "other":
+                entry["description"] = NEECTIFY_OTHER_PAYMENT_LABELS.get(
+                    str(method_val).lower(), "Outros"
+                )
             payments_payload.append(entry)
 
         items_payload = []

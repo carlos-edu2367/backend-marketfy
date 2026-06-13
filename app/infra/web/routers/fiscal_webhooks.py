@@ -186,13 +186,13 @@ async def focus_nfe_webhook(
         # Enfileirar artifacts se autorizado
         if new_status == FiscalDocumentStatus.AUTHORIZED:
             try:
-                from infra.queues.arq_config import get_arq_pool
+                from infra.queues.arq_config import get_arq_pool, QUEUE_FISCAL_RECONCILE
                 arq_pool = await get_arq_pool()
                 await arq_pool.enqueue_job(
                     "download_artifacts_job",
                     doc_id=str(doc.id),
                     market_id=str(doc.market_id),
-                    _queue_name="fiscal:reconcile",
+                    _queue_name=QUEUE_FISCAL_RECONCILE,
                 )
             except Exception:
                 pass
@@ -316,13 +316,13 @@ async def neectify_webhook(
 
         if new_status == FiscalDocumentStatus.AUTHORIZED:
             try:
-                from infra.queues.arq_config import get_arq_pool
+                from infra.queues.arq_config import get_arq_pool, QUEUE_FISCAL_RECONCILE
                 arq_pool = await get_arq_pool()
                 await arq_pool.enqueue_job(
                     "download_artifacts_job",
                     doc_id=str(doc.id),
                     market_id=str(doc.market_id),
-                    _queue_name="fiscal:reconcile",
+                    _queue_name=QUEUE_FISCAL_RECONCILE,
                 )
             except Exception:
                 pass

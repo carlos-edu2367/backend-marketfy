@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from infra.config.logger import get_logger
+from infra.queues.arq_config import QUEUE_FISCAL_RECONCILE
 
 logger = get_logger("fiscal_jobs")
 
@@ -184,11 +185,11 @@ async def emit_nfce_job(
                                  FiscalEventSource.PROVIDER)
 
             # Enfileirar download de artefatos (baixa prioridade — não bloqueia o caixa)
-            if "arq" in ctx:
-                await ctx["arq"].enqueue_job(
+            if ctx.get("redis"):
+                await ctx["redis"].enqueue_job(
                     "download_artifacts_job",
                     doc_id=doc_id, market_id=market_id,
-                    _queue_name="fiscal:reconcile",
+                    _queue_name=QUEUE_FISCAL_RECONCILE,
                     _defer_by=timedelta(seconds=2),
                 )
 
@@ -244,12 +245,15 @@ async def emit_nfce_job(
             await _append_event(event_repo, doc, "queued_at_provider",
                                  f"Aceito pelo provider, aguardando SEFAZ: {result.status.value}",
                                  FiscalEventSource.WORKER)
-            if "arq" in ctx:
-                await ctx["arq"].enqueue_job(
+            if ctx.get("redis"):
+                # 1ª consulta em ~8s: a SEFAZ costuma autorizar em poucos segundos,
+                # e o PDV só faz polling por 30s. Reconciliar cedo deixa o caixa ver
+                # o resultado dentro da janela. Tentativas seguintes usam backoff.
+                await ctx["redis"].enqueue_job(
                     "reconcile_nfce_job",
                     doc_id=doc_id, market_id=market_id, owner_id=owner_id,
-                    _queue_name="fiscal:reconcile",
-                    _defer_by=timedelta(seconds=30),
+                    _queue_name=QUEUE_FISCAL_RECONCILE,
+                    _defer_by=timedelta(seconds=8),
                 )
             return {"status": "pending_reconciliation"}
 
@@ -260,11 +264,11 @@ async def emit_nfce_job(
             await _append_event(event_repo, doc, "provider_error",
                                  result.error_message or "Erro provider",
                                  FiscalEventSource.PROVIDER)
-            if result.is_recoverable and "arq" in ctx:
-                await ctx["arq"].enqueue_job(
+            if result.is_recoverable and ctx.get("redis"):
+                await ctx["redis"].enqueue_job(
                     "reconcile_nfce_job",
                     doc_id=doc_id, market_id=market_id, owner_id=owner_id,
-                    _queue_name="fiscal:reconcile",
+                    _queue_name=QUEUE_FISCAL_RECONCILE,
                     _defer_by=timedelta(seconds=60),
                 )
             return {"status": "provider_error", "recoverable": result.is_recoverable}
@@ -327,17 +331,17 @@ async def reconcile_nfce_job(
         # reagendamos novas consultas com backoff até resolver ou o circuit breaker
         # (_MAX_ATTEMPTS → manual_action_required) encerrar. Sem isso, o documento
         # ficava preso e o Marketfy mostrava "Erro emissão" mesmo após autorização.
-        if not doc.is_terminal() and "arq" in ctx:
+        if not doc.is_terminal() and ctx.get("redis"):
             consult_count = await attempt_repo.count_attempts(doc_uuid, "consult")
             # <= permite a tentativa final que dispara o circuit breaker
             # (_MAX_ATTEMPTS → MANUAL_ACTION_REQUIRED), em vez de deixar o
             # documento preso em PROCESSING para sempre.
             if consult_count <= _MAX_ATTEMPTS:
                 delay = _BACKOFF_DELAYS[min(consult_count, len(_BACKOFF_DELAYS) - 1)]
-                await ctx["arq"].enqueue_job(
+                await ctx["redis"].enqueue_job(
                     "reconcile_nfce_job",
                     doc_id=doc_id, market_id=market_id, owner_id=owner_id,
-                    _queue_name="fiscal:reconcile",
+                    _queue_name=QUEUE_FISCAL_RECONCILE,
                     _job_id=f"reconcile:{doc_id}:{consult_count}",
                     _defer_by=timedelta(seconds=delay),
                 )

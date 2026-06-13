@@ -500,6 +500,24 @@ class FiscalOnboardingService:
         if not self._neectify:
             raise RuntimeError("NeectifyFiscalProvider não configurado.")
 
+        # Idempotência: o Neectify cria um webhook novo a cada POST (não dedupa por
+        # URL). Listamos antes e pulamos se já existe um para esta URL — evita
+        # entregas duplicadas a cada re-sync de onboarding.
+        try:
+            existing = await self._neectify._client.request("GET", "/v1/webhooks")
+        except Exception:
+            existing = []
+        items = existing if isinstance(existing, list) else (
+            existing.get("items", []) if isinstance(existing, dict) else []
+        )
+        for wh in items:
+            if str(wh.get("url")) == callback_url:
+                logger.info(
+                    "neectify_webhook_already_registered",
+                    extra={"extra_data": {"market_id": str(market_id), "webhook_id": wh.get("id", "")}},
+                )
+                return {"webhook_id": wh.get("id", ""), "url": callback_url, "skipped": "already_registered"}
+
         payload = {
             "url": callback_url,
             "events": [

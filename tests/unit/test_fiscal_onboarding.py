@@ -595,3 +595,41 @@ def test_build_issuer_payload_cleaning_and_consistency():
     assert payload["municipality_name"] == "Goiânia"
     assert payload["address"]["city_name"] == "Goiânia"
 
+
+
+# ---------------------------------------------------------------------------
+# register_neectify_webhook — idempotência (push de status)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_register_neectify_webhook_creates_when_absent():
+    import uuid as _uuid
+    provider = AsyncMock()
+    provider._client.request = AsyncMock(side_effect=[[], {"id": "wh_123"}])
+    svc = FiscalOnboardingService(
+        config_repo=AsyncMock(), doc_repo=AsyncMock(),
+        tax_profile_repo=AsyncMock(), neectify_provider=provider,
+    )
+    res = await svc.register_neectify_webhook(
+        market_id=_uuid.uuid4(),
+        callback_url="https://api.x/api/v1/fiscal/webhooks/neectify",
+    )
+    assert res["webhook_id"] == "wh_123"
+    assert res.get("skipped") is None
+    assert provider._client.request.call_count == 2  # GET + POST
+
+
+@pytest.mark.asyncio
+async def test_register_neectify_webhook_idempotent_when_url_exists():
+    import uuid as _uuid
+    url = "https://api.x/api/v1/fiscal/webhooks/neectify"
+    provider = AsyncMock()
+    provider._client.request = AsyncMock(return_value=[{"id": "wh_existing", "url": url}])
+    svc = FiscalOnboardingService(
+        config_repo=AsyncMock(), doc_repo=AsyncMock(),
+        tax_profile_repo=AsyncMock(), neectify_provider=provider,
+    )
+    res = await svc.register_neectify_webhook(market_id=_uuid.uuid4(), callback_url=url)
+    assert res["webhook_id"] == "wh_existing"
+    assert res["skipped"] == "already_registered"
+    assert provider._client.request.call_count == 1  # só GET, nunca POST

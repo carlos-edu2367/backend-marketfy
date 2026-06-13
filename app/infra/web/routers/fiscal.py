@@ -966,6 +966,23 @@ async def neectify_sync_issuer(
         result["config_id"] = config_result.get("config_id")
         if config_result.get("skipped"):
             result["config_skipped"] = config_result["skipped"]
+
+        # Passo 3: registrar o webhook de status (push) no Neectify — best-effort e
+        # idempotente. Dá atualização quase-instantânea de status; sem ele o Marketfy
+        # depende apenas do polling (reconcile). Falha aqui NÃO quebra o onboarding.
+        callback_base = (settings.PUBLIC_API_BASE_URL or "").rstrip("/")
+        if callback_base:
+            try:
+                wh = await svc.register_neectify_webhook(
+                    market_id=market_id,
+                    callback_url=f"{callback_base}/api/v1/fiscal/webhooks/neectify",
+                )
+                result["webhook_id"] = wh.get("webhook_id")
+            except Exception as exc:
+                logger.warning(
+                    "neectify_register_webhook_skipped",
+                    extra={"extra_data": {"market_id": str(market_id), "error": str(exc)}},
+                )
     except ValueError as e:
         raise HTTPException(400, str(e))
     except FiscalValidationError as exc:
