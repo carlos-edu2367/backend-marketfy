@@ -15,6 +15,8 @@ from sqlalchemy import and_, desc, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from application.services.fiscal.tax_rule_service import ProductTaxRuleCandidate
+
 from domain.fiscal import (
     FiscalArtifact,
     FiscalArtifactType,
@@ -270,9 +272,9 @@ class SQLAlchemyProductTaxRuleRepository:
         market_id: uuid.UUID,
         product_id: uuid.UUID,
         occurred_on: date,
-    ) -> List[ProductTaxRule]:
+    ) -> List[ProductTaxRuleCandidate]:
         query = (
-            select(ProductTaxRuleModel)
+            select(ProductTaxRuleAssignmentModel.id, ProductTaxRuleModel)
             .join(
                 ProductTaxRuleAssignmentModel,
                 ProductTaxRuleAssignmentModel.tax_rule_id == ProductTaxRuleModel.id,
@@ -293,7 +295,10 @@ class SQLAlchemyProductTaxRuleRepository:
             )
         )
         result = await self.session.execute(query)
-        return [_to_product_tax_rule(model) for model in result.scalars().all()]
+        return [
+            ProductTaxRuleCandidate(association_id, _to_product_tax_rule(rule_model))
+            for association_id, rule_model in result.all()
+        ]
 
 
 def _to_product_tax_rule(model: ProductTaxRuleModel) -> ProductTaxRule:

@@ -40,6 +40,30 @@ def upgrade() -> None:
         ["market_id", "product_id"],
     )
 
+    # Preserve only explicit current links. The earliest defensible date is the
+    # latest of the product creation date and the linked rule's own validity;
+    # legacy product_tax_profiles are intentionally never used here.
+    op.execute(
+        """
+        INSERT INTO product_tax_rule_assignments (
+            id, market_id, product_id, tax_rule_id, effective_from,
+            effective_to, created_at, updated_at
+        )
+        SELECT
+            md5(random()::text || clock_timestamp()::text || p.id::text)::uuid,
+            p.market_id,
+            p.id,
+            p.tax_rule_id,
+            GREATEST(COALESCE(r.effective_from, p.created_at::date), p.created_at::date),
+            NULL,
+            p.created_at,
+            p.updated_at
+        FROM products p
+        JOIN product_tax_rules r ON r.id = p.tax_rule_id
+        WHERE p.tax_rule_id IS NOT NULL
+        """
+    )
+
 
 def downgrade() -> None:
     op.drop_index("ix_ptra_market_product", table_name="product_tax_rule_assignments")

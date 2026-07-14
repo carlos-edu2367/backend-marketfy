@@ -30,14 +30,35 @@ class TaxContext:
         )
 
 
+@dataclass(frozen=True)
+class ProductTaxRuleCandidate:
+    association_id: uuid.UUID
+    rule: ProductTaxRule
+
+
 class ProductTaxRuleRepository(Protocol):
     async def list_effective_linked_rules(
         self, market_id: uuid.UUID, product_id: uuid.UUID, occurred_on: date
-    ) -> Sequence[ProductTaxRule]: ...
+    ) -> Sequence[ProductTaxRuleCandidate]: ...
 
 
 class TaxRuleNotFoundError(BusinessRuleException):
     """No published, effective rule exists for a linked product."""
+
+
+class FiscalRuleAmbiguousError(BusinessRuleException):
+    code = "sale.fiscal_rule_ambiguous"
+
+    def __init__(self, product_id: uuid.UUID, occurred_on: date):
+        self.product_id = product_id
+        self.occurred_on = occurred_on
+        super().__init__("Produto possui mais de uma regra fiscal vigente para a data da venda.")
+
+    def details(self) -> dict:
+        return {
+            "product_id": str(self.product_id),
+            "occurred_on": self.occurred_on.isoformat(),
+        }
 
 
 class FiscalRuleMissingError(BusinessRuleException):
@@ -78,12 +99,15 @@ class TaxRuleService:
             product_id,
             occurred_at.date(),
         )
+        if len({candidate.association_id for candidate in candidates}) > 1:
+            raise FiscalRuleAmbiguousError(product_id, occurred_at.date())
+
         valid = [
-            rule
-            for rule in candidates
-            if rule.market_id == market_id
-            and rule.status is ProductTaxRuleStatus.PUBLISHED
-            and rule.is_effective_on(occurred_at.date())
+            candidate.rule
+            for candidate in candidates
+            if candidate.rule.market_id == market_id
+            and candidate.rule.status is ProductTaxRuleStatus.PUBLISHED
+            and candidate.rule.is_effective_on(occurred_at.date())
         ]
         if not valid:
             raise TaxRuleNotFoundError("Produto sem regra fiscal publicada e vigente.")

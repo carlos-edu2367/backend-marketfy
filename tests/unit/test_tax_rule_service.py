@@ -14,7 +14,9 @@ if app_dir not in sys.path:
 
 from application.dtos import PaymentDTO, SaleCreateDTO, SaleItemDTO
 from application.services.fiscal.tax_rule_service import (
+    FiscalRuleAmbiguousError,
     FiscalRuleMissingError,
+    ProductTaxRuleCandidate,
     TaxContext,
     TaxRuleService,
 )
@@ -53,13 +55,17 @@ PRODUCT_ID = uuid.uuid4()
 
 
 class FakeRuleRepository:
-    def __init__(self, rules):
+    def __init__(self, rules, association_ids=None):
         self.rules = rules
+        self.association_ids = association_ids or [uuid.uuid4()] * len(rules)
         self.requests = []
 
     async def list_effective_linked_rules(self, market_id, product_id, occurred_on):
         self.requests.append((market_id, product_id, occurred_on))
-        return self.rules
+        return [
+            ProductTaxRuleCandidate(association_id, rule)
+            for association_id, rule in zip(self.association_ids, self.rules)
+        ]
 
 
 @pytest.mark.asyncio
@@ -82,15 +88,19 @@ async def test_selects_latest_published_rule_effective_on_sale_date() -> None:
 
 class FakeHistoricalRuleRepository:
     def __init__(self, associations):
-        self.associations = associations
+        self.associations = [
+            (uuid.uuid4(), starts_on, ends_on, rule)
+            for starts_on, ends_on, rule in associations
+        ]
         self.requests = []
 
     async def list_effective_linked_rules(self, market_id, product_id, occurred_on):
         self.requests.append((market_id, product_id, occurred_on))
         return [
             rule
-            for starts_on, ends_on, rule in self.associations
+            for association_id, starts_on, ends_on, rule in self.associations
             if starts_on <= occurred_on and (ends_on is None or occurred_on <= ends_on)
+            for rule in [ProductTaxRuleCandidate(association_id, rule)]
         ]
 
 
@@ -146,6 +156,30 @@ async def test_current_historical_association_continues_to_resolve() -> None:
     )
 
     assert selected.id == current_rule.id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_effective_associations_are_rejected_without_tie_breaking() -> None:
+    first_rule = make_rule(version=1, status=ProductTaxRuleStatus.PUBLISHED, effective_from=date(2026, 7, 1))
+    conflicting_rule = make_rule(version=2, status=ProductTaxRuleStatus.PUBLISHED, effective_from=date(2026, 7, 1))
+    service = TaxRuleService(FakeRuleRepository(
+        [first_rule, conflicting_rule],
+        association_ids=[uuid.uuid4(), uuid.uuid4()],
+    ))
+
+    with pytest.raises(FiscalRuleAmbiguousError) as exc_info:
+        await service.resolve_for_sale_item(
+            market_id=MARKET_ID,
+            product_id=PRODUCT_ID,
+            occurred_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+            context=TaxContext.go_nfce_consumer_final(),
+        )
+
+    assert exc_info.value.code == "sale.fiscal_rule_ambiguous"
+    assert exc_info.value.details() == {
+        "product_id": str(PRODUCT_ID),
+        "occurred_on": "2026-07-20",
+    }
 
 
 class FakeSaleRepository:
