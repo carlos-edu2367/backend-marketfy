@@ -45,6 +45,15 @@ from domain.shared import BusinessRuleException
 # Fixtures / builders
 # ---------------------------------------------------------------------------
 
+def _tax_snapshot(amount: Decimal = Decimal("10.00")) -> dict:
+    return {
+        "rule_id": str(uuid.uuid4()), "rule_version": 1,
+        "ncm": "22021000", "cest": None, "cfop": "5102", "origin": "0",
+        "icms": {"group": "ICMSSN102", "cst": None, "csosn": "102", "own_base": amount, "reduction_rate": Decimal("0"), "own_rate": Decimal("0"), "own_amount": Decimal("0"), "st_base": Decimal("0"), "st_rate": Decimal("0"), "st_amount": Decimal("0"), "fcp_rate": Decimal("0"), "fcp_amount": Decimal("0")},
+        "pis": {"group": "PIS07", "cst": "07", "base": amount, "rate": Decimal("0"), "amount": Decimal("0")},
+        "cofins": {"group": "COFINS07", "cst": "07", "base": amount, "rate": Decimal("0"), "amount": Decimal("0")},
+    }
+
 @dataclass
 class FakeItem:
     product_id: uuid.UUID = field(default_factory=uuid.uuid4)
@@ -53,6 +62,8 @@ class FakeItem:
     unit_price: Decimal = Decimal("10.00")
     quantity: Decimal = Decimal("1")
     total: Decimal = Decimal("10.00")
+    tax_rule_version_snapshot: int = 1
+    fiscal_tax_snapshot: dict = field(default_factory=_tax_snapshot)
 
 
 @dataclass
@@ -345,9 +356,7 @@ async def test_enqueue_logs_problem_when_job_is_not_created(monkeypatch):
 async def test_pre_validation_failure_creates_rejected_doc():
     market_id = uuid.uuid4()
     sale_id = uuid.uuid4()
-    # Item sem NCM e config sem default
-    from application.services.fiscal.fiscal_pre_validator import FiscalPreValidator
-    from tests.unit.test_fiscal_pre_validator import FakeItem, FakePayment, FakeSale as FS, FakeConfig
+    # Snapshot fiscal ausente deve bloquear a emissão antes da fila.
 
     @dataclass
     class SaleNoNcm:
@@ -358,7 +367,8 @@ async def test_pre_validation_failure_creates_rejected_doc():
             type("I", (), {
                 "product_id": uuid.uuid4(), "product_name": "X",
                 "ncm_snapshot": None, "unit_price": Decimal("10"), "quantity": Decimal("1"),
-                "total": Decimal("10"),
+                "total": Decimal("10"), "tax_rule_version_snapshot": None,
+                "fiscal_tax_snapshot": None,
             })()
         ])
         payments: List = field(default_factory=lambda: [

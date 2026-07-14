@@ -595,6 +595,19 @@ def test_emission_service_payload_uses_neectify_format():
     item.unit_price = 5.50
     item.quantity = 2.0
     item.total = 11.00
+    item.tax_rule_version_snapshot = 1
+    item.fiscal_tax_snapshot = {
+        "rule_id": str(uuid.uuid4()), "rule_version": 1,
+        "ncm": "22021000", "cest": None, "cfop": "5405", "origin": "0",
+        "icms": {
+            "group": "ICMSSN102", "cst": None, "csosn": "102",
+            "own_base": "11.00", "reduction_rate": "0.00", "own_rate": "0.00",
+            "own_amount": "0.00", "st_base": "0.00", "st_rate": "0.00",
+            "st_amount": "0.00", "fcp_rate": "0.00", "fcp_amount": "0.00",
+        },
+        "pis": {"group": "PIS07", "cst": "07", "base": "11.00", "rate": "0.00", "amount": "0.00"},
+        "cofins": {"group": "COFINS07", "cst": "07", "base": "11.00", "rate": "0.00", "amount": "0.00"},
+    }
 
     payment = MagicMock()
     payment.method = MagicMock()

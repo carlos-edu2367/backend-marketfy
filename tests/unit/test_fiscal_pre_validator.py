@@ -34,6 +34,22 @@ from application.services.fiscal.fiscal_pre_validator import (
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+def _tax_snapshot() -> dict:
+    return {
+        "rule_id": str(uuid.uuid4()), "rule_version": 1,
+        "ncm": "22021000", "cest": None, "cfop": "5102", "origin": "0",
+        "icms": {
+            "group": "ICMSSN102", "cst": None, "csosn": "102",
+            "own_base": Decimal("10.00"), "reduction_rate": Decimal("0.00"),
+            "own_rate": Decimal("0.00"), "own_amount": Decimal("0.00"),
+            "st_base": Decimal("0.00"), "st_rate": Decimal("0.00"),
+            "st_amount": Decimal("0.00"), "fcp_rate": Decimal("0.00"),
+            "fcp_amount": Decimal("0.00"),
+        },
+        "pis": {"group": "PIS07", "cst": "07", "base": Decimal("10.00"), "rate": Decimal("0.00"), "amount": Decimal("0.00")},
+        "cofins": {"group": "COFINS07", "cst": "07", "base": Decimal("10.00"), "rate": Decimal("0.00"), "amount": Decimal("0.00")},
+    }
+
 @dataclass
 class FakeItem:
     product_id: uuid.UUID = field(default_factory=uuid.uuid4)
@@ -42,6 +58,8 @@ class FakeItem:
     unit_price: Decimal = Decimal("10.00")
     quantity: Decimal = Decimal("1")
     total: Decimal = Decimal("10.00")
+    tax_rule_version_snapshot: int | None = 1
+    fiscal_tax_snapshot: Optional[dict] = field(default_factory=_tax_snapshot)
 
 
 @dataclass
@@ -107,6 +125,7 @@ def test_valid_with_cpf_passes():
 def test_missing_ncm_no_default_fails():
     v = _validator()
     item = FakeItem(ncm_snapshot=None)
+    item.fiscal_tax_snapshot["ncm"] = None
     result = v.validate(
         sale_items=[item],
         payments=[FakePayment()],
@@ -115,12 +134,12 @@ def test_missing_ncm_no_default_fails():
         fiscal_config=FakeConfig(default_ncm=None),
     )
     assert result.is_valid is False
-    assert any("NCM" in e for e in result.errors)
+    assert any("field=ncm" in e for e in result.errors)
 
 
-def test_item_without_ncm_uses_config_default():
+def test_item_without_snapshot_does_not_use_config_default():
     v = _validator()
-    item = FakeItem(ncm_snapshot=None)
+    item = FakeItem(ncm_snapshot=None, fiscal_tax_snapshot=None)
     result = v.validate(
         sale_items=[item],
         payments=[FakePayment()],
@@ -128,12 +147,14 @@ def test_item_without_ncm_uses_config_default():
         sale_status=None,
         fiscal_config=FakeConfig(default_ncm="22021000"),
     )
-    assert result.is_valid is True
+    assert result.is_valid is False
+    assert any("fiscal_tax_snapshot_missing" in error for error in result.errors)
 
 
 def test_invalid_ncm_7_digits_fails():
     v = _validator()
     item = FakeItem(ncm_snapshot="2202100")  # 7 dígitos
+    item.fiscal_tax_snapshot["ncm"] = "2202100"
     result = v.validate(
         sale_items=[item],
         payments=[FakePayment()],
@@ -142,12 +163,13 @@ def test_invalid_ncm_7_digits_fails():
         fiscal_config=FakeConfig(default_ncm=None),
     )
     assert result.is_valid is False
-    assert any("NCM" in e for e in result.errors)
+    assert any("field=ncm" in e for e in result.errors)
 
 
 def test_invalid_ncm_letters_fails():
     v = _validator()
     item = FakeItem(ncm_snapshot="2202100A")
+    item.fiscal_tax_snapshot["ncm"] = "2202100A"
     result = v.validate(
         sale_items=[item],
         payments=[FakePayment()],
@@ -161,6 +183,7 @@ def test_invalid_ncm_letters_fails():
 def test_valid_ncm_with_dots_passes():
     v = _validator()
     item = FakeItem(ncm_snapshot="2202.10.00")  # Pontuação deve ser ignorada
+    item.fiscal_tax_snapshot["ncm"] = "2202.10.00"
     result = v.validate(
         sale_items=[item],
         payments=[FakePayment()],

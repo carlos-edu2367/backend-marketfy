@@ -60,6 +60,7 @@ async def emit_nfce_job(
         FiscalAttempt, FiscalAttemptOperation, FiscalAttemptStatus,
         FiscalDocumentStatus, FiscalEvent, FiscalEventSource,
     )
+    from domain.shared import BusinessRuleException
     from infra.providers.fiscal.base import EmitResultStatus
 
     doc_uuid = uuid.UUID(doc_id)
@@ -110,20 +111,55 @@ async def emit_nfce_job(
         # Montar payload fiscal no formato Neectify
         validator = FiscalPreValidator()
         provider_name = settings.FISCAL_PROVIDER
+        quota_service = FiscalQuotaService(usage_repo)
+        emit_period = period or datetime.utcnow().strftime("%Y%m")
+
+        async def block_invalid_tax_snapshot(exc: BusinessRuleException) -> dict:
+            """Reject and audit a mutated/invalid snapshot before provider I/O."""
+            doc.set_rejected(
+                sefaz_code="sale.fiscal_tax_snapshot_invalid",
+                sefaz_msg=str(exc),
+            )
+            await doc_repo.save(doc)
+            await quota_service.release(
+                owner_id=owner_uuid,
+                period=emit_period,
+                market_id=market_uuid,
+                reason="fiscal_tax_snapshot_invalid",
+            )
+            await _append_event(
+                event_repo,
+                doc,
+                "fiscal_tax_snapshot_blocked",
+                str(exc),
+                FiscalEventSource.MARKETFY,
+            )
+            logger.warning(
+                "emit_nfce_blocked_invalid_tax_snapshot",
+                extra={"extra_data": {"doc_id": doc_id, "sale_id": str(doc.sale_id), "error": str(exc)}},
+            )
+            return {"status": "blocked", "error_code": "sale.fiscal_tax_snapshot_invalid"}
 
         if provider_name == "neectify_fiscal":
             issuer_id = getattr(cfg_raw, "neectify_issuer_id", None) or ""
-            payload = validator.build_neectify_payload(
-                sale=sale,
-                fiscal_config=cfg_raw,
-                issuer_id=issuer_id,
-            )
+            try:
+                payload = validator.build_neectify_payload(
+                    sale=sale,
+                    fiscal_config=cfg_raw,
+                    issuer_id=issuer_id,
+                    provider_ref=doc.provider_ref,
+                )
+            except BusinessRuleException as exc:
+                return await block_invalid_tax_snapshot(exc)
         else:
-            payload = validator.build_fiscal_payload(
-                sale=sale,
-                fiscal_config=cfg_raw,
-                provider_ref=doc.provider_ref,
-            )
+            try:
+                payload = validator.build_fiscal_payload(
+                    sale=sale,
+                    fiscal_config=cfg_raw,
+                    provider_ref=doc.provider_ref,
+                )
+            except BusinessRuleException as exc:
+                return await block_invalid_tax_snapshot(exc)
 
         # Registrar tentativa
         attempt_count = await attempt_repo.count_attempts(doc_uuid, "emit")
@@ -158,9 +194,6 @@ async def emit_nfce_job(
         )
         await attempt_repo.save(attempt)
         doc.last_attempt_id = attempt.id
-
-        quota_service = FiscalQuotaService(usage_repo)
-        emit_period = period or datetime.utcnow().strftime("%Y%m")
 
         if result.is_authorized:
             doc.set_authorized(

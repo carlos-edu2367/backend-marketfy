@@ -63,6 +63,15 @@ PERIOD = "202506"
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _tax_snapshot(amount: Decimal = Decimal("10.00")) -> dict:
+    return {
+        "rule_id": str(uuid.uuid4()), "rule_version": 1,
+        "ncm": "22021000", "cest": None, "cfop": "5102", "origin": "0",
+        "icms": {"group": "ICMSSN102", "cst": None, "csosn": "102", "own_base": amount, "reduction_rate": Decimal("0"), "own_rate": Decimal("0"), "own_amount": Decimal("0"), "st_base": Decimal("0"), "st_rate": Decimal("0"), "st_amount": Decimal("0"), "fcp_rate": Decimal("0"), "fcp_amount": Decimal("0")},
+        "pis": {"group": "PIS07", "cst": "07", "base": amount, "rate": Decimal("0"), "amount": Decimal("0")},
+        "cofins": {"group": "COFINS07", "cst": "07", "base": amount, "rate": Decimal("0"), "amount": Decimal("0")},
+    }
+
 def _plan(name: str, plan_type: str, fiscal_limit: int) -> Plan:
     from domain.identity import PlanType
     return Plan(
@@ -166,6 +175,7 @@ class FakeSale:
             "product_id": uuid.uuid4(), "product_name": "X",
             "ncm_snapshot": "22021000", "unit_price": Decimal("10"),
             "quantity": Decimal("1"), "total": Decimal("10"),
+            "tax_rule_version_snapshot": 1, "fiscal_tax_snapshot": _tax_snapshot(),
         })()
     ])
     payments: List = field(default_factory=lambda: [
