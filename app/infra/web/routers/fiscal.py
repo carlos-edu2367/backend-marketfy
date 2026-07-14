@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 import os
-from datetime import date
+from datetime import date, datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query
@@ -764,8 +764,10 @@ async def publish_tax_rule(
     rule = await repo.get_rule(market_id, rule_id)
     if rule is None:
         raise HTTPException(404, "Regra fiscal não encontrada.")
-    rule.approved_by = dto.approved_by
-    rule.approved_at = dto.approved_at
+    # Approval evidence comes from the authenticated fiscal actor, never from
+    # a client supplied user ID or clock value.
+    rule.approved_by = current_user.id
+    rule.approved_at = datetime.utcnow()
     try:
         saved = await repo.publish_rule(rule)
     except BusinessRuleException as exc:

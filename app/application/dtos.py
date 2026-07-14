@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, date
 from uuid import UUID
@@ -556,8 +556,9 @@ class ProductTaxRuleDraftUpdateDTO(ProductTaxRuleDraftDTO):
 
 
 class ProductTaxRulePublishDTO(BaseModel):
-    approved_by: UUID
-    approved_at: datetime
+    """Publication has no client-controlled approval identity or timestamp."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class ProductTaxRuleAssignmentDTO(BaseModel):

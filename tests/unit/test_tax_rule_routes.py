@@ -166,7 +166,7 @@ def client(monkeypatch):
     from infra.web.routers import fiscal as fiscal_router
     from infra.web.routers import inventory as inventory_router
 
-    fiscal_repo.SQLAlchemyProductTaxRuleRepository = InMemoryTaxRuleRepository
+    monkeypatch.setattr(fiscal_repo, "SQLAlchemyProductTaxRuleRepository", InMemoryTaxRuleRepository)
     audit = FakeAudit()
     user = User(
         id=ACTOR_ID,
@@ -204,7 +204,7 @@ def client(monkeypatch):
         async def list_by_market(self, *_args, **_kwargs):
             return [product_one, product_two]
 
-    sqlalchemy_repos.SQLAlchemyProductRepository = ProductRepository
+    monkeypatch.setattr(sqlalchemy_repos, "SQLAlchemyProductRepository", ProductRepository)
 
     app = FastAPI()
     app.include_router(fiscal_router.router, prefix="/api/v1/fiscal")
@@ -258,10 +258,35 @@ def test_fiscal_user_can_create_a_draft_and_cannot_publish_an_incomplete_rule(cl
     rule_id = draft.json()["id"]
     publish = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{rule_id}/publish",
-        json={"approved_by": str(ACCOUNTANT_ID), "approved_at": "2026-07-14T10:00:00Z"},
+        json={},
     )
 
     assert publish.status_code == 400
+
+
+def test_publication_rejects_a_forged_approver_identity_from_the_client(client):
+    http, _app, _audit = client
+    created = http.post(f"/api/v1/fiscal/{MARKET_ID}/tax-rules", json=_approved_rule_payload())
+
+    response = http.post(
+        f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
+        json={"approved_by": str(uuid.uuid4()), "approved_at": "2026-07-14T10:00:00Z"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_publication_records_the_authenticated_fiscal_actor_as_approver(client):
+    http, _app, _audit = client
+    created = http.post(f"/api/v1/fiscal/{MARKET_ID}/tax-rules", json=_approved_rule_payload())
+
+    response = http.post(
+        f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["approved_by"] == str(ACTOR_ID)
 
 
 def test_only_published_rule_can_be_assigned_and_bulk_change_is_audited(client):
@@ -282,7 +307,7 @@ def test_only_published_rule_can_be_assigned_and_bulk_change_is_audited(client):
 
     published = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{rule_id}/publish",
-        json={"approved_by": str(ACCOUNTANT_ID), "approved_at": "2026-07-14T10:00:00Z"},
+        json={},
     )
     assert published.status_code == 200
 

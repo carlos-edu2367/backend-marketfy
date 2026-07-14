@@ -353,6 +353,8 @@ class SQLAlchemyProductTaxRuleRepository:
         """
         if rule.status is not ProductTaxRuleStatus.PUBLISHED:
             raise BusinessRuleException("Somente regras fiscais publicadas podem ser atribuídas.")
+        if len(set(product_ids)) != len(product_ids):
+            raise BusinessRuleException("A associação em massa contém produto duplicado.")
         if effective_from != date.today():
             raise BusinessRuleException("A associação fiscal deve vigorar na data atual.")
         if not rule.is_effective_on(effective_from):
@@ -397,6 +399,13 @@ class SQLAlchemyProductTaxRuleRepository:
             ]
             if conflicts or (open_assignment is not None and open_assignment.effective_from > effective_from):
                 skipped.append({"product_id": str(product_id), "reason": "overlap"})
+                continue
+
+            if open_assignment is not None and open_assignment.effective_from == effective_from:
+                if open_assignment.tax_rule_id == rule.id:
+                    skipped.append({"product_id": str(product_id), "reason": "already_assigned"})
+                else:
+                    skipped.append({"product_id": str(product_id), "reason": "same_day_reassignment"})
                 continue
 
             before_rule_id = product.tax_rule_id
@@ -511,7 +520,18 @@ class SQLAlchemyProductTaxRuleRepository:
         approved_groups = {
             value.strip() for value in get_settings().FISCAL_APPROVED_ICMS_GROUPS.split(",") if value.strip()
         }
-        if not rule.icms_group or rule.icms_group not in approved_groups:
+        group_requirements = {
+            "ICMSSN500": {
+                "required": {"cest", "icms_csosn", "icms_st_mod_bc", "icms_st_mva_rate", "icms_st_rate"},
+                "csosn": "500",
+                "cst": None,
+            },
+        }
+        if (
+            not rule.icms_group
+            or rule.icms_group not in approved_groups
+            or rule.icms_group not in group_requirements
+        ):
             raise BusinessRuleException(
                 "O grupo ICMS informado não possui catálogo contábil homologado para publicação."
             )
@@ -520,14 +540,16 @@ class SQLAlchemyProductTaxRuleRepository:
             "name", "effective_from", "ncm", "origin", "cfop", "icms_group", "pis_cst", "cofins_cst",
             "approved_by", "approved_at",
         }
-        group_requirements = {
-            "ICMSSN500": {"cest", "icms_csosn", "icms_st_mod_bc", "icms_st_mva_rate", "icms_st_rate"},
-        }
-        required_fields |= group_requirements.get(rule.icms_group, set())
+        group = group_requirements[rule.icms_group]
+        required_fields |= group["required"]
         missing = sorted(field for field in required_fields if getattr(rule, field) is None)
         if missing:
             raise BusinessRuleException(
                 "Regra fiscal sem campos obrigatórios para publicação: " + ", ".join(missing) + "."
+            )
+        if rule.icms_csosn != group["csosn"] or rule.icms_cst != group["cst"]:
+            raise BusinessRuleException(
+                f"Grupo ICMS {rule.icms_group} exige CSOSN {group['csosn']} e não aceita CST."
             )
 
 
