@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import uuid
 import os
+from datetime import date
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query
@@ -26,6 +27,11 @@ from fastapi.responses import Response
 from infra.web.dependencies import get_current_user, require_market_access, get_audit_service
 from infra.security.market_access import MarketPermission
 from application.services.audit_service import AuditService
+from application.dtos import (
+    ProductTaxRuleDraftDTO,
+    ProductTaxRuleDraftUpdateDTO,
+    ProductTaxRulePublishDTO,
+)
 from domain.identity import User
 from domain.shared import BusinessRuleException
 from domain.fiscal import FiscalAuthError, FiscalValidationError
@@ -663,6 +669,163 @@ async def mark_notification_read(
 # PERFIS FISCAIS DE PRODUTO
 # =============================================================================
 
+def _tax_rule_response(rule):
+    """Keep the REST representation explicit and free of inferred values."""
+    fields = (
+        "id", "name", "version", "status", "effective_from", "effective_to", "ncm", "cest", "origin",
+        "cfop", "icms_group", "icms_cst", "icms_csosn", "icms_mod_bc", "icms_rate",
+        "icms_reduction_rate", "icms_st_mod_bc", "icms_st_mva_rate", "icms_st_rate", "fcp_rate",
+        "pis_cst", "pis_rate", "cofins_cst", "cofins_rate", "approved_by", "approved_at",
+        "created_at", "updated_at",
+    )
+    response = {field: getattr(rule, field) for field in fields}
+    response["id"] = str(rule.id)
+    response["status"] = rule.status.value
+    response["approved_by"] = str(rule.approved_by) if rule.approved_by else None
+    return response
+
+
+@router.get("/{market_id}/tax-rules", tags=["fiscal"])
+async def list_tax_rules(
+    market_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    market=Depends(require_market_access(MarketPermission.FISCAL_READ)),
+):
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    rules = await SQLAlchemyProductTaxRuleRepository(db).list_rules(market_id)
+    return {"items": [_tax_rule_response(rule) for rule in rules]}
+
+
+@router.post("/{market_id}/tax-rules", status_code=201, tags=["fiscal"])
+async def create_tax_rule_draft(
+    request: Request,
+    market_id: uuid.UUID,
+    dto: ProductTaxRuleDraftDTO,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+    market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
+):
+    from domain.fiscal import ProductTaxRule
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    rule = ProductTaxRule(market_id=market_id, **dto.model_dump())
+    saved = await SQLAlchemyProductTaxRuleRepository(db).create_draft(rule)
+    await record_audit_event(
+        audit, request, actor=current_user, action="fiscal.tax_rule.draft_created",
+        resource_type="product_tax_rule", resource_id=str(saved.id), result="success", market_id=market_id,
+    )
+    return _tax_rule_response(saved)
+
+
+@router.patch("/{market_id}/tax-rules/{rule_id}/draft", tags=["fiscal"])
+async def update_tax_rule_draft(
+    request: Request,
+    market_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    dto: ProductTaxRuleDraftUpdateDTO,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+    market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
+):
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    repo = SQLAlchemyProductTaxRuleRepository(db)
+    rule = await repo.get_rule(market_id, rule_id)
+    if rule is None:
+        raise HTTPException(404, "Regra fiscal não encontrada.")
+    changes = dto.model_dump(exclude_unset=True)
+    saved = await repo.update_draft(rule, changes)
+    await record_audit_event(
+        audit, request, actor=current_user, action="fiscal.tax_rule.draft_updated",
+        resource_type="product_tax_rule", resource_id=str(saved.id), result="success", market_id=market_id,
+        metadata={"changed_fields": sorted(changes)},
+    )
+    return _tax_rule_response(saved)
+
+
+@router.post("/{market_id}/tax-rules/{rule_id}/publish", tags=["fiscal"])
+async def publish_tax_rule(
+    request: Request,
+    market_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    dto: ProductTaxRulePublishDTO,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+    market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
+):
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    repo = SQLAlchemyProductTaxRuleRepository(db)
+    rule = await repo.get_rule(market_id, rule_id)
+    if rule is None:
+        raise HTTPException(404, "Regra fiscal não encontrada.")
+    rule.approved_by = dto.approved_by
+    rule.approved_at = dto.approved_at
+    try:
+        saved = await repo.publish_rule(rule)
+    except BusinessRuleException as exc:
+        raise HTTPException(400, str(exc))
+    await record_audit_event(
+        audit, request, actor=current_user, action="fiscal.tax_rule.published",
+        resource_type="product_tax_rule", resource_id=str(saved.id), result="success", market_id=market_id,
+        metadata={"approved_by": str(saved.approved_by), "approved_at": saved.approved_at.isoformat()},
+    )
+    return _tax_rule_response(saved)
+
+
+@router.post("/{market_id}/tax-rules/{rule_id}/retire", tags=["fiscal"])
+async def retire_tax_rule(
+    request: Request,
+    market_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+    market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
+):
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    repo = SQLAlchemyProductTaxRuleRepository(db)
+    rule = await repo.get_rule(market_id, rule_id)
+    if rule is None:
+        raise HTTPException(404, "Regra fiscal não encontrada.")
+    try:
+        saved = await repo.retire_rule(rule)
+    except BusinessRuleException as exc:
+        raise HTTPException(400, str(exc))
+    await record_audit_event(
+        audit, request, actor=current_user, action="fiscal.tax_rule.retired",
+        resource_type="product_tax_rule", resource_id=str(saved.id), result="success", market_id=market_id,
+    )
+    return _tax_rule_response(saved)
+
+
+@router.get("/{market_id}/tax-rule-pendencies", tags=["fiscal"])
+async def list_tax_rule_pendencies(
+    market_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    market=Depends(require_market_access(MarketPermission.FISCAL_READ)),
+):
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+    from infra.repositories.sqlalchemy_repos import SQLAlchemyProductRepository
+
+    products = await SQLAlchemyProductRepository(db).list_by_market(market_id)
+    statuses = await SQLAlchemyProductTaxRuleRepository(db).list_product_fiscal_status(
+        market_id, [product.id for product in products], date.today()
+    )
+    return {
+        "items": [
+            {"product_id": str(product.id), "product_name": product.name, "fiscal_status": statuses[product.id]}
+            for product in products
+        ]
+    }
+
 @router.get("/{market_id}/tax-profiles", tags=["fiscal"])
 async def list_tax_profiles(
     market_id: uuid.UUID,
@@ -674,6 +837,7 @@ async def list_tax_profiles(
     repo = SQLAlchemyProductTaxProfileRepository(db)
     profiles = await repo.list_by_market(market_id)
     return {
+        "legacy": True,
         "items": [
             {
                 "id": str(p.id), "name": p.name, "ncm": p.ncm, "cfop": p.cfop,
@@ -698,15 +862,10 @@ async def create_tax_profile(
     current_user: User = Depends(get_current_user),
     market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
 ):
-    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxProfileRepository
-    from domain.fiscal import ProductTaxProfile
-    repo = SQLAlchemyProductTaxProfileRepository(db)
-    profile = ProductTaxProfile(
-        market_id=market_id, name=name, ncm=ncm, cfop=cfop,
-        icms_csosn=icms_csosn, pis_cst=pis_cst, cofins_cst=cofins_cst,
+    raise HTTPException(
+        status_code=410,
+        detail="Perfis fiscais legados são somente leitura. Crie uma regra fiscal versionada.",
     )
-    saved = await repo.save(profile)
-    return {"id": str(saved.id), "name": saved.name}
 
 
 # =============================================================================

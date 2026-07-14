@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
 from sqlalchemy import and_, desc, func, select, update
@@ -16,6 +16,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from application.services.fiscal.tax_rule_service import ProductTaxRuleCandidate
+from domain.shared import BusinessRuleException
+from infra.config.settings import get_settings
 
 from domain.fiscal import (
     FiscalArtifact,
@@ -60,6 +62,7 @@ from infra.database.models import (
     ProductTaxProfileModel,
     ProductTaxRuleModel,
     ProductTaxRuleAssignmentModel,
+    ProductModel,
 )
 
 
@@ -267,6 +270,199 @@ class SQLAlchemyProductTaxRuleRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    async def create_draft(self, rule: ProductTaxRule) -> ProductTaxRule:
+        if rule.status is not ProductTaxRuleStatus.DRAFT:
+            raise BusinessRuleException("Uma nova regra fiscal deve iniciar como rascunho.")
+        model = ProductTaxRuleModel(id=rule.id)
+        self.session.add(model)
+        self._copy_rule_to_model(rule, model)
+        await self.session.commit()
+        await self.session.refresh(model)
+        return _to_product_tax_rule(model)
+
+    async def get_rule(self, market_id: uuid.UUID, rule_id: uuid.UUID) -> Optional[ProductTaxRule]:
+        model = await self.session.get(ProductTaxRuleModel, rule_id)
+        if model is None or model.market_id != market_id:
+            return None
+        return _to_product_tax_rule(model)
+
+    async def list_rules(self, market_id: uuid.UUID) -> List[ProductTaxRule]:
+        result = await self.session.execute(
+            select(ProductTaxRuleModel)
+            .where(ProductTaxRuleModel.market_id == market_id)
+            .order_by(desc(ProductTaxRuleModel.updated_at), ProductTaxRuleModel.name)
+        )
+        return [_to_product_tax_rule(model) for model in result.scalars().all()]
+
+    async def update_draft(self, rule: ProductTaxRule, changes: dict) -> ProductTaxRule:
+        model = await self.session.get(ProductTaxRuleModel, rule.id)
+        if model is None or model.market_id != rule.market_id:
+            raise BusinessRuleException("Regra fiscal não encontrada.")
+        if model.status != ProductTaxRuleStatus.DRAFT.value:
+            raise BusinessRuleException("Somente rascunhos fiscais podem ser alterados.")
+        for field, value in changes.items():
+            if hasattr(model, field):
+                setattr(model, field, value)
+        model.updated_at = datetime.utcnow()
+        await self.session.commit()
+        await self.session.refresh(model)
+        return _to_product_tax_rule(model)
+
+    async def publish_rule(self, rule: ProductTaxRule) -> ProductTaxRule:
+        model = await self.session.get(ProductTaxRuleModel, rule.id)
+        if model is None or model.market_id != rule.market_id:
+            raise BusinessRuleException("Regra fiscal não encontrada.")
+        if model.status != ProductTaxRuleStatus.DRAFT.value:
+            raise BusinessRuleException("Somente rascunhos fiscais podem ser publicados.")
+
+        self._validate_for_publication(rule)
+        self._copy_rule_to_model(rule, model)
+        model.status = ProductTaxRuleStatus.PUBLISHED.value
+        model.updated_at = datetime.utcnow()
+        await self.session.commit()
+        await self.session.refresh(model)
+        return _to_product_tax_rule(model)
+
+    async def retire_rule(self, rule: ProductTaxRule) -> ProductTaxRule:
+        model = await self.session.get(ProductTaxRuleModel, rule.id)
+        if model is None or model.market_id != rule.market_id:
+            raise BusinessRuleException("Regra fiscal não encontrada.")
+        if model.status != ProductTaxRuleStatus.PUBLISHED.value:
+            raise BusinessRuleException("Somente uma regra publicada pode ser retirada.")
+        model.status = ProductTaxRuleStatus.RETIRED.value
+        model.updated_at = datetime.utcnow()
+        await self.session.commit()
+        await self.session.refresh(model)
+        return _to_product_tax_rule(model)
+
+    async def assign_published_rule(
+        self,
+        *,
+        market_id: uuid.UUID,
+        product_ids: List[uuid.UUID],
+        rule: ProductTaxRule,
+        effective_from: date,
+        actor_id: uuid.UUID,
+        reason: str,
+    ) -> Tuple[List[uuid.UUID], List[dict], List[dict]]:
+        """Apply an explicit rule link without ever inferring fiscal data.
+
+        Assignment is intentionally current-date only: the products table is a
+        current pointer and this application has no future-link scheduler.
+        Historical dates remain resolved by the durable assignment timeline.
+        """
+        if rule.status is not ProductTaxRuleStatus.PUBLISHED:
+            raise BusinessRuleException("Somente regras fiscais publicadas podem ser atribuídas.")
+        if effective_from != date.today():
+            raise BusinessRuleException("A associação fiscal deve vigorar na data atual.")
+        if not rule.is_effective_on(effective_from):
+            raise BusinessRuleException("A regra fiscal publicada não está vigente para a associação.")
+
+        products = (
+            await self.session.execute(
+                select(ProductModel).where(
+                    ProductModel.market_id == market_id,
+                    ProductModel.id.in_(product_ids),
+                    ProductModel.deleted_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        products_by_id = {product.id: product for product in products}
+        updated: List[uuid.UUID] = []
+        skipped: List[dict] = []
+        audit_changes: List[dict] = []
+
+        for product_id in product_ids:
+            product = products_by_id.get(product_id)
+            if product is None:
+                skipped.append({"product_id": str(product_id), "reason": "product_not_found"})
+                continue
+
+            assignments = (
+                await self.session.execute(
+                    select(ProductTaxRuleAssignmentModel)
+                    .where(
+                        ProductTaxRuleAssignmentModel.market_id == market_id,
+                        ProductTaxRuleAssignmentModel.product_id == product_id,
+                    )
+                    .order_by(desc(ProductTaxRuleAssignmentModel.effective_from))
+                    .with_for_update()
+                )
+            ).scalars().all()
+            open_assignment = next((a for a in assignments if a.effective_to is None), None)
+            conflicts = [
+                assignment
+                for assignment in assignments
+                if assignment.effective_to is not None and assignment.effective_to >= effective_from
+            ]
+            if conflicts or (open_assignment is not None and open_assignment.effective_from > effective_from):
+                skipped.append({"product_id": str(product_id), "reason": "overlap"})
+                continue
+
+            before_rule_id = product.tax_rule_id
+            if open_assignment is not None:
+                open_assignment.effective_to = effective_from - timedelta(days=1)
+
+            self.session.add(
+                ProductTaxRuleAssignmentModel(
+                    market_id=market_id,
+                    product_id=product_id,
+                    tax_rule_id=rule.id,
+                    effective_from=effective_from,
+                    effective_to=None,
+                )
+            )
+            product.tax_rule_id = rule.id
+            product.updated_at = datetime.utcnow()
+            updated.append(product_id)
+            audit_changes.append(
+                {
+                    "product_id": str(product_id),
+                    "before_rule_id": str(before_rule_id) if before_rule_id else None,
+                    "after_rule_id": str(rule.id),
+                }
+            )
+
+        if updated:
+            await self.session.commit()
+        return updated, skipped, audit_changes
+
+    async def list_product_fiscal_status(
+        self, market_id: uuid.UUID, product_ids: List[uuid.UUID], when: date
+    ) -> dict[uuid.UUID, str]:
+        result = await self.session.execute(
+            select(ProductTaxRuleAssignmentModel, ProductTaxRuleModel)
+            .join(
+                ProductTaxRuleModel,
+                ProductTaxRuleAssignmentModel.tax_rule_id == ProductTaxRuleModel.id,
+            )
+            .where(
+                ProductTaxRuleAssignmentModel.market_id == market_id,
+                ProductTaxRuleAssignmentModel.product_id.in_(product_ids),
+            )
+        )
+        matches: dict[uuid.UUID, List[ProductTaxRuleModel]] = {product_id: [] for product_id in product_ids}
+        history_present: set[uuid.UUID] = set()
+        for assignment, rule in result.all():
+            history_present.add(assignment.product_id)
+            if assignment.effective_from <= when and (
+                assignment.effective_to is None or assignment.effective_to >= when
+            ):
+                matches.setdefault(assignment.product_id, []).append(rule)
+
+        statuses: dict[uuid.UUID, str] = {}
+        for product_id in product_ids:
+            candidates = matches.get(product_id, [])
+            if len(candidates) > 1:
+                statuses[product_id] = "ambiguous"
+            elif not candidates:
+                statuses[product_id] = "expired" if product_id in history_present else "missing"
+            elif candidates[0].status == ProductTaxRuleStatus.PUBLISHED.value:
+                statuses[product_id] = "ready"
+            else:
+                statuses[product_id] = "draft"
+        return statuses
+
     async def list_effective_linked_rules(
         self,
         market_id: uuid.UUID,
@@ -299,6 +495,40 @@ class SQLAlchemyProductTaxRuleRepository:
             ProductTaxRuleCandidate(association_id, _to_product_tax_rule(rule_model))
             for association_id, rule_model in result.all()
         ]
+
+    @staticmethod
+    def _copy_rule_to_model(rule: ProductTaxRule, model: ProductTaxRuleModel) -> None:
+        for field in (
+            "market_id", "name", "effective_from", "effective_to", "ncm", "cest", "origin", "cfop",
+            "icms_group", "icms_cst", "icms_csosn", "icms_mod_bc", "icms_rate", "icms_reduction_rate",
+            "icms_st_mod_bc", "icms_st_mva_rate", "icms_st_rate", "fcp_rate", "pis_cst", "pis_rate",
+            "cofins_cst", "cofins_rate", "approved_by", "approved_at",
+        ):
+            setattr(model, field, getattr(rule, field))
+
+    @staticmethod
+    def _validate_for_publication(rule: ProductTaxRule) -> None:
+        approved_groups = {
+            value.strip() for value in get_settings().FISCAL_APPROVED_ICMS_GROUPS.split(",") if value.strip()
+        }
+        if not rule.icms_group or rule.icms_group not in approved_groups:
+            raise BusinessRuleException(
+                "O grupo ICMS informado não possui catálogo contábil homologado para publicação."
+            )
+
+        required_fields = {
+            "name", "effective_from", "ncm", "origin", "cfop", "icms_group", "pis_cst", "cofins_cst",
+            "approved_by", "approved_at",
+        }
+        group_requirements = {
+            "ICMSSN500": {"cest", "icms_csosn", "icms_st_mod_bc", "icms_st_mva_rate", "icms_st_rate"},
+        }
+        required_fields |= group_requirements.get(rule.icms_group, set())
+        missing = sorted(field for field in required_fields if getattr(rule, field) is None)
+        if missing:
+            raise BusinessRuleException(
+                "Regra fiscal sem campos obrigatórios para publicação: " + ", ".join(missing) + "."
+            )
 
 
 def _to_product_tax_rule(model: ProductTaxRuleModel) -> ProductTaxRule:

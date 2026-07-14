@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     FISCAL_WORKER_CONCURRENCY: int = 5
     FISCAL_JOB_TIMEOUT: int = 30
     FISCAL_STORAGE_ROOT: str = "storage/fiscal"
+    # Comma-separated ICMS XML groups approved in the accountant catalog and
+    # homologated by Fiscal. Empty is deliberately fail-closed.
+    FISCAL_APPROVED_ICMS_GROUPS: str = ""
 
     # Neectify Fiscal
     NEECTIFY_API_KEY: str = ""

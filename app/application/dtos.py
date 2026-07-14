@@ -524,6 +524,48 @@ class FiscalConfigResponseDTO(BaseModel):
     has_certificate: bool
     default_ncm: Optional[str]
 
+
+class ProductTaxRuleDraftDTO(BaseModel):
+    """Accountant-entered fiscal rule. No product data is inferred here."""
+
+    name: str
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
+    ncm: Optional[str] = None
+    cest: Optional[str] = None
+    origin: Optional[str] = None
+    cfop: Optional[str] = None
+    icms_group: Optional[str] = None
+    icms_cst: Optional[str] = None
+    icms_csosn: Optional[str] = None
+    icms_mod_bc: Optional[str] = None
+    icms_rate: Optional[Decimal] = None
+    icms_reduction_rate: Optional[Decimal] = None
+    icms_st_mod_bc: Optional[str] = None
+    icms_st_mva_rate: Optional[Decimal] = None
+    icms_st_rate: Optional[Decimal] = None
+    fcp_rate: Optional[Decimal] = None
+    pis_cst: Optional[str] = None
+    pis_rate: Optional[Decimal] = None
+    cofins_cst: Optional[str] = None
+    cofins_rate: Optional[Decimal] = None
+
+
+class ProductTaxRuleDraftUpdateDTO(ProductTaxRuleDraftDTO):
+    name: Optional[str] = None
+
+
+class ProductTaxRulePublishDTO(BaseModel):
+    approved_by: UUID
+    approved_at: datetime
+
+
+class ProductTaxRuleAssignmentDTO(BaseModel):
+    tax_rule_id: UUID
+    product_ids: List[UUID] = Field(min_length=1)
+    effective_from: date
+    reason: str = Field(min_length=3, max_length=500)
+
 class InvoiceResponseDTO(BaseModel):
     id: UUID
     status: str
