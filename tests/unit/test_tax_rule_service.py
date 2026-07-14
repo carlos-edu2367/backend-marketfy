@@ -57,8 +57,8 @@ class FakeRuleRepository:
         self.rules = rules
         self.requests = []
 
-    async def list_linked_rules(self, market_id, product_id):
-        self.requests.append((market_id, product_id))
+    async def list_effective_linked_rules(self, market_id, product_id, occurred_on):
+        self.requests.append((market_id, product_id, occurred_on))
         return self.rules
 
 
@@ -78,6 +78,74 @@ async def test_selects_latest_published_rule_effective_on_sale_date() -> None:
 
     assert selected.version == 2
     assert selected.status is ProductTaxRuleStatus.PUBLISHED
+
+
+class FakeHistoricalRuleRepository:
+    def __init__(self, associations):
+        self.associations = associations
+        self.requests = []
+
+    async def list_effective_linked_rules(self, market_id, product_id, occurred_on):
+        self.requests.append((market_id, product_id, occurred_on))
+        return [
+            rule
+            for starts_on, ends_on, rule in self.associations
+            if starts_on <= occurred_on and (ends_on is None or occurred_on <= ends_on)
+        ]
+
+
+@pytest.mark.asyncio
+async def test_sale_before_reassignment_uses_prior_historical_association() -> None:
+    prior_rule = make_rule(version=1, status=ProductTaxRuleStatus.PUBLISHED, effective_from=date(2026, 7, 1))
+    current_rule = make_rule(version=2, status=ProductTaxRuleStatus.PUBLISHED, effective_from=date(2026, 7, 20))
+    repository = FakeHistoricalRuleRepository([
+        (date(2026, 7, 1), date(2026, 7, 19), prior_rule),
+        (date(2026, 7, 20), None, current_rule),
+    ])
+    service = TaxRuleService(repository)
+
+    selected = await service.resolve_for_sale_item(
+        market_id=MARKET_ID,
+        product_id=PRODUCT_ID,
+        occurred_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+        context=TaxContext.go_nfce_consumer_final(),
+    )
+
+    assert selected.id == prior_rule.id
+    assert repository.requests == [(MARKET_ID, PRODUCT_ID, date(2026, 7, 15))]
+
+
+@pytest.mark.asyncio
+async def test_effective_date_takes_priority_over_numeric_rule_version() -> None:
+    newer_numeric_version = make_rule(version=9, status=ProductTaxRuleStatus.PUBLISHED, effective_from=date(2026, 7, 1))
+    newer_effective_rule = make_rule(version=2, status=ProductTaxRuleStatus.PUBLISHED, effective_from=date(2026, 7, 15))
+    service = TaxRuleService(FakeRuleRepository([newer_numeric_version, newer_effective_rule]))
+
+    selected = await service.resolve_for_sale_item(
+        market_id=MARKET_ID,
+        product_id=PRODUCT_ID,
+        occurred_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        context=TaxContext.go_nfce_consumer_final(),
+    )
+
+    assert selected.id == newer_effective_rule.id
+
+
+@pytest.mark.asyncio
+async def test_current_historical_association_continues_to_resolve() -> None:
+    current_rule = make_rule(version=2, status=ProductTaxRuleStatus.PUBLISHED, effective_from=date(2026, 7, 20))
+    service = TaxRuleService(FakeHistoricalRuleRepository([
+        (date(2026, 7, 20), None, current_rule),
+    ]))
+
+    selected = await service.resolve_for_sale_item(
+        market_id=MARKET_ID,
+        product_id=PRODUCT_ID,
+        occurred_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        context=TaxContext.go_nfce_consumer_final(),
+    )
+
+    assert selected.id == current_rule.id
 
 
 class FakeSaleRepository:

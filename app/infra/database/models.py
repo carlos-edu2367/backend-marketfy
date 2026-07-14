@@ -634,6 +634,25 @@ class ProductTaxRuleModel(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
+class ProductTaxRuleAssignmentModel(Base):
+    """Historical product-to-rule association used to resolve offline sales safely."""
+
+    __tablename__ = "product_tax_rule_assignments"
+    __table_args__ = (
+        Index("ix_ptra_product_effective", "product_id", "effective_from", "effective_to"),
+        Index("ix_ptra_market_product", "market_id", "product_id"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id"), nullable=False)
+    product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
+    tax_rule_id = Column(UUID(as_uuid=True), ForeignKey("product_tax_rules.id"), nullable=False)
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class FiscalDocumentModel(Base):
     """Documento fiscal de uma venda. Um por sale_id+document_type."""
     __tablename__ = "fiscal_documents"

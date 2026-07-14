@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol, Sequence
 
 from domain.fiscal import ProductTaxRule, ProductTaxRuleStatus
@@ -31,8 +31,8 @@ class TaxContext:
 
 
 class ProductTaxRuleRepository(Protocol):
-    async def list_linked_rules(
-        self, market_id: uuid.UUID, product_id: uuid.UUID
+    async def list_effective_linked_rules(
+        self, market_id: uuid.UUID, product_id: uuid.UUID, occurred_on: date
     ) -> Sequence[ProductTaxRule]: ...
 
 
@@ -73,7 +73,11 @@ class TaxRuleService:
         if not context.is_supported():
             raise TaxRuleNotFoundError("Contexto fiscal ainda não homologado para esta regra de produto.")
 
-        candidates = await self._repository.list_linked_rules(market_id, product_id)
+        candidates = await self._repository.list_effective_linked_rules(
+            market_id,
+            product_id,
+            occurred_at.date(),
+        )
         valid = [
             rule
             for rule in candidates
@@ -84,4 +88,7 @@ class TaxRuleService:
         if not valid:
             raise TaxRuleNotFoundError("Produto sem regra fiscal publicada e vigente.")
 
-        return max(valid, key=lambda rule: rule.version)
+        return max(
+            valid,
+            key=lambda rule: (rule.effective_from or date.min, str(rule.id)),
+        )

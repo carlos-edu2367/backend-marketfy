@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional, Tuple
 
 from sqlalchemy import and_, desc, func, select, update
@@ -57,7 +57,7 @@ from infra.database.models import (
     FiscalUsageLedgerModel,
     ProductTaxProfileModel,
     ProductTaxRuleModel,
-    ProductModel,
+    ProductTaxRuleAssignmentModel,
 )
 
 
@@ -260,21 +260,37 @@ def _to_tax_profile(m: ProductTaxProfileModel) -> ProductTaxProfile:
 
 
 class SQLAlchemyProductTaxRuleRepository:
-    """Loads only the tax rule explicitly linked to a Marketfy product."""
+    """Loads rules through the durable product-association timeline."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def list_linked_rules(self, market_id: uuid.UUID, product_id: uuid.UUID) -> List[ProductTaxRule]:
+    async def list_effective_linked_rules(
+        self,
+        market_id: uuid.UUID,
+        product_id: uuid.UUID,
+        occurred_on: date,
+    ) -> List[ProductTaxRule]:
         query = (
             select(ProductTaxRuleModel)
-            .join(ProductModel, ProductModel.tax_rule_id == ProductTaxRuleModel.id)
-            .where(
-                ProductModel.id == product_id,
-                ProductModel.market_id == market_id,
-                ProductTaxRuleModel.market_id == market_id,
+            .join(
+                ProductTaxRuleAssignmentModel,
+                ProductTaxRuleAssignmentModel.tax_rule_id == ProductTaxRuleModel.id,
             )
-            .order_by(desc(ProductTaxRuleModel.version))
+            .where(
+                ProductTaxRuleAssignmentModel.product_id == product_id,
+                ProductTaxRuleAssignmentModel.market_id == market_id,
+                ProductTaxRuleModel.market_id == market_id,
+                ProductTaxRuleAssignmentModel.effective_from <= occurred_on,
+                (
+                    ProductTaxRuleAssignmentModel.effective_to.is_(None)
+                    | (ProductTaxRuleAssignmentModel.effective_to >= occurred_on)
+                ),
+            )
+            .order_by(
+                desc(ProductTaxRuleModel.effective_from),
+                desc(ProductTaxRuleModel.id),
+            )
         )
         result = await self.session.execute(query)
         return [_to_product_tax_rule(model) for model in result.scalars().all()]
