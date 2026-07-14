@@ -17,6 +17,14 @@ from application.dtos import (
     TerminalCreateDTO, TerminalResponseDTO, BoxResponseDTO, 
     SaleResponseDTO, SaleItemDTO, PaymentDTO, CloseBoxDTO
 )
+from application.services.fiscal.tax_rule_calculator import ItemFiscalSnapshot, TaxRuleCalculator
+from application.services.fiscal.tax_rule_service import (
+    FiscalRuleMissingError,
+    TaxContext,
+    TaxRuleNotFoundError,
+    TaxRuleService,
+)
+from domain.fiscal import FiscalEnvironment
 from infra.config.logger import get_logger
 
 logger = get_logger("sales_service")
@@ -32,6 +40,9 @@ class SalesService:
                  plan_repo: PlanRepositoryInterface,
                  financial_repo: FinancialTransactionRepositoryInterface,
                  customer_repo: CustomerRepositoryInterface = None,
+                 fiscal_config_repo=None,
+                 tax_rule_service: TaxRuleService = None,
+                 environment: str = "development",
                  ): 
         self.sale_repo = sale_repo
         self.box_repo = box_repo
@@ -42,6 +53,9 @@ class SalesService:
         self.plan_repo = plan_repo
         self.customer_repo = customer_repo
         self.financial_repo = financial_repo
+        self.fiscal_config_repo = fiscal_config_repo
+        self.tax_rule_service = tax_rule_service
+        self.environment = environment
 
     # ==================================================================================
     # TERMINAIS (PDVs)
@@ -220,13 +234,26 @@ class SalesService:
 
                     sale.add_payment(method, pay_dto.amount, pay_dto.installments)
 
-                # 4. Adiciona Itens e Baixa Estoque
+                # 4. Carrega todos os produtos e resolve o fiscal antes de qualquer escrita.
+                # Isso impede movimentação de estoque ou venda parcial quando há regra ausente.
+                prepared_items = []
                 for item_dto in dto.items:
                     product = await self.product_repo.get_by_id(item_dto.product_id)
                     if not product or product.market_id != market_id:
                         raise BusinessRuleException(
                             f"Erro na venda {dto.offline_id or str(dto.id)[:8]}: produto nao encontrado na loja."
                         )
+
+                    prepared_items.append((item_dto, product))
+
+                fiscal_snapshots = await self._resolve_fiscal_snapshots(
+                    market_id=market_id,
+                    sale=sale,
+                    prepared_items=prepared_items,
+                )
+
+                # 5. Adiciona itens e baixa o estoque somente após validar o lote fiscal.
+                for (item_dto, product), fiscal_snapshot in zip(prepared_items, fiscal_snapshots):
 
                     # Baixa Estoque (Movimentação do tipo VENDA)
                     product.add_movement(
@@ -238,13 +265,18 @@ class SalesService:
                     
                     # Adiciona item na venda
                     sale.add_item(product, item_dto.quantity)
+                    if fiscal_snapshot:
+                        sale_item = sale.items[-1]
+                        sale_item.ncm_snapshot = fiscal_snapshot.ncm
+                        sale_item.tax_rule_version_snapshot = fiscal_snapshot.rule_version
+                        sale_item.fiscal_tax_snapshot = fiscal_snapshot.as_persistence_dict()
 
-                # 5. CORREÇÃO: Atualiza Saldo do Caixa (Se houve dinheiro)
+                # 6. CORREÇÃO: Atualiza Saldo do Caixa (Se houve dinheiro)
                 if cash_amount_to_add_to_box > 0:
                     box.current_balance += cash_amount_to_add_to_box
                     await self.box_repo.save(box, commit=False)
 
-                # 6. Salva Venda e Processa Fiado
+                # 7. Salva Venda e Processa Fiado
                 if fiado_pending_list:
                     # Salva a venda SEM commit para disponibilizar o ID na sessão
                     saved_sale = await self.sale_repo.save(sale, commit=False)
@@ -288,6 +320,57 @@ class SalesService:
                 raise e
 
         return results
+
+    async def _resolve_fiscal_snapshots(self, *, market_id, sale: Sale, prepared_items) -> list[Optional[ItemFiscalSnapshot]]:
+        if not await self._requires_fiscal_rule_enforcement(market_id):
+            return [None] * len(prepared_items)
+
+        missing_products = []
+        snapshots: list[Optional[ItemFiscalSnapshot]] = []
+        context = TaxContext.go_nfce_consumer_final()
+        calculator = TaxRuleCalculator()
+
+        for item_dto, product in prepared_items:
+            try:
+                if not self.tax_rule_service:
+                    raise TaxRuleNotFoundError("Serviço de regras fiscais indisponível.")
+                rule = await self.tax_rule_service.resolve_for_sale_item(
+                    market_id=market_id,
+                    product_id=product.id,
+                    occurred_at=sale.created_at,
+                    context=context,
+                )
+            except TaxRuleNotFoundError:
+                missing_products.append({"id": str(product.id), "name": product.name})
+                snapshots.append(None)
+                continue
+
+            snapshots.append(calculator.calculate(
+                item=SaleItem(
+                    sale_id=sale.id,
+                    product_id=product.id,
+                    product_name=product.name,
+                    quantity=item_dto.quantity,
+                    unit_price=product.price,
+                    total=product.price * item_dto.quantity,
+                ),
+                rule=rule,
+            ))
+
+        if missing_products:
+            raise FiscalRuleMissingError(missing_products)
+        return snapshots
+
+    async def _requires_fiscal_rule_enforcement(self, market_id: uuid.UUID) -> bool:
+        if self.environment != "production" or not self.fiscal_config_repo:
+            return False
+
+        config = await self.fiscal_config_repo.get_by_market(market_id)
+        return bool(
+            config
+            and config.enabled
+            and config.environment is FiscalEnvironment.PRODUCTION
+        )
 
     async def list_sales(self, market_id: uuid.UUID, limit: int, offset: int) -> List[SaleResponseDTO]:
         sales = await self.sale_repo.list_by_market(market_id, limit, offset)

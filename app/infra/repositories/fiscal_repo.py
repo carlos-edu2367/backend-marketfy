@@ -37,6 +37,8 @@ from domain.fiscal import (
     NotificationType,
     NumberingMode,
     ProductTaxProfile,
+    ProductTaxRule,
+    ProductTaxRuleStatus,
     TaxRegime,
     UsageLedgerEventType,
     ValidationStatus,
@@ -54,6 +56,8 @@ from infra.database.models import (
     FiscalUsageCounterModel,
     FiscalUsageLedgerModel,
     ProductTaxProfileModel,
+    ProductTaxRuleModel,
+    ProductModel,
 )
 
 
@@ -253,6 +257,62 @@ def _to_tax_profile(m: ProductTaxProfileModel) -> ProductTaxProfile:
     )
     p.id = m.id
     return p
+
+
+class SQLAlchemyProductTaxRuleRepository:
+    """Loads only the tax rule explicitly linked to a Marketfy product."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def list_linked_rules(self, market_id: uuid.UUID, product_id: uuid.UUID) -> List[ProductTaxRule]:
+        query = (
+            select(ProductTaxRuleModel)
+            .join(ProductModel, ProductModel.tax_rule_id == ProductTaxRuleModel.id)
+            .where(
+                ProductModel.id == product_id,
+                ProductModel.market_id == market_id,
+                ProductTaxRuleModel.market_id == market_id,
+            )
+            .order_by(desc(ProductTaxRuleModel.version))
+        )
+        result = await self.session.execute(query)
+        return [_to_product_tax_rule(model) for model in result.scalars().all()]
+
+
+def _to_product_tax_rule(model: ProductTaxRuleModel) -> ProductTaxRule:
+    rule = ProductTaxRule(
+        market_id=model.market_id,
+        name=model.name,
+        version=model.version,
+        status=ProductTaxRuleStatus(model.status),
+        effective_from=model.effective_from,
+        effective_to=model.effective_to,
+        ncm=model.ncm,
+        cest=model.cest,
+        origin=model.origin,
+        cfop=model.cfop,
+        icms_group=model.icms_group,
+        icms_cst=model.icms_cst,
+        icms_csosn=model.icms_csosn,
+        icms_mod_bc=model.icms_mod_bc,
+        icms_rate=model.icms_rate,
+        icms_reduction_rate=model.icms_reduction_rate,
+        icms_st_mod_bc=model.icms_st_mod_bc,
+        icms_st_mva_rate=model.icms_st_mva_rate,
+        icms_st_rate=model.icms_st_rate,
+        fcp_rate=model.fcp_rate,
+        pis_cst=model.pis_cst,
+        pis_rate=model.pis_rate,
+        cofins_cst=model.cofins_cst,
+        cofins_rate=model.cofins_rate,
+        approved_by=model.approved_by,
+        approved_at=model.approved_at,
+    )
+    rule.id = model.id
+    rule.created_at = model.created_at
+    rule.updated_at = model.updated_at
+    return rule
 
 
 # =============================================================================

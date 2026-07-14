@@ -38,6 +38,11 @@ from application.services.analytics_service import AnalyticsService
 from application.services.finance_report_service import FinanceReportService # NOVO
 from application.services.audit_service import AuditService
 from infra.repositories.audit_repo import SQLAlchemyAuditLogRepository
+from infra.repositories.fiscal_repo import (
+    SQLAlchemyFiscalTenantConfigRepository,
+    SQLAlchemyProductTaxRuleRepository,
+)
+from application.services.fiscal.tax_rule_service import TaxRuleService
 
 from infra.providers.focus_nfe_provider import FocusNFeProvider
 
@@ -98,7 +103,10 @@ def get_sales_service(db: AsyncSession = Depends(get_db)):
         terminal_repo=SQLAlchemyTerminalRepository(db),
         plan_repo=SQLAlchemyPlanRepository(db),
         customer_repo=SQLAlchemyCustomerRepository(db),
-        financial_repo=SQLAlchemyFinancialTransactionRepository(db)
+        financial_repo=SQLAlchemyFinancialTransactionRepository(db),
+        fiscal_config_repo=SQLAlchemyFiscalTenantConfigRepository(db),
+        tax_rule_service=TaxRuleService(SQLAlchemyProductTaxRuleRepository(db)),
+        environment=settings.ENVIRONMENT,
     )
 
 def get_finance_service(db: AsyncSession = Depends(get_db)):

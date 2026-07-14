@@ -189,7 +189,12 @@ async def business_rule_exception_handler(request: Request, exc: BusinessRuleExc
     )
     return JSONResponse(
         status_code=400,
-        content=error_response("business_rule", str(exc), get_request_id()),
+        content=error_response(
+            getattr(exc, "code", "business_rule"),
+            str(exc),
+            get_request_id(),
+            exc.details() if hasattr(exc, "details") else None,
+        ),
         headers={"X-Request-ID": get_request_id() or ""},
     )
 

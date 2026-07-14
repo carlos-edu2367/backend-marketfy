@@ -1,3 +1,4 @@
+import json
 import uuid
 from typing import Optional, List, Tuple, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -230,6 +231,7 @@ class SQLAlchemyProductRepository(ProductRepositoryInterface):
         model.current_stock = product.current_stock
         model.active = product.active
         model.ncm = product.ncm
+        model.tax_rule_id = product.tax_rule_id
         model.updated_at = datetime.utcnow()
         if product.deleted_at:
              model.deleted_at = product.deleted_at
@@ -330,7 +332,9 @@ class SQLAlchemyProductRepository(ProductRepositoryInterface):
             cost_price=m.cost_price,
             current_stock=m.current_stock,
             active=m.active,
-            ncm=m.ncm
+            ncm=m.ncm,
+            origin=m.origin,
+            tax_rule_id=m.tax_rule_id,
         )
         p.id = m.id
         p.created_at = m.created_at
@@ -542,7 +546,9 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                     unit_price=item.unit_price,
                     total=item.total,
                     ncm_snapshot=item.ncm_snapshot,
-                    origin_snapshot=item.origin_snapshot
+                    origin_snapshot=item.origin_snapshot,
+                    fiscal_tax_snapshot_json=_serialize_fiscal_tax_snapshot(item.fiscal_tax_snapshot),
+                    tax_rule_version_snapshot=item.tax_rule_version_snapshot,
                 )
                 self.session.add(i_model)
             
@@ -631,7 +637,9 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                     unit_price=i.unit_price,
                     total=i.total,
                     ncm_snapshot=i.ncm_snapshot,
-                    origin_snapshot=i.origin_snapshot
+                    origin_snapshot=i.origin_snapshot,
+                    fiscal_tax_snapshot=_deserialize_fiscal_tax_snapshot(i.fiscal_tax_snapshot_json),
+                    tax_rule_version_snapshot=i.tax_rule_version_snapshot,
                 ))
         
         # Reconstrói pagamentos
@@ -677,6 +685,22 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                 "emitted_at": doc.authorized_at or doc.issued_at
             }
         return s
+
+
+def _serialize_fiscal_tax_snapshot(snapshot: Optional[dict]) -> Optional[str]:
+    if snapshot is None:
+        return None
+    return json.dumps(snapshot, default=_fiscal_snapshot_json_default)
+
+
+def _fiscal_snapshot_json_default(value):
+    if isinstance(value, Decimal):
+        return str(value)
+    raise TypeError(f"Unsupported fiscal snapshot value: {type(value)!r}")
+
+
+def _deserialize_fiscal_tax_snapshot(snapshot: Optional[str]) -> Optional[dict]:
+    return json.loads(snapshot) if snapshot else None
 # ==================================================================================
 # CUSTOMER REPOSITORY
 # ==================================================================================
