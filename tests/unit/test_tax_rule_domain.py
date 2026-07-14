@@ -2,6 +2,7 @@ import os
 import sys
 import uuid
 from datetime import date
+from decimal import Decimal
 
 import pytest
 
@@ -39,6 +40,16 @@ def test_published_rule_cannot_be_mutated() -> None:
 
     with pytest.raises(BusinessRuleException, match="imutável"):
         rule.rename("Bebidas corrigido")
+
+
+def test_published_rule_rejects_direct_tax_field_mutation() -> None:
+    rule = make_rule(
+        status=ProductTaxRuleStatus.PUBLISHED,
+        icms_st_rate=Decimal("18.00"),
+    )
+
+    with pytest.raises(BusinessRuleException, match="imutável"):
+        rule.icms_st_rate = Decimal("12.00")
 
 
 def test_rule_is_effective_on_inclusive_validity_boundaries() -> None:

@@ -1,7 +1,7 @@
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, List
+from typing import ClassVar, FrozenSet, Optional, List
 from datetime import date, datetime
 from decimal import Decimal
 from domain.shared import Entity, BusinessRuleException
@@ -367,9 +367,53 @@ class ProductTaxRule(Entity):
     approved_by: Optional[uuid.UUID] = None
     approved_at: Optional[datetime] = None
 
+    _IMMUTABLE_BUSINESS_FIELDS: ClassVar[FrozenSet[str]] = frozenset({
+        "market_id",
+        "name",
+        "status",
+        "version",
+        "effective_from",
+        "effective_to",
+        "ncm",
+        "cest",
+        "origin",
+        "cfop",
+        "icms_group",
+        "icms_cst",
+        "icms_csosn",
+        "icms_mod_bc",
+        "icms_rate",
+        "icms_reduction_rate",
+        "icms_st_mod_bc",
+        "icms_st_mva_rate",
+        "icms_st_rate",
+        "fcp_rate",
+        "pis_cst",
+        "pis_rate",
+        "cofins_cst",
+        "cofins_rate",
+        "approved_by",
+        "approved_at",
+    })
+
+    def __setattr__(self, name: str, value) -> None:
+        if (
+            self.__dict__.get("_published_version", False)
+            and name in self._IMMUTABLE_BUSINESS_FIELDS
+            and name in self.__dict__
+            and value != self.__dict__[name]
+        ):
+            raise BusinessRuleException(
+                "Uma regra fiscal publicada é imutável; crie uma nova versão para corrigi-la."
+            )
+
+        object.__setattr__(self, name, value)
+        if name == "status" and self._is_published_status(value):
+            object.__setattr__(self, "_published_version", True)
+
     def __post_init__(self) -> None:
         if isinstance(self.status, str):
-            self.status = ProductTaxRuleStatus(self.status)
+            object.__setattr__(self, "status", ProductTaxRuleStatus(self.status))
         if self.version < 1:
             raise BusinessRuleException("A versão da regra fiscal deve ser positiva.")
         if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
@@ -387,10 +431,14 @@ class ProductTaxRule(Entity):
         return self.effective_to is None or when <= self.effective_to
 
     def _ensure_mutable(self) -> None:
-        if self.status is ProductTaxRuleStatus.PUBLISHED:
+        if self.__dict__.get("_published_version", False):
             raise BusinessRuleException(
                 "Uma regra fiscal publicada é imutável; crie uma nova versão para corrigi-la."
             )
+
+    @staticmethod
+    def _is_published_status(status) -> bool:
+        return status is ProductTaxRuleStatus.PUBLISHED or status == ProductTaxRuleStatus.PUBLISHED.value
 
 
 @dataclass
