@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, Integer, ForeignKey, DateTime, Numeric, Text, UniqueConstraint, Index
+from sqlalchemy import Column, String, Boolean, Integer, ForeignKey, DateTime, Numeric, Text, UniqueConstraint, Index, Date
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from infra.database.setup import Base
@@ -117,6 +117,12 @@ class ProductModel(Base):
     active = Column(Boolean, default=True)
     ncm = Column(String, nullable=True)
     origin = Column(Integer, default=0)
+    tax_rule_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("product_tax_rules.id", name="fk_products_tax_rule_id"),
+        nullable=True,
+    )
+    tax_rule = relationship("ProductTaxRuleModel", foreign_keys=[tax_rule_id])
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -217,6 +223,8 @@ class SaleItemModel(Base):
     product_name_snapshot = Column(String, nullable=True)
     ncm_snapshot = Column(String, nullable=True)
     origin_snapshot = Column(Integer, default=0) # Restaurado
+    fiscal_tax_snapshot_json = Column(Text, nullable=True)
+    tax_rule_version_snapshot = Column(Integer, nullable=True)
     
     quantity = Column(Numeric(10, 3), nullable=False)
     unit_price = Column(Numeric(10, 2), nullable=False)
@@ -578,6 +586,50 @@ class ProductTaxProfileModel(Base):
     aliquotas_json = Column(Text, nullable=True)
     effective_from = Column(DateTime, nullable=True)
     active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class ProductTaxRuleModel(Base):
+    """Versioned, accountant-approved fiscal rule; never inferred from catalog data."""
+
+    __tablename__ = "product_tax_rules"
+    __table_args__ = (
+        Index("ix_ptr_market_status_effective", "market_id", "status", "effective_from"),
+        Index("ix_ptr_market_name_version", "market_id", "name", "version"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id"), nullable=False)
+    name = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="draft")
+    version = Column(Integer, nullable=False, default=1)
+    effective_from = Column(Date, nullable=True)
+    effective_to = Column(Date, nullable=True)
+
+    ncm = Column(String, nullable=True)
+    cest = Column(String, nullable=True)
+    origin = Column(String, nullable=True)
+    cfop = Column(String, nullable=True)
+
+    icms_group = Column(String, nullable=True)
+    icms_cst = Column(String, nullable=True)
+    icms_csosn = Column(String, nullable=True)
+    icms_mod_bc = Column(String, nullable=True)
+    icms_rate = Column(Numeric(9, 4), nullable=True)
+    icms_reduction_rate = Column(Numeric(9, 4), nullable=True)
+    icms_st_mod_bc = Column(String, nullable=True)
+    icms_st_mva_rate = Column(Numeric(9, 4), nullable=True)
+    icms_st_rate = Column(Numeric(9, 4), nullable=True)
+    fcp_rate = Column(Numeric(9, 4), nullable=True)
+
+    pis_cst = Column(String, nullable=True)
+    pis_rate = Column(Numeric(9, 4), nullable=True)
+    cofins_cst = Column(String, nullable=True)
+    cofins_rate = Column(Numeric(9, 4), nullable=True)
+
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

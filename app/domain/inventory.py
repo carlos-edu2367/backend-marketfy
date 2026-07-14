@@ -46,6 +46,7 @@ class Product(Entity):
     active: bool = True
     ncm: Optional[str] = None
     origin: int = 0
+    tax_rule_id: Optional[uuid.UUID] = None
     
     # Soft Delete para Sync Incremental
     deleted_at: Optional[datetime] = None

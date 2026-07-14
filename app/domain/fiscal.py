@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from domain.shared import Entity, BusinessRuleException
 
@@ -65,6 +65,15 @@ class TaxRegime(Enum):
     LUCRO_PRESUMIDO = "lucro_presumido"
     LUCRO_REAL = "lucro_real"
     MEI = "mei"
+
+
+class ProductTaxRuleStatus(Enum):
+    """Lifecycle of an accountant-reviewed product tax rule."""
+
+    DRAFT = "draft"
+    HOMOLOGATED = "homologated"
+    PUBLISHED = "published"
+    RETIRED = "retired"
 
 
 class NumberingMode(Enum):
@@ -317,6 +326,71 @@ class ProductTaxProfile(Entity):
 
     effective_from: Optional[datetime] = None
     active: bool = True
+
+
+@dataclass
+class ProductTaxRule(Entity):
+    """Versioned fiscal classification approved for a Marketfy product.
+
+    This entity deliberately does not derive any classification from product
+    text, barcode or NCM. A published version is audit evidence and therefore
+    cannot be changed in place.
+    """
+
+    market_id: uuid.UUID
+    name: str
+    status: ProductTaxRuleStatus = ProductTaxRuleStatus.DRAFT
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
+
+    ncm: Optional[str] = None
+    cest: Optional[str] = None
+    origin: Optional[str] = None
+    cfop: Optional[str] = None
+
+    icms_group: Optional[str] = None
+    icms_cst: Optional[str] = None
+    icms_csosn: Optional[str] = None
+    icms_mod_bc: Optional[str] = None
+    icms_rate: Optional[Decimal] = None
+    icms_reduction_rate: Optional[Decimal] = None
+    icms_st_mod_bc: Optional[str] = None
+    icms_st_mva_rate: Optional[Decimal] = None
+    icms_st_rate: Optional[Decimal] = None
+    fcp_rate: Optional[Decimal] = None
+
+    pis_cst: Optional[str] = None
+    pis_rate: Optional[Decimal] = None
+    cofins_cst: Optional[str] = None
+    cofins_rate: Optional[Decimal] = None
+
+    approved_by: Optional[uuid.UUID] = None
+    approved_at: Optional[datetime] = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.status, str):
+            self.status = ProductTaxRuleStatus(self.status)
+        if self.version < 1:
+            raise BusinessRuleException("A versão da regra fiscal deve ser positiva.")
+        if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
+            raise BusinessRuleException("O fim da vigência não pode anteceder o início.")
+
+    def rename(self, name: str) -> None:
+        self._ensure_mutable()
+        self.name = name
+        self.update_timestamp()
+
+    def is_effective_on(self, when: date) -> bool:
+        """Return whether a dated rule is valid on ``when``, inclusively."""
+        if self.effective_from is None or when < self.effective_from:
+            return False
+        return self.effective_to is None or when <= self.effective_to
+
+    def _ensure_mutable(self) -> None:
+        if self.status is ProductTaxRuleStatus.PUBLISHED:
+            raise BusinessRuleException(
+                "Uma regra fiscal publicada é imutável; crie uma nova versão para corrigi-la."
+            )
 
 
 @dataclass

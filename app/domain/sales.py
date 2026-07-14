@@ -83,6 +83,8 @@ class SaleItem(Entity):
     # Snapshots fiscais
     ncm_snapshot: Optional[str] = None
     origin_snapshot: int = 0
+    fiscal_tax_snapshot: Optional[dict] = None
+    tax_rule_version_snapshot: Optional[int] = None
 
 @dataclass
 class Payment(Entity):
