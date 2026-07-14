@@ -40,9 +40,9 @@ def upgrade() -> None:
         ["market_id", "product_id"],
     )
 
-    # Preserve only explicit current links. The earliest defensible date is the
-    # latest of the product creation date and the linked rule's own validity;
-    # legacy product_tax_profiles are intentionally never used here.
+    # Preserve only explicit current links from the rollout date onward. Their
+    # prior assignment date is unknown, so no historical association is
+    # manufactured. Legacy product_tax_profiles are intentionally never used.
     op.execute(
         """
         INSERT INTO product_tax_rule_assignments (
@@ -54,12 +54,11 @@ def upgrade() -> None:
             p.market_id,
             p.id,
             p.tax_rule_id,
-            GREATEST(COALESCE(r.effective_from, p.created_at::date), p.created_at::date),
+            CURRENT_DATE,
             NULL,
-            p.created_at,
-            p.updated_at
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
         FROM products p
-        JOIN product_tax_rules r ON r.id = p.tax_rule_id
         WHERE p.tax_rule_id IS NOT NULL
         """
     )

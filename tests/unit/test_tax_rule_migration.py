@@ -43,7 +43,8 @@ def test_upgrade_backfills_only_explicit_current_product_rule_links(monkeypatch)
     assert len(backfills) == 1
     backfill = backfills[0]
     assert "FROM products p" in backfill
-    assert "JOIN product_tax_rules r ON r.id = p.tax_rule_id" in backfill
     assert "p.tax_rule_id IS NOT NULL" in backfill
     assert "product_tax_profiles" not in backfill
-    assert "GREATEST" in backfill
+    assert "CURRENT_DATE" in backfill
+    assert "GREATEST" not in backfill
+    assert "r.effective_from" not in backfill

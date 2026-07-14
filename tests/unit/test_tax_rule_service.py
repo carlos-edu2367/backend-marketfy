@@ -18,6 +18,7 @@ from application.services.fiscal.tax_rule_service import (
     FiscalRuleMissingError,
     ProductTaxRuleCandidate,
     TaxContext,
+    TaxRuleNotFoundError,
     TaxRuleService,
 )
 from application.services.sales_service import SalesService
@@ -156,6 +157,22 @@ async def test_current_historical_association_continues_to_resolve() -> None:
     )
 
     assert selected.id == current_rule.id
+
+
+@pytest.mark.asyncio
+async def test_sale_before_rollout_created_association_is_not_resolved() -> None:
+    current_rule = make_rule(version=2, status=ProductTaxRuleStatus.PUBLISHED, effective_from=date(2026, 7, 1))
+    service = TaxRuleService(FakeHistoricalRuleRepository([
+        (date(2026, 7, 21), None, current_rule),
+    ]))
+
+    with pytest.raises(TaxRuleNotFoundError, match="sem regra fiscal"):
+        await service.resolve_for_sale_item(
+            market_id=MARKET_ID,
+            product_id=PRODUCT_ID,
+            occurred_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+            context=TaxContext.go_nfce_consumer_final(),
+        )
 
 
 @pytest.mark.asyncio
