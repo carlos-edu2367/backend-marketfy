@@ -58,8 +58,14 @@ ROLE_PERMISSIONS: dict[UserRole, set[MarketPermission]] = {
         MarketPermission.FINANCE_READ,
         MarketPermission.FINANCE_WRITE,
         MarketPermission.FISCAL_READ,
+        MarketPermission.FISCAL_WRITE,
         MarketPermission.ANALYTICS_READ,
         MarketPermission.REPORTS_READ,
+    },
+    UserRole.ACCOUNTANT: {
+        MarketPermission.MARKET_READ,
+        MarketPermission.FISCAL_READ,
+        MarketPermission.FISCAL_WRITE,
     },
     UserRole.CASHIER: {
         MarketPermission.MARKET_READ,

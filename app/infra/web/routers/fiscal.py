@@ -26,11 +26,13 @@ from fastapi.responses import Response
 
 from infra.web.dependencies import get_current_user, require_market_access, get_audit_service
 from infra.security.market_access import MarketPermission
+from infra.security.fiscal_rule_authorization import TaxRuleApprovalEvidenceError, assert_tax_rule_approver
 from application.services.audit_service import AuditService
 from application.dtos import (
     ProductTaxRuleDraftDTO,
     ProductTaxRuleDraftUpdateDTO,
     ProductTaxRulePublishDTO,
+    ProductTaxRuleSuccessorDTO,
 )
 from domain.identity import User
 from domain.shared import BusinessRuleException
@@ -42,6 +44,19 @@ from infra.security.uploads import validate_pfx_upload
 
 logger = get_logger("fiscal_router")
 router = APIRouter()
+
+
+async def _require_tax_rule_accountant(*, db: AsyncSession, market_id: uuid.UUID, current_user: User) -> None:
+    """Publication is deliberately stricter than general fiscal write access."""
+    from infra.repositories.market_member_repo import SQLAlchemyMarketMemberRepository
+
+    member = await SQLAlchemyMarketMemberRepository(db).get_active_member(market_id, current_user.id)
+    try:
+        if member is None:
+            raise TaxRuleApprovalEvidenceError()
+        assert_tax_rule_approver(member.role)
+    except TaxRuleApprovalEvidenceError as exc:
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
 
 
 # =============================================================================
@@ -764,12 +779,20 @@ async def publish_tax_rule(
     rule = await repo.get_rule(market_id, rule_id)
     if rule is None:
         raise HTTPException(404, "Regra fiscal não encontrada.")
-    # Approval evidence comes from the authenticated fiscal actor, never from
-    # a client supplied user ID or clock value.
+    await _require_tax_rule_accountant(db=db, market_id=market_id, current_user=current_user)
+    from domain.fiscal import TaxRuleApproval
+
+    # Approval identity and timestamp are server-derived; the caller only
+    # references the accountant-approved homologation XML.
     rule.approved_by = current_user.id
-    rule.approved_at = datetime.utcnow()
+    approval = TaxRuleApproval.from_authenticated_actor(
+        rule_id=rule.id,
+        accountant_user_id=current_user.id,
+        homologation_xml_reference=dto.homologation_xml_reference,
+    )
+    rule.approved_at = approval.approved_at
     try:
-        saved = await repo.publish_rule(rule)
+        saved = await repo.publish_rule_with_approval(rule, approval)
     except BusinessRuleException as exc:
         raise HTTPException(400, str(exc))
     await record_audit_event(
@@ -778,6 +801,35 @@ async def publish_tax_rule(
         metadata={"approved_by": str(saved.approved_by), "approved_at": saved.approved_at.isoformat()},
     )
     return _tax_rule_response(saved)
+
+
+@router.post("/{market_id}/tax-rules/{rule_id}/successor", status_code=201, tags=["fiscal"])
+async def create_tax_rule_successor(
+    request: Request,
+    market_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    dto: ProductTaxRuleSuccessorDTO,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+    market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
+):
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    repo = SQLAlchemyProductTaxRuleRepository(db)
+    rule = await repo.get_rule(market_id, rule_id)
+    if rule is None:
+        raise HTTPException(404, "Regra fiscal não encontrada.")
+    try:
+        successor = await repo.create_successor(rule, effective_from=dto.effective_from)
+    except BusinessRuleException as exc:
+        raise HTTPException(400, str(exc))
+    await record_audit_event(
+        audit, request, actor=current_user, action="fiscal.tax_rule.successor_created",
+        resource_type="product_tax_rule", resource_id=str(successor.id), result="success", market_id=market_id,
+        metadata={"supersedes_rule_id": str(rule.id), "rule_family_id": str(successor.rule_family_id)},
+    )
+    return _tax_rule_response(successor)
 
 
 @router.post("/{market_id}/tax-rules/{rule_id}/retire", tags=["fiscal"])

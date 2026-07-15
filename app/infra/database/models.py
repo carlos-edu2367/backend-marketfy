@@ -597,6 +597,7 @@ class ProductTaxRuleModel(Base):
     __table_args__ = (
         Index("ix_ptr_market_status_effective", "market_id", "status", "effective_from"),
         Index("ix_ptr_market_name_version", "market_id", "name", "version"),
+        UniqueConstraint("rule_family_id", "version", name="uq_product_tax_rule_family_version"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -604,6 +605,8 @@ class ProductTaxRuleModel(Base):
     name = Column(String, nullable=False)
     status = Column(String, nullable=False, default="draft")
     version = Column(Integer, nullable=False, default=1)
+    rule_family_id = Column(UUID(as_uuid=True), nullable=False, default=uuid.uuid4)
+    supersedes_rule_id = Column(UUID(as_uuid=True), ForeignKey("product_tax_rules.id"), nullable=True)
     effective_from = Column(Date, nullable=True)
     effective_to = Column(Date, nullable=True)
 
@@ -632,6 +635,18 @@ class ProductTaxRuleModel(Base):
     approved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class TaxRuleApprovalModel(Base):
+    """Immutable evidence authorizing publication of one fiscal-rule version."""
+
+    __tablename__ = "tax_rule_approvals"
+
+    rule_id = Column(UUID(as_uuid=True), ForeignKey("product_tax_rules.id"), primary_key=True)
+    accountant_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    homologation_xml_reference = Column(Text, nullable=False)
+    homologation_xml_sha256 = Column(String(64), nullable=False)
+    approved_at = Column(DateTime, nullable=False)
 
 
 class ProductTaxRuleAssignmentModel(Base):

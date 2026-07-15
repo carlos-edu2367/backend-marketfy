@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
 from sqlalchemy import and_, desc, func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from application.services.fiscal.tax_rule_service import ProductTaxRuleCandidate
@@ -43,6 +43,7 @@ from domain.fiscal import (
     ProductTaxProfile,
     ProductTaxRule,
     ProductTaxRuleStatus,
+    TaxRuleApproval,
     TaxRegime,
     UsageLedgerEventType,
     ValidationStatus,
@@ -61,6 +62,7 @@ from infra.database.models import (
     FiscalUsageLedgerModel,
     ProductTaxProfileModel,
     ProductTaxRuleModel,
+    TaxRuleApprovalModel,
     ProductTaxRuleAssignmentModel,
     ProductModel,
 )
@@ -309,14 +311,40 @@ class SQLAlchemyProductTaxRuleRepository:
         return _to_product_tax_rule(model)
 
     async def publish_rule(self, rule: ProductTaxRule) -> ProductTaxRule:
+        raise BusinessRuleException(
+            "A publicação exige uma aprovação contábil persistida e XML homologado."
+        )
+
+    async def create_successor(self, rule: ProductTaxRule, *, effective_from: date) -> ProductTaxRule:
+        """Persist the next immutable-family version as an editable draft."""
+        model = await self.session.get(ProductTaxRuleModel, rule.id)
+        if model is None or model.market_id != rule.market_id:
+            raise BusinessRuleException("Regra fiscal não encontrada.")
+        successor = _to_product_tax_rule(model).create_successor(effective_from=effective_from)
+        return await self.create_draft(successor)
+
+    async def publish_rule_with_approval(
+        self, rule: ProductTaxRule, approval: TaxRuleApproval
+    ) -> ProductTaxRule:
         model = await self.session.get(ProductTaxRuleModel, rule.id)
         if model is None or model.market_id != rule.market_id:
             raise BusinessRuleException("Regra fiscal não encontrada.")
         if model.status != ProductTaxRuleStatus.DRAFT.value:
             raise BusinessRuleException("Somente rascunhos fiscais podem ser publicados.")
 
+        if approval.rule_id != rule.id:
+            raise BusinessRuleException("A aprovação contábil não pertence à regra fiscal.")
         self._validate_for_publication(rule)
         self._copy_rule_to_model(rule, model)
+        self.session.add(
+            TaxRuleApprovalModel(
+                rule_id=approval.rule_id,
+                accountant_user_id=approval.accountant_user_id,
+                homologation_xml_reference=approval.homologation_xml_reference,
+                homologation_xml_sha256=approval.homologation_xml_sha256,
+                approved_at=approval.approved_at,
+            )
+        )
         model.status = ProductTaxRuleStatus.PUBLISHED.value
         model.updated_at = datetime.utcnow()
         await self.session.commit()
@@ -433,7 +461,19 @@ class SQLAlchemyProductTaxRuleRepository:
             )
 
         if updated:
-            await self.session.commit()
+            try:
+                await self.session.commit()
+            except (IntegrityError, OperationalError) as exc:
+                await self.session.rollback()
+                sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+                if (
+                    "ex_product_tax_rule_assignment_effective_range" in str(exc)
+                    or sqlstate == "40P01"
+                ):
+                    raise BusinessRuleException(
+                        "Conflito de vigência: o produto já possui regra fiscal para este período."
+                    ) from exc
+                raise
         return updated, skipped, audit_changes
 
     async def list_product_fiscal_status(
@@ -508,7 +548,7 @@ class SQLAlchemyProductTaxRuleRepository:
     @staticmethod
     def _copy_rule_to_model(rule: ProductTaxRule, model: ProductTaxRuleModel) -> None:
         for field in (
-            "market_id", "name", "effective_from", "effective_to", "ncm", "cest", "origin", "cfop",
+            "market_id", "name", "rule_family_id", "supersedes_rule_id", "effective_from", "effective_to", "ncm", "cest", "origin", "cfop",
             "icms_group", "icms_cst", "icms_csosn", "icms_mod_bc", "icms_rate", "icms_reduction_rate",
             "icms_st_mod_bc", "icms_st_mva_rate", "icms_st_rate", "fcp_rate", "pis_cst", "pis_rate",
             "cofins_cst", "cofins_rate", "approved_by", "approved_at",
@@ -558,6 +598,8 @@ def _to_product_tax_rule(model: ProductTaxRuleModel) -> ProductTaxRule:
         market_id=model.market_id,
         name=model.name,
         version=model.version,
+        rule_family_id=model.rule_family_id,
+        supersedes_rule_id=model.supersedes_rule_id,
         status=ProductTaxRuleStatus(model.status),
         effective_from=model.effective_from,
         effective_to=model.effective_to,

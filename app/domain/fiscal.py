@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -74,6 +75,36 @@ class ProductTaxRuleStatus(Enum):
     HOMOLOGATED = "homologated"
     PUBLISHED = "published"
     RETIRED = "retired"
+
+
+@dataclass(frozen=True)
+class TaxRuleApproval:
+    """Immutable accountant evidence attached to one published tax rule."""
+
+    rule_id: uuid.UUID
+    accountant_user_id: uuid.UUID
+    homologation_xml_reference: str
+    homologation_xml_sha256: str
+    approved_at: datetime
+
+    @classmethod
+    def from_authenticated_actor(
+        cls,
+        *,
+        rule_id: uuid.UUID,
+        accountant_user_id: uuid.UUID,
+        homologation_xml_reference: str,
+    ) -> "TaxRuleApproval":
+        reference = homologation_xml_reference.strip()
+        if not reference:
+            raise BusinessRuleException("A referência do XML homologado é obrigatória.")
+        return cls(
+            rule_id=rule_id,
+            accountant_user_id=accountant_user_id,
+            homologation_xml_reference=reference,
+            homologation_xml_sha256=hashlib.sha256(reference.encode("utf-8")).hexdigest(),
+            approved_at=datetime.utcnow(),
+        )
 
 
 class NumberingMode(Enum):
@@ -340,6 +371,8 @@ class ProductTaxRule(Entity):
     market_id: uuid.UUID
     name: str
     status: ProductTaxRuleStatus = ProductTaxRuleStatus.DRAFT
+    rule_family_id: Optional[uuid.UUID] = None
+    supersedes_rule_id: Optional[uuid.UUID] = None
     effective_from: Optional[date] = None
     effective_to: Optional[date] = None
 
@@ -371,6 +404,8 @@ class ProductTaxRule(Entity):
         "market_id",
         "name",
         "status",
+        "rule_family_id",
+        "supersedes_rule_id",
         "version",
         "effective_from",
         "effective_to",
@@ -416,6 +451,8 @@ class ProductTaxRule(Entity):
             object.__setattr__(self, "status", ProductTaxRuleStatus(self.status))
         if self.version < 1:
             raise BusinessRuleException("A versão da regra fiscal deve ser positiva.")
+        if self.rule_family_id is None:
+            object.__setattr__(self, "rule_family_id", self.id)
         if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
             raise BusinessRuleException("O fim da vigência não pode anteceder o início.")
 
@@ -423,6 +460,39 @@ class ProductTaxRule(Entity):
         self._ensure_mutable()
         self.name = name
         self.update_timestamp()
+
+    def create_successor(self, *, effective_from: date) -> "ProductTaxRule":
+        """Create an editable next version without modifying approved evidence."""
+        if self.status is not ProductTaxRuleStatus.PUBLISHED:
+            raise BusinessRuleException("Somente uma regra publicada pode gerar sucessora.")
+        return ProductTaxRule(
+            market_id=self.market_id,
+            name=self.name,
+            status=ProductTaxRuleStatus.DRAFT,
+            rule_family_id=self.rule_family_id,
+            supersedes_rule_id=self.id,
+            version=self.version + 1,
+            effective_from=effective_from,
+            effective_to=self.effective_to,
+            ncm=self.ncm,
+            cest=self.cest,
+            origin=self.origin,
+            cfop=self.cfop,
+            icms_group=self.icms_group,
+            icms_cst=self.icms_cst,
+            icms_csosn=self.icms_csosn,
+            icms_mod_bc=self.icms_mod_bc,
+            icms_rate=self.icms_rate,
+            icms_reduction_rate=self.icms_reduction_rate,
+            icms_st_mod_bc=self.icms_st_mod_bc,
+            icms_st_mva_rate=self.icms_st_mva_rate,
+            icms_st_rate=self.icms_st_rate,
+            fcp_rate=self.fcp_rate,
+            pis_cst=self.pis_cst,
+            pis_rate=self.pis_rate,
+            cofins_cst=self.cofins_cst,
+            cofins_rate=self.cofins_rate,
+        )
 
     def is_effective_on(self, when: date) -> bool:
         """Return whether a dated rule is valid on ``when``, inclusively."""

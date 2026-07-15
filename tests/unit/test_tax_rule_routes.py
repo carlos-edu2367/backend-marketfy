@@ -27,7 +27,7 @@ MARKET_ID = uuid.uuid4()
 PRODUCT_ONE_ID = uuid.uuid4()
 PRODUCT_TWO_ID = uuid.uuid4()
 ACCOUNTANT_ID = uuid.uuid4()
-ACTOR_ID = uuid.uuid4()
+ACTOR_ID = ACCOUNTANT_ID
 
 
 def _approved_rule_payload() -> dict:
@@ -72,13 +72,23 @@ class InMemoryTaxRuleRepository:
         return rule
 
     async def publish_rule(self, rule):
+        raise AssertionError("Publication must include immutable accountant approval evidence")
+
+    async def publish_rule_with_approval(self, rule, approval):
         from domain.fiscal import ProductTaxRuleStatus
         from domain.shared import BusinessRuleException
 
-        if not rule.ncm or not rule.cest or not rule.approved_by or not rule.approved_at:
+        if not rule.ncm or not rule.cest or not approval.homologation_xml_sha256:
             raise BusinessRuleException("Regra fiscal sem campos obrigatórios ou aprovação contábil.")
+        rule.approved_by = approval.accountant_user_id
+        rule.approved_at = approval.approved_at
         rule.status = ProductTaxRuleStatus.PUBLISHED
         return rule
+
+    async def create_successor(self, rule, *, effective_from):
+        successor = rule.create_successor(effective_from=effective_from)
+        self.rules[successor.id] = successor
+        return successor
 
     async def retire_rule(self, rule):
         from domain.fiscal import ProductTaxRuleStatus
@@ -162,11 +172,25 @@ def client(monkeypatch):
     from domain.inventory import Product
     from domain.shared import CPF, Email
     from infra.repositories import fiscal_repo
+    from infra.repositories import market_member_repo
     from infra.repositories import sqlalchemy_repos
     from infra.web.routers import fiscal as fiscal_router
     from infra.web.routers import inventory as inventory_router
 
     monkeypatch.setattr(fiscal_repo, "SQLAlchemyProductTaxRuleRepository", InMemoryTaxRuleRepository)
+
+    class Member:
+        def __init__(self, role):
+            self.role = role
+
+    class MemberRepository:
+        def __init__(self, _session):
+            pass
+
+        async def get_active_member(self, _market_id, user_id):
+            return Member(UserRole.ACCOUNTANT if user_id == ACCOUNTANT_ID else UserRole.OWNER)
+
+    monkeypatch.setattr(market_member_repo, "SQLAlchemyMarketMemberRepository", MemberRepository)
     audit = FakeAudit()
     user = User(
         id=ACTOR_ID,
@@ -174,7 +198,7 @@ def client(monkeypatch):
         email=Email("fiscal@example.com"),
         cpf=CPF("52998224725"),
         password_hash="hash",
-        role=UserRole.OWNER,
+        role=UserRole.ACCOUNTANT,
     )
     product_one = Product(
         id=PRODUCT_ONE_ID,
@@ -258,7 +282,7 @@ def test_fiscal_user_can_create_a_draft_and_cannot_publish_an_incomplete_rule(cl
     rule_id = draft.json()["id"]
     publish = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{rule_id}/publish",
-        json={},
+        json={"homologation_xml_reference": "s3://homologation/incomplete.xml"},
     )
 
     assert publish.status_code == 400
@@ -270,10 +294,40 @@ def test_publication_rejects_a_forged_approver_identity_from_the_client(client):
 
     response = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
-        json={"approved_by": str(uuid.uuid4()), "approved_at": "2026-07-14T10:00:00Z"},
+        json={
+            "homologation_xml_reference": "s3://homologation/st.xml",
+            "approved_by": str(uuid.uuid4()),
+            "approved_at": "2026-07-14T10:00:00Z",
+        },
     )
 
     assert response.status_code == 422
+
+
+def test_owner_cannot_publish_without_accountant_membership(client):
+    http, app, _audit = client
+    from domain.identity import User, UserRole
+    from domain.shared import CPF, Email
+    from infra.web.routers import fiscal as fiscal_router
+
+    owner = User(
+        id=uuid.uuid4(),
+        name="Owner",
+        email=Email("owner@example.com"),
+        cpf=CPF("52998224725"),
+        password_hash="hash",
+        role=UserRole.OWNER,
+    )
+    app.dependency_overrides[fiscal_router.get_current_user] = lambda: owner
+    created = http.post(f"/api/v1/fiscal/{MARKET_ID}/tax-rules", json=_approved_rule_payload())
+
+    response = http.post(
+        f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
+        json={"homologation_xml_reference": "s3://homologation/st.xml"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "tax_rule.approval_evidence_missing"
 
 
 def test_publication_records_the_authenticated_fiscal_actor_as_approver(client):
@@ -282,11 +336,30 @@ def test_publication_records_the_authenticated_fiscal_actor_as_approver(client):
 
     response = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
-        json={},
+        json={"homologation_xml_reference": "s3://homologation/st.xml"},
     )
 
     assert response.status_code == 200
     assert response.json()["approved_by"] == str(ACTOR_ID)
+
+
+def test_correction_creates_successor_in_the_same_rule_family(client):
+    http, _app, _audit = client
+    created = http.post(f"/api/v1/fiscal/{MARKET_ID}/tax-rules", json=_approved_rule_payload())
+    published = http.post(
+        f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
+        json={"homologation_xml_reference": "s3://homologation/st.xml"},
+    )
+
+    response = http.post(
+        f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/successor",
+        json={"effective_from": "2026-08-01"},
+    )
+
+    assert published.status_code == 200
+    assert response.status_code == 201
+    assert response.json()["status"] == "draft"
+    assert response.json()["version"] == 2
 
 
 def test_only_published_rule_can_be_assigned_and_bulk_change_is_audited(client):
@@ -307,7 +380,7 @@ def test_only_published_rule_can_be_assigned_and_bulk_change_is_audited(client):
 
     published = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{rule_id}/publish",
-        json={},
+        json={"homologation_xml_reference": "s3://homologation/st.xml"},
     )
     assert published.status_code == 200
 
