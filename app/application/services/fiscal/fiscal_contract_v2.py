@@ -60,8 +60,43 @@ def _json_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         raise BusinessRuleException("Contrato fiscal v2 inválido: snapshot contém float.") from exc
 
 
+def _require_retained_st_catalog_evidence(tax: Mapping[str, Any], *, sku: str) -> None:
+    """Require the immutable catalog/evidence link before an ST request leaves Marketfy.
+
+    ``approval_ref`` is the human/audit identifier already captured with the
+    immutable rule.  ``approval_checksum`` is the SHA-256 recorded alongside
+    that official evidence.  The Fiscal service can therefore match the exact
+    rule version to its catalog without deriving a tax treatment from product
+    text or mutable market defaults.
+    """
+    for field in ("rule_id", "catalog_version", "approval_ref"):
+        value = tax.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={field}; reason=required"
+            )
+
+    rule_version = tax.get("rule_version")
+    if isinstance(rule_version, bool) or not isinstance(rule_version, int) or rule_version < 1:
+        raise BusinessRuleException(
+            f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=rule_version; reason=invalid"
+        )
+
+    checksum = tax.get("approval_checksum")
+    if (
+        not isinstance(checksum, str)
+        or len(checksum) != 64
+        or any(character not in "0123456789abcdefABCDEF" for character in checksum)
+    ):
+        raise BusinessRuleException(
+            f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=approval_checksum; reason=invalid"
+        )
+
+
 class FiscalContractV2Serializer:
     """Creates the exact request that is persisted before queueing it."""
+
+    contract_version = CONTRACT_VERSION
 
     def build(self, sale, config, issuer_id: str, provider_ref: str) -> dict[str, Any]:
         items = [self._item(item) for item in sale.items]
@@ -121,6 +156,8 @@ class FiscalContractV2Serializer:
         icms["current_st_rate"] = _rate(icms.get("current_st_rate"), field="icms.current_st_rate")
         if icms["group"] in _RETAINED_ST and any(Decimal(icms[field]) != 0 for field in ("current_st_base", "current_st_amount", "current_st_rate")):
             raise BusinessRuleException(f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=icms.current_st; reason=retained_not_current")
+        if icms["group"] in _RETAINED_ST:
+            _require_retained_st_catalog_evidence(tax, sku=sku)
         for section in ("pis", "cofins"):
             if not isinstance(tax[section], dict):
                 raise BusinessRuleException(f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={section}")

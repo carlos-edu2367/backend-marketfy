@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "app"))
 
@@ -50,7 +52,7 @@ class Config:
 
 def _snapshot(*, group: str, cfop: str, cest: str | None, amount: str) -> dict:
     retained = group == "ICMSSN500"
-    return {
+    snapshot = {
         "rule_id": str(uuid.uuid4()), "rule_version": 1,
         "calculation_version": CALCULATION_VERSION,
         "ncm": "22021000", "cest": cest, "origin": "0", "cfop": cfop,
@@ -69,6 +71,12 @@ def _snapshot(*, group: str, cfop: str, cest: str | None, amount: str) -> dict:
         "cofins": {"group": "COFINS07", "cst": "07", "base": "0.00", "rate": "0.0000", "amount": "0.00"},
         "audit_input": amount,
     }
+    if retained:
+        snapshot.update(
+            catalog_version="go-nfce-v2.1",
+            approval_checksum="a" * 64,
+        )
+    return snapshot
 
 
 def _item(*, group: str, cfop: str, cest: str | None, amount: str) -> Item:
@@ -113,3 +121,40 @@ def test_v2_contract_rejects_tampered_sale_snapshot() -> None:
         assert "snapshot_sha256" in str(exc)
     else:
         raise AssertionError("serializer accepted a snapshot changed after sale finalisation")
+
+
+def test_retained_st_contract_carries_immutable_catalog_and_approval_evidence() -> None:
+    from application.services.fiscal.fiscal_contract_v2 import FiscalContractV2Serializer
+
+    item = _item(group="ICMSSN500", cfop="5405", cest="0300700", amount="20.00")
+    item.fiscal_tax_snapshot.update(
+        catalog_version="go-nfce-v2.1",
+        approval_checksum="a" * 64,
+    )
+    item.snapshot_sha256 = canonical_sha256(item.fiscal_tax_snapshot)
+
+    payload = FiscalContractV2Serializer().build(Sale(items=[item]), Config(), "iss_1", "ref")
+
+    tax = payload["items"][0]["tax"]
+    assert tax["rule_id"] == item.fiscal_tax_snapshot["rule_id"]
+    assert tax["rule_version"] == 1
+    assert tax["catalog_version"] == "go-nfce-v2.1"
+    assert tax["approval_ref"] == "go-in-042-2026"
+    assert tax["approval_checksum"] == "a" * 64
+
+
+@pytest.mark.parametrize("missing_field", ["catalog_version", "approval_checksum"])
+def test_retained_st_contract_rejects_missing_catalog_evidence(missing_field: str) -> None:
+    from domain.shared import BusinessRuleException
+    from application.services.fiscal.fiscal_contract_v2 import FiscalContractV2Serializer
+
+    item = _item(group="ICMSSN500", cfop="5405", cest="0300700", amount="20.00")
+    item.fiscal_tax_snapshot.update(
+        catalog_version="go-nfce-v2.1",
+        approval_checksum="a" * 64,
+    )
+    item.fiscal_tax_snapshot.pop(missing_field)
+    item.snapshot_sha256 = canonical_sha256(item.fiscal_tax_snapshot)
+
+    with pytest.raises(BusinessRuleException, match=missing_field):
+        FiscalContractV2Serializer().build(Sale(items=[item]), Config(), "iss_1", "ref")
