@@ -49,7 +49,7 @@ def _tax_snapshot(amount: Decimal = Decimal("10.00")) -> dict:
     return {
         "rule_id": str(uuid.uuid4()), "rule_version": 1,
         "ncm": "22021000", "cest": None, "cfop": "5102", "origin": "0",
-        "icms": {"group": "ICMSSN102", "cst": None, "csosn": "102", "own_base": amount, "reduction_rate": Decimal("0"), "own_rate": Decimal("0"), "own_amount": Decimal("0"), "st_base": Decimal("0"), "st_rate": Decimal("0"), "st_amount": Decimal("0"), "fcp_rate": Decimal("0"), "fcp_amount": Decimal("0")},
+        "icms": {"group": "ICMSSN102", "cst": None, "csosn": "102", "own_base": amount, "reduction_rate": Decimal("0"), "own_rate": Decimal("0"), "own_amount": Decimal("0"), "st_base": Decimal("0"), "st_mva_rate": Decimal("0"), "st_rate": Decimal("0"), "st_amount": Decimal("0"), "fcp_rate": Decimal("0"), "fcp_amount": Decimal("0")},
         "pis": {"group": "PIS07", "cst": "07", "base": amount, "rate": Decimal("0"), "amount": Decimal("0")},
         "cofins": {"group": "COFINS07", "cst": "07", "base": amount, "rate": Decimal("0"), "amount": Decimal("0")},
     }

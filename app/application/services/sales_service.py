@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 from typing import Dict, List, Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from domain.sales import Sale, SaleItem, SaleStatus, Payment, PaymentMethod, Box, BoxStatus, Terminal
 from domain.inventory import StockMovementType
@@ -18,6 +18,7 @@ from application.dtos import (
     SaleResponseDTO, SaleItemDTO, PaymentDTO, CloseBoxDTO
 )
 from application.services.fiscal.tax_rule_calculator import ItemFiscalSnapshot, TaxRuleCalculator
+from application.services.fiscal.snapshot_integrity import CALCULATION_VERSION, fiscal_snapshot_sha256
 from application.services.fiscal.tax_rule_service import (
     FiscalRuleMissingError,
     TaxContext,
@@ -43,6 +44,7 @@ class SalesService:
                  fiscal_config_repo=None,
                  tax_rule_service: TaxRuleService = None,
                  environment: str = "development",
+                 fiscal_offline_max_age_minutes: int = 30,
                  ): 
         self.sale_repo = sale_repo
         self.box_repo = box_repo
@@ -56,6 +58,7 @@ class SalesService:
         self.fiscal_config_repo = fiscal_config_repo
         self.tax_rule_service = tax_rule_service
         self.environment = environment
+        self.fiscal_offline_max_age_minutes = fiscal_offline_max_age_minutes
 
     # ==================================================================================
     # TERMINAIS (PDVs)
@@ -171,6 +174,7 @@ class SalesService:
                         continue
                 
                 # 2. Cria Entidade Venda
+                received_at = datetime.now(timezone.utc)
                 sale = Sale(
                     market_id=market_id,
                     box_id=dto.box_id,
@@ -181,12 +185,16 @@ class SalesService:
                     acrescimo=dto.acrescimo,
                     customer_cpf=dto.customer_cpf,
                     offline_id=dto.offline_id,
-                    synced_at=datetime.utcnow(),
+                    synced_at=received_at,
+                    received_at=received_at,
                     created_at=dto.created_at # Mantém data original da venda
                 )
                 # Força o ID se vier do front para manter rastreabilidade
                 if dto.id:
                     sale.id = dto.id
+
+                if await self._requires_fiscal_rule_enforcement(market_id):
+                    self._validate_offline_sale_clock(sale)
 
                 # 3. Validação e Processamento de Pagamentos (Antes de salvar itens para garantir integridade)
                 box = await self.box_repo.get_by_id(dto.box_id)
@@ -270,6 +278,8 @@ class SalesService:
                         sale_item.ncm_snapshot = fiscal_snapshot.ncm
                         sale_item.tax_rule_version_snapshot = fiscal_snapshot.rule_version
                         sale_item.fiscal_tax_snapshot = fiscal_snapshot.as_persistence_dict()
+                        sale_item.snapshot_sha256 = fiscal_snapshot_sha256(sale_item.fiscal_tax_snapshot)
+                        sale_item.fiscal_calculation_version = CALCULATION_VERSION
 
                 # 6. CORREÇÃO: Atualiza Saldo do Caixa (Se houve dinheiro)
                 if cash_amount_to_add_to_box > 0:
@@ -360,6 +370,25 @@ class SalesService:
         if missing_products:
             raise FiscalRuleMissingError(missing_products)
         return snapshots
+
+    def _validate_offline_sale_clock(self, sale: Sale) -> None:
+        """Accept client time only inside the bounded production fiscal window."""
+        claimed_at = sale.created_at
+        received_at = sale.received_at
+        if (
+            not isinstance(claimed_at, datetime)
+            or not isinstance(received_at, datetime)
+            or claimed_at.tzinfo is None
+            or received_at.tzinfo is None
+        ):
+            raise BusinessRuleException("sale.offline_clock_out_of_window; reason=timezone_required")
+        claimed_utc = claimed_at.astimezone(timezone.utc)
+        received_utc = received_at.astimezone(timezone.utc)
+        window = timedelta(minutes=self.fiscal_offline_max_age_minutes)
+        if claimed_utc < received_utc - window:
+            raise BusinessRuleException("sale.offline_clock_out_of_window; reason=older_than_max_age")
+        if claimed_utc > received_utc + window:
+            raise BusinessRuleException("sale.offline_clock_out_of_window; reason=future_client_clock")
 
     async def _requires_fiscal_rule_enforcement(self, market_id: uuid.UUID) -> bool:
         if self.environment != "production" or not self.fiscal_config_repo:

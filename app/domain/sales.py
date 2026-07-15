@@ -85,6 +85,8 @@ class SaleItem(Entity):
     origin_snapshot: int = 0
     fiscal_tax_snapshot: Optional[dict] = None
     tax_rule_version_snapshot: Optional[int] = None
+    snapshot_sha256: Optional[str] = None
+    fiscal_calculation_version: Optional[str] = None
 
 @dataclass
 class Payment(Entity):
@@ -107,6 +109,8 @@ class Sale(Entity):
     customer_cpf: Optional[str] = None
     offline_id: Optional[str] = None # ID gerado no front
     synced_at: Optional[datetime] = None
+    # Captured by the API server; the client-created timestamp remains a claim.
+    received_at: Optional[datetime] = None
     
     items: List[SaleItem] = field(default_factory=list)
     payments: List[Payment] = field(default_factory=list)

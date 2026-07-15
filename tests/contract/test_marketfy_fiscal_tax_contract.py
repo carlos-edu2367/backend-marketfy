@@ -62,6 +62,7 @@ class FakeItem:
             "own_rate": Decimal("18.00"),
             "own_amount": Decimal("18.00"),
             "st_base": Decimal("140.00"),
+            "st_mva_rate": Decimal("40.00"),
             "st_rate": Decimal("18.00"),
             "st_amount": Decimal("7.20"),
             "fcp_rate": Decimal("0.00"),
@@ -118,7 +119,7 @@ def test_neectify_payload_serializes_non_st_tax_decimals_canonically() -> None:
     item.fiscal_tax_snapshot["cest"] = None
     item.fiscal_tax_snapshot["cfop"] = "5102"
     item.fiscal_tax_snapshot["icms"].update({
-        "group": "ICMSSN102", "csosn": "102", "own_base": Decimal("100"),
+            "group": "ICMSSN102", "csosn": "102", "own_base": Decimal("100"), "own_rate": Decimal("0"),
         "own_amount": Decimal("0"), "st_base": Decimal("0"), "st_rate": Decimal("0"),
         "st_amount": Decimal("0"),
     })
@@ -160,5 +161,5 @@ def test_neectify_payload_rejects_unreconciled_item_totals() -> None:
     sale = FakeSale()
     sale.items[0].fiscal_tax_snapshot["icms"]["own_base"] = Decimal("99.99")
 
-    with pytest.raises(BusinessRuleException, match=r"sale\.fiscal_tax_totals_mismatch"):
+    with pytest.raises(BusinessRuleException, match=r"fiscal\.snapshot_amount_mismatch"):
         _build(sale)

@@ -293,7 +293,7 @@ def make_sale_request() -> SaleCreateDTO:
         box_id=uuid.uuid4(),
         operator_id=uuid.uuid4(),
         total_amount=Decimal("100.00"),
-        created_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+        created_at=datetime.now(timezone.utc),
         items=[SaleItemDTO(product_id=PRODUCT_ID, product_name="Refrigerante", quantity=Decimal("1"), unit_price=Decimal("100.00"), total=Decimal("100.00"))],
         payments=[PaymentDTO(method="dinheiro", amount=Decimal("100.00"))],
     )
@@ -312,6 +312,8 @@ async def test_sale_persists_rule_version_and_tax_snapshot() -> None:
     assert item.fiscal_tax_snapshot["rule_id"] == str(rule.id)
     assert item.fiscal_tax_snapshot["cfop"] == "5405"
     assert item.fiscal_tax_snapshot["icms"]["st_amount"] == Decimal("7.20")
+    assert item.snapshot_sha256
+    assert item.fiscal_calculation_version == "marketfy.fiscal-tax-calculation.v1"
 
 
 @pytest.mark.asyncio

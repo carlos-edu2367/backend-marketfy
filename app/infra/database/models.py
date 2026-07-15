@@ -199,6 +199,7 @@ class SaleModel(Base):
     customer_cpf = Column(String, nullable=True)
     offline_id = Column(String, nullable=True)
     synced_at = Column(DateTime, nullable=True)
+    received_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Relacionamentos
@@ -225,6 +226,8 @@ class SaleItemModel(Base):
     origin_snapshot = Column(Integer, default=0) # Restaurado
     fiscal_tax_snapshot_json = Column(Text, nullable=True)
     tax_rule_version_snapshot = Column(Integer, nullable=True)
+    snapshot_sha256 = Column(String(64), nullable=True)
+    fiscal_calculation_version = Column(String(64), nullable=True)
     
     quantity = Column(Numeric(10, 3), nullable=False)
     unit_price = Column(Numeric(10, 2), nullable=False)

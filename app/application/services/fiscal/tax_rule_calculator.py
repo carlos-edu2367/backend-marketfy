@@ -33,6 +33,7 @@ class IcmsSnapshot:
     own_rate: Decimal
     own_amount: Decimal
     st_base: Decimal
+    st_mva_rate: Decimal
     st_rate: Decimal
     st_amount: Decimal
     fcp_rate: Decimal
@@ -119,6 +120,7 @@ class TaxRuleCalculator:
                 own_rate=own_rate,
                 own_amount=own_amount,
                 st_base=st_base,
+                st_mva_rate=mva_rate,
                 st_rate=st_rate,
                 st_amount=st_amount,
                 fcp_rate=fcp_rate,

@@ -107,6 +107,7 @@ def get_sales_service(db: AsyncSession = Depends(get_db)):
         fiscal_config_repo=SQLAlchemyFiscalTenantConfigRepository(db),
         tax_rule_service=TaxRuleService(SQLAlchemyProductTaxRuleRepository(db)),
         environment=settings.ENVIRONMENT,
+        fiscal_offline_max_age_minutes=settings.FISCAL_OFFLINE_MAX_AGE_MINUTES,
     )
 
 def get_finance_service(db: AsyncSession = Depends(get_db)):

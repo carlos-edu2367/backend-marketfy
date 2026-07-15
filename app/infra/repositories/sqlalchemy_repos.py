@@ -20,6 +20,7 @@ from domain.identity import User, Email, CPF, UserRole, Market, CNPJ, Plan, Plan
 from domain.finance import Customer, FinancialTransaction, CustomerStatus, TransactionType, CustomerLedger, LedgerType
 from domain.support import Ticket, TicketStatus, TicketPriority, TicketMessage
 from domain.fiscal import FiscalConfig, Invoice, FiscalEnvironment, InvoiceStatus
+from application.services.fiscal.snapshot_integrity import canonical_fiscal_snapshot_json
 
 # Infra Models
 from infra.database.models import (
@@ -527,6 +528,10 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
             model.synced_at = sale.synced_at.replace(tzinfo=None)
         else:
             model.synced_at = sale.synced_at
+        if sale.received_at and sale.received_at.tzinfo:
+            model.received_at = sale.received_at.replace(tzinfo=None)
+        else:
+            model.received_at = sale.received_at
             
         if sale.created_at and sale.created_at.tzinfo:
             model.created_at = sale.created_at.replace(tzinfo=None)
@@ -549,6 +554,8 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                     origin_snapshot=item.origin_snapshot,
                     fiscal_tax_snapshot_json=_serialize_fiscal_tax_snapshot(item.fiscal_tax_snapshot),
                     tax_rule_version_snapshot=item.tax_rule_version_snapshot,
+                    snapshot_sha256=item.snapshot_sha256,
+                    fiscal_calculation_version=item.fiscal_calculation_version,
                 )
                 self.session.add(i_model)
             
@@ -621,7 +628,8 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
             acrescimo=m.acrescimo,
             customer_cpf=m.customer_cpf,
             offline_id=m.offline_id,
-            synced_at=m.synced_at
+            synced_at=m.synced_at,
+            received_at=m.received_at,
         )
         s.id = m.id
         s.created_at = m.created_at
@@ -640,6 +648,8 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                     origin_snapshot=i.origin_snapshot,
                     fiscal_tax_snapshot=_deserialize_fiscal_tax_snapshot(i.fiscal_tax_snapshot_json),
                     tax_rule_version_snapshot=i.tax_rule_version_snapshot,
+                    snapshot_sha256=i.snapshot_sha256,
+                    fiscal_calculation_version=i.fiscal_calculation_version,
                 ))
         
         # Reconstrói pagamentos
@@ -690,14 +700,7 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
 def _serialize_fiscal_tax_snapshot(snapshot: Optional[dict]) -> Optional[str]:
     if snapshot is None:
         return None
-    return json.dumps(snapshot, default=_fiscal_snapshot_json_default)
-
-
-def _fiscal_snapshot_json_default(value):
-    if isinstance(value, Decimal):
-        return str(value)
-    raise TypeError(f"Unsupported fiscal snapshot value: {type(value)!r}")
-
+    return canonical_fiscal_snapshot_json(snapshot)
 
 def _deserialize_fiscal_tax_snapshot(snapshot: Optional[str]) -> Optional[dict]:
     return json.loads(snapshot) if snapshot else None

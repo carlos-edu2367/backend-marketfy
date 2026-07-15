@@ -42,7 +42,7 @@ def _tax_snapshot() -> dict:
             "group": "ICMSSN102", "cst": None, "csosn": "102",
             "own_base": Decimal("10.00"), "reduction_rate": Decimal("0.00"),
             "own_rate": Decimal("0.00"), "own_amount": Decimal("0.00"),
-            "st_base": Decimal("0.00"), "st_rate": Decimal("0.00"),
+            "st_base": Decimal("0.00"), "st_mva_rate": Decimal("0.00"), "st_rate": Decimal("0.00"),
             "st_amount": Decimal("0.00"), "fcp_rate": Decimal("0.00"),
             "fcp_amount": Decimal("0.00"),
         },
