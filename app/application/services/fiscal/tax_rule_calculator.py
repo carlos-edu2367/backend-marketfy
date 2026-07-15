@@ -1,158 +1,277 @@
-"""Pure fiscal calculation for an already approved product tax rule."""
+"""Pure fiscal snapshots from explicit, accountant-approved rule evidence."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import Any, Mapping, Optional
 
+from application.services.fiscal.snapshot_integrity import CALCULATION_VERSION
 from domain.fiscal import ProductTaxRule
 from domain.sales import SaleItem
+from domain.shared import BusinessRuleException
 
 
-_HUNDRED = Decimal("100")
 _MONEY = Decimal("0.01")
-_ZERO = Decimal("0.00")
-_ZERO_VALUE_ICMS_GROUPS = frozenset({"ICMSSN102", "ICMS40"})
-_ZERO_VALUE_PIS_GROUPS = frozenset({"PIS07"})
-_ZERO_VALUE_COFINS_GROUPS = frozenset({"COFINS07"})
+_RATE = Decimal("0.0001")
+_ZERO_MONEY = "0.00"
+_ZERO_RATE = "0.0000"
+_RETAINED_ST_GROUPS = frozenset({"ICMSSN500", "ICMS60"})
+_CURRENT_ST_GROUPS = frozenset({"ICMSSN201", "ICMS10", "ICMS30", "ICMS70", "ICMS90"})
 
 
-def _money(value: Decimal) -> Decimal:
-    return Decimal(value).quantize(_MONEY, rounding=ROUND_HALF_UP)
+def _scaled(value: Any, *, quantum: Decimal, field: str) -> str:
+    if isinstance(value, (float, bool)):
+        raise BusinessRuleException(
+            f"{field} deve usar decimal exato, nunca float binário."
+        )
+    try:
+        number = Decimal(value)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise BusinessRuleException(f"{field} possui valor decimal inválido.") from exc
+    places = abs(quantum.as_tuple().exponent)
+    return f"{number.quantize(quantum, rounding=ROUND_HALF_UP):.{places}f}"
 
 
-def _rate_amount(base: Decimal, rate: Optional[Decimal]) -> Decimal:
-    if rate is None:
-        return Decimal("0.00")
-    return _money(base * Decimal(rate) / _HUNDRED)
+def _optional_scaled(
+    value: Any, *, quantum: Decimal, field: str
+) -> Optional[str]:
+    if value is None:
+        return None
+    return _scaled(value, quantum=quantum, field=field)
 
 
 @dataclass(frozen=True)
 class IcmsSnapshot:
+    mode: str
     group: Optional[str]
     cst: Optional[str]
     csosn: Optional[str]
-    own_base: Decimal
-    reduction_rate: Decimal
-    own_rate: Decimal
-    own_amount: Decimal
-    st_base: Decimal
-    st_mva_rate: Decimal
-    st_rate: Decimal
-    st_amount: Decimal
-    fcp_rate: Decimal
-    fcp_amount: Decimal
+    own_base: str = _ZERO_MONEY
+    own_rate: str = _ZERO_RATE
+    own_amount: str = _ZERO_MONEY
+    current_st_base: str = _ZERO_MONEY
+    current_st_rate: str = _ZERO_RATE
+    current_st_amount: str = _ZERO_MONEY
+    retained_st_base: Optional[str] = None
+    retained_st_rate: Optional[str] = None
+    retained_st_amount: Optional[str] = None
+    retained_fcp_base: Optional[str] = None
+    retained_fcp_rate: Optional[str] = None
+    retained_fcp_amount: Optional[str] = None
+
+    @property
+    def reduction_rate(self) -> Decimal:
+        return Decimal(_ZERO_RATE)
+
+    @property
+    def st_base(self) -> Decimal:
+        return Decimal(self.current_st_base)
+
+    @property
+    def st_mva_rate(self) -> Decimal:
+        return Decimal(_ZERO_RATE)
+
+    @property
+    def st_rate(self) -> Decimal:
+        return Decimal(self.current_st_rate)
+
+    @property
+    def st_amount(self) -> Decimal:
+        return Decimal(self.current_st_amount)
+
+    @property
+    def fcp_rate(self) -> Decimal:
+        return Decimal(_ZERO_RATE)
+
+    @property
+    def fcp_amount(self) -> Decimal:
+        return Decimal(_ZERO_MONEY)
+
+    def as_dict(self, *, compatibility: bool = False) -> dict[str, Any]:
+        result = {
+            "mode": self.mode,
+            "group": self.group,
+            "cst": self.cst,
+            "csosn": self.csosn,
+            "own_base": self.own_base,
+            "own_rate": self.own_rate,
+            "own_amount": self.own_amount,
+            "current_st_base": self.current_st_base,
+            "current_st_rate": self.current_st_rate,
+            "current_st_amount": self.current_st_amount,
+            "retained_st_base": self.retained_st_base,
+            "retained_st_rate": self.retained_st_rate,
+            "retained_st_amount": self.retained_st_amount,
+            "retained_fcp_base": self.retained_fcp_base,
+            "retained_fcp_rate": self.retained_fcp_rate,
+            "retained_fcp_amount": self.retained_fcp_amount,
+        }
+        if compatibility:
+            result.update(
+                reduction_rate=self.reduction_rate,
+                st_base=self.st_base,
+                st_mva_rate=self.st_mva_rate,
+                st_rate=self.st_rate,
+                st_amount=self.st_amount,
+                fcp_rate=self.fcp_rate,
+                fcp_amount=self.fcp_amount,
+            )
+        return result
 
 
 @dataclass(frozen=True)
 class ContributionSnapshot:
     group: str
     cst: Optional[str]
-    base: Decimal
-    rate: Decimal
-    amount: Decimal
+    base: str
+    rate: str
+    amount: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "group": self.group,
+            "cst": self.cst,
+            "base": self.base,
+            "rate": self.rate,
+            "amount": self.amount,
+        }
 
 
 @dataclass(frozen=True)
 class ItemFiscalSnapshot:
     rule_id: str
     rule_version: int
+    calculation_version: str
     ncm: Optional[str]
     cest: Optional[str]
-    cfop: Optional[str]
     origin: Optional[str]
+    cfop: Optional[str]
+    cbenef: Optional[str]
+    approval_ref: str
     icms: IcmsSnapshot
     pis: ContributionSnapshot
     cofins: ContributionSnapshot
 
-    def as_persistence_dict(self) -> dict:
-        """Return the immutable, normalized snapshot kept with the sale item.
-
-        Decimals deliberately remain Decimals here. Repository serialization is
-        responsible for lossless JSON encoding and no provider-contract strings
-        are produced by this calculation layer.
-        """
+    def as_contract_dict(self) -> dict[str, Any]:
         return {
             "rule_id": self.rule_id,
             "rule_version": self.rule_version,
+            "calculation_version": self.calculation_version,
             "ncm": self.ncm,
             "cest": self.cest,
-            "cfop": self.cfop,
             "origin": self.origin,
-            "icms": self.icms.__dict__.copy(),
-            "pis": self.pis.__dict__.copy(),
-            "cofins": self.cofins.__dict__.copy(),
+            "cfop": self.cfop,
+            "cbenef": self.cbenef,
+            "approval_ref": self.approval_ref,
+            "icms": self.icms.as_dict(),
+            "pis": self.pis.as_dict(),
+            "cofins": self.cofins.as_dict(),
         }
+
+    def __getitem__(self, key: str) -> Any:
+        return self.as_contract_dict()[key]
+
+    def as_persistence_dict(self) -> dict[str, Any]:
+        """Keep current consumers working without restoring legacy ST formulas."""
+        result = self.as_contract_dict()
+        result["icms"] = self.icms.as_dict(compatibility=True)
+        return result
+
+
+def _contribution(params: Mapping[str, Any], name: str) -> ContributionSnapshot:
+    raw = params.get(name)
+    if not isinstance(raw, Mapping):
+        raise BusinessRuleException(
+            f"Parâmetros explícitos de {name.upper()} são obrigatórios."
+        )
+    try:
+        group = raw["group"]
+        base = raw["base"]
+        rate = raw["rate"]
+        amount = raw["amount"]
+    except KeyError as exc:
+        raise BusinessRuleException(
+            f"Parâmetros explícitos de {name.upper()} estão incompletos."
+        ) from exc
+    return ContributionSnapshot(
+        group=str(group),
+        cst=None if raw.get("cst") is None else str(raw["cst"]),
+        base=_scaled(base, quantum=_MONEY, field=f"{name}.base"),
+        rate=_scaled(rate, quantum=_RATE, field=f"{name}.rate"),
+        amount=_scaled(amount, quantum=_MONEY, field=f"{name}.amount"),
+    )
 
 
 class TaxRuleCalculator:
-    """Calculates monetary tax values with a single, deterministic rounding rule."""
+    """Build a v2 snapshot without deriving missing fiscal evidence."""
 
     def calculate(self, *, item: SaleItem, rule: ProductTaxRule) -> ItemFiscalSnapshot:
-        gross_base = _money(item.total)
-        reduction_rate = Decimal(rule.icms_reduction_rate or "0")
-        is_zero_value_icms_group = rule.icms_group in _ZERO_VALUE_ICMS_GROUPS
-        own_base = (
-            _ZERO
-            if is_zero_value_icms_group
-            else _money(gross_base * (Decimal("1") - reduction_rate / _HUNDRED))
+        del item  # The retail price is not evidence for retained ST.
+        if rule.icms_group in _CURRENT_ST_GROUPS:
+            raise BusinessRuleException(
+                f"Grupo {rule.icms_group} exige ST da operação atual, ainda não suportada."
+            )
+
+        params = rule.tax_parameters
+        if not isinstance(params, Mapping) or not isinstance(
+            params.get("icms_mode"), str
+        ):
+            raise BusinessRuleException("Parâmetros fiscais v2 explícitos são obrigatórios.")
+
+        approval = rule.approval
+        if not isinstance(approval, Mapping) or not isinstance(
+            approval.get("reference"), str
+        ):
+            raise BusinessRuleException("Referência de aprovação fiscal é obrigatória.")
+
+        is_retained = rule.icms_group in _RETAINED_ST_GROUPS
+        icms = IcmsSnapshot(
+            mode=params["icms_mode"],
+            group=rule.icms_group,
+            cst=rule.icms_cst,
+            csosn=rule.icms_csosn,
+            retained_st_base=_optional_scaled(
+                params.get("retained_st_base") if is_retained else None,
+                quantum=_MONEY,
+                field="retained_st_base",
+            ),
+            retained_st_rate=_optional_scaled(
+                params.get("retained_st_rate") if is_retained else None,
+                quantum=_RATE,
+                field="retained_st_rate",
+            ),
+            retained_st_amount=_optional_scaled(
+                params.get("retained_st_amount") if is_retained else None,
+                quantum=_MONEY,
+                field="retained_st_amount",
+            ),
+            retained_fcp_base=_optional_scaled(
+                params.get("retained_fcp_base") if is_retained else None,
+                quantum=_MONEY,
+                field="retained_fcp_base",
+            ),
+            retained_fcp_rate=_optional_scaled(
+                params.get("retained_fcp_rate") if is_retained else None,
+                quantum=_RATE,
+                field="retained_fcp_rate",
+            ),
+            retained_fcp_amount=_optional_scaled(
+                params.get("retained_fcp_amount") if is_retained else None,
+                quantum=_MONEY,
+                field="retained_fcp_amount",
+            ),
         )
-        own_rate = Decimal(rule.icms_rate or "0")
-        own_amount = _ZERO if is_zero_value_icms_group else _rate_amount(own_base, own_rate)
-
-        has_st = not is_zero_value_icms_group and rule.icms_st_rate is not None
-        st_rate = Decimal(rule.icms_st_rate or "0")
-        mva_rate = Decimal(rule.icms_st_mva_rate or "0")
-        st_base = _money(own_base * (Decimal("1") + mva_rate / _HUNDRED)) if has_st else _ZERO
-        st_gross = _rate_amount(st_base, st_rate) if has_st else _ZERO
-        st_amount = max(st_gross - own_amount, _ZERO) if has_st else _ZERO
-
-        fcp_rate = Decimal(rule.fcp_rate or "0")
-        fcp_base = st_base if has_st else own_base
-        fcp_amount = _ZERO if is_zero_value_icms_group else _rate_amount(fcp_base, fcp_rate)
-        pis_group = f"PIS{rule.pis_cst or ''}"
-        cofins_group = f"COFINS{rule.cofins_cst or ''}"
-        pis_base = _ZERO if pis_group in _ZERO_VALUE_PIS_GROUPS else gross_base
-        cofins_base = _ZERO if cofins_group in _ZERO_VALUE_COFINS_GROUPS else gross_base
-        pis_rate = _ZERO if pis_group in _ZERO_VALUE_PIS_GROUPS else Decimal(rule.pis_rate or "0")
-        cofins_rate = (
-            _ZERO if cofins_group in _ZERO_VALUE_COFINS_GROUPS else Decimal(rule.cofins_rate or "0")
-        )
-
         return ItemFiscalSnapshot(
             rule_id=str(rule.id),
             rule_version=rule.version,
+            calculation_version=CALCULATION_VERSION,
             ncm=rule.ncm,
             cest=rule.cest,
-            cfop=rule.cfop,
             origin=rule.origin,
-            icms=IcmsSnapshot(
-                group=rule.icms_group,
-                cst=rule.icms_cst,
-                csosn=rule.icms_csosn,
-                own_base=own_base,
-                reduction_rate=reduction_rate,
-                own_rate=own_rate,
-                own_amount=own_amount,
-                st_base=st_base,
-                st_mva_rate=mva_rate,
-                st_rate=st_rate,
-                st_amount=st_amount,
-                fcp_rate=fcp_rate,
-                fcp_amount=fcp_amount,
-            ),
-            pis=ContributionSnapshot(
-                group=pis_group,
-                cst=rule.pis_cst,
-                base=pis_base,
-                rate=pis_rate,
-                amount=_rate_amount(pis_base, pis_rate),
-            ),
-            cofins=ContributionSnapshot(
-                group=cofins_group,
-                cst=rule.cofins_cst,
-                base=cofins_base,
-                rate=cofins_rate,
-                amount=_rate_amount(cofins_base, cofins_rate),
-            ),
+            cfop=rule.cfop,
+            cbenef=rule.cbenef,
+            approval_ref=approval["reference"],
+            icms=icms,
+            pis=_contribution(params, "pis"),
+            cofins=_contribution(params, "cofins"),
         )
