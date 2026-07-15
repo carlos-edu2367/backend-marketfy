@@ -1,7 +1,7 @@
 """Persist legacy-safe fiscal rule enforcement and immutable SEFAZ evidence.
 
-Revision ID: 20260715_0005
-Revises: 20260715_0004
+Revision ID: 20260715_0006
+Revises: 20260715_0005
 Create Date: 2026-07-15 00:05:00.000000
 """
 from typing import Sequence, Union
@@ -10,8 +10,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20260715_0005"
-down_revision: Union[str, Sequence[str], None] = "20260715_0004"
+revision: str = "20260715_0006"
+down_revision: Union[str, Sequence[str], None] = "20260715_0005"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
