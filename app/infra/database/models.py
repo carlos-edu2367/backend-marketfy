@@ -523,6 +523,7 @@ class FiscalTenantConfigModel(Base):
     provider = Column(String, default="focus_nfe", nullable=False)
     environment = Column(String, default="homologacao", nullable=False)
     enabled = Column(Boolean, default=False, nullable=False)
+    fiscal_rule_enforcement = Column(String(8), default="off", server_default="off", nullable=False)
 
     legal_name = Column(String, nullable=True)
     trade_name = Column(String, nullable=True)
@@ -650,6 +651,21 @@ class TaxRuleApprovalModel(Base):
     homologation_xml_storage_key = Column(Text, nullable=False)
     homologation_xml_sha256 = Column(String(64), nullable=False)
     approved_at = Column(DateTime, nullable=False)
+
+
+class TaxRuleSefazAuthorizationModel(Base):
+    """Immutable authorized homologation evidence registered by an accountant."""
+
+    __tablename__ = "tax_rule_sefaz_authorizations"
+
+    rule_id = Column(UUID(as_uuid=True), ForeignKey("product_tax_rules.id"), primary_key=True)
+    accountant_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    authorized_xml_storage_key = Column(Text, nullable=False)
+    xml_sha256 = Column(String(64), nullable=False)
+    access_key = Column(String(44), nullable=False)
+    protocol = Column(String(32), nullable=False)
+    authorized_at = Column(DateTime, nullable=False)
+    recorded_at = Column(DateTime, nullable=False)
 
 
 class ProductTaxRuleAssignmentModel(Base):

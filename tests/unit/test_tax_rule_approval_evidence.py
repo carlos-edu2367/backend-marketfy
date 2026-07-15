@@ -5,6 +5,7 @@ import hashlib
 import sys
 import uuid
 from dataclasses import FrozenInstanceError
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,7 @@ def _artifact(*, market_id: uuid.UUID, document_id: uuid.UUID, **overrides) -> H
         "status": "authorized",
         "access_key": "52260712345678000123550010000000011000000010",
         "protocol": "152260000000001",
+        "authorized_at": datetime(2026, 7, 15, tzinfo=timezone.utc),
         "artifact_type": "xml_authorized",
         "storage_key": storage_key,
         "sha256": hashlib.sha256(XML).hexdigest(),
@@ -149,3 +151,27 @@ async def test_valid_internal_authorized_homologation_artifact_is_copied_and_imm
     assert approval.homologation_xml_storage_key.endswith(f"/{approval.homologation_xml_sha256}.xml")
     with pytest.raises(FrozenInstanceError):
         approval.homologation_xml_storage_key = artifact.storage_key
+
+
+@pytest.mark.asyncio
+async def test_accountant_can_capture_immutable_sefaz_authorization_metadata():
+    market_id, document_id, rule_id, accountant_id = (
+        uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    )
+    artifact = _artifact(market_id=market_id, document_id=document_id)
+    storage = FakeStorage({artifact.storage_key: XML})
+    service = TaxRuleApprovalEvidenceService(storage, FakeArtifactRepository(artifact))
+
+    authorization = await service.capture_sefaz_authorization(
+        rule_id=rule_id,
+        market_id=market_id,
+        accountant_user_id=accountant_id,
+        source_storage_key=artifact.storage_key,
+    )
+
+    assert authorization.rule_id == rule_id
+    assert authorization.accountant_user_id == accountant_id
+    assert authorization.access_key == artifact.access_key
+    assert authorization.protocol == artifact.protocol
+    assert authorization.authorized_at == artifact.authorized_at
+    assert authorization.authorized_xml_storage_key.endswith(f"/{authorization.xml_sha256}.xml")

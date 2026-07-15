@@ -5,9 +5,10 @@ import io
 import hashlib
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from xml.etree import ElementTree as ET
 
-from domain.fiscal import TaxRuleApproval
+from domain.fiscal import TaxRuleApproval, TaxRuleSefazAuthorization
 from domain.shared import BusinessRuleException
 
 
@@ -26,6 +27,7 @@ class HomologationFiscalArtifact:
     status: str
     access_key: str | None
     protocol: str | None
+    authorized_at: datetime | None
     artifact_type: str
     storage_key: str
     sha256: str | None
@@ -84,6 +86,41 @@ class TaxRuleApprovalEvidenceService:
                 "O XML homologado persistido diverge do hash aprovado."
             )
         return canonical_xml
+
+    async def capture_sefaz_authorization(
+        self,
+        *,
+        rule_id,
+        market_id,
+        accountant_user_id,
+        source_storage_key: str,
+    ) -> TaxRuleSefazAuthorization:
+        source_key, document_id = self._normalize_source_key(source_storage_key, market_id)
+        artifact = await self.artifact_repository.get_by_storage_key(source_key)
+        self._validate_artifact(artifact, market_id, document_id, source_key)
+        if artifact.authorized_at is None:
+            raise TaxRuleApprovalArtifactError("A data de autorização SEFAZ não está disponível.")
+        content = await self.storage.load(source_key)
+        if content is None or hashlib.sha256(content).hexdigest() != artifact.sha256:
+            raise TaxRuleApprovalArtifactError("O XML autorizado diverge do artefato fiscal.")
+        canonical_xml = self._canonicalize(content)
+        content_hash = hashlib.sha256(canonical_xml).hexdigest()
+        immutable_key = (
+            f"fiscal/homologacao/{market_id}/tax_rule_sefaz_authorizations/"
+            f"{rule_id}/{content_hash}.xml"
+        )
+        if not await self.storage.exists(immutable_key):
+            await self.storage.save(immutable_key, canonical_xml)
+        return TaxRuleSefazAuthorization(
+            rule_id=rule_id,
+            accountant_user_id=accountant_user_id,
+            authorized_xml_storage_key=immutable_key,
+            xml_sha256=content_hash,
+            access_key=artifact.access_key,
+            protocol=artifact.protocol,
+            authorized_at=artifact.authorized_at,
+            recorded_at=datetime.utcnow(),
+        )
 
     @staticmethod
     def _canonicalize(content: bytes) -> bytes:

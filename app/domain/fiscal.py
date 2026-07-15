@@ -1,6 +1,6 @@
 import hashlib
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import ClassVar, FrozenSet, Optional, List
 from datetime import date, datetime
@@ -14,6 +14,14 @@ from domain.shared import Entity, BusinessRuleException
 class FiscalEnvironment(Enum):
     HOMOLOGATION = "homologacao"
     PRODUCTION = "producao"
+
+
+class FiscalRuleEnforcement(str, Enum):
+    """Per-market rollout gate for accountant-approved product tax rules."""
+
+    OFF = "off"
+    WARN = "warn"
+    BLOCK = "block"
 
 
 class FiscalDocumentStatus(Enum):
@@ -106,6 +114,20 @@ class TaxRuleApproval:
             homologation_xml_sha256=hashlib.sha256(canonical_xml).hexdigest(),
             approved_at=datetime.utcnow(),
         )
+
+
+@dataclass(frozen=True)
+class TaxRuleSefazAuthorization:
+    """Immutable proof that SEFAZ authorized a homologation XML for one rule."""
+
+    rule_id: uuid.UUID
+    accountant_user_id: uuid.UUID
+    authorized_xml_storage_key: str
+    xml_sha256: str
+    access_key: str
+    protocol: str
+    authorized_at: datetime
+    recorded_at: datetime
 
 
 class NumberingMode(Enum):
@@ -224,6 +246,7 @@ class FiscalTenantConfig(Entity):
     provider: str = "focus_nfe"
     environment: FiscalEnvironment = FiscalEnvironment.HOMOLOGATION
     enabled: bool = False
+    fiscal_rule_enforcement: FiscalRuleEnforcement = FiscalRuleEnforcement.OFF
 
     # Dados fiscais do estabelecimento
     legal_name: Optional[str] = None

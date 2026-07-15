@@ -29,6 +29,7 @@ from domain.fiscal import (
     FiscalDocumentStatus,
     FiscalEmissionPackage,
     FiscalEnvironment,
+    FiscalRuleEnforcement,
     FiscalEvent,
     FiscalEventSource,
     FiscalNotification,
@@ -44,6 +45,7 @@ from domain.fiscal import (
     ProductTaxRule,
     ProductTaxRuleStatus,
     TaxRuleApproval,
+    TaxRuleSefazAuthorization,
     TaxRegime,
     UsageLedgerEventType,
     ValidationStatus,
@@ -63,6 +65,7 @@ from infra.database.models import (
     ProductTaxProfileModel,
     ProductTaxRuleModel,
     TaxRuleApprovalModel,
+    TaxRuleSefazAuthorizationModel,
     ProductTaxRuleAssignmentModel,
     ProductModel,
 )
@@ -92,6 +95,7 @@ class SQLAlchemyFiscalTenantConfigRepository:
         m.provider = cfg.provider
         m.environment = cfg.environment.value
         m.enabled = cfg.enabled
+        m.fiscal_rule_enforcement = cfg.fiscal_rule_enforcement.value
         m.legal_name = cfg.legal_name
         m.trade_name = cfg.trade_name
         m.cnpj = cfg.cnpj
@@ -162,6 +166,7 @@ def _to_tenant_config(m: FiscalTenantConfigModel) -> FiscalTenantConfig:
         provider=m.provider,
         environment=FiscalEnvironment(m.environment),
         enabled=m.enabled,
+        fiscal_rule_enforcement=FiscalRuleEnforcement(m.fiscal_rule_enforcement),
         legal_name=m.legal_name,
         trade_name=m.trade_name,
         cnpj=m.cnpj,
@@ -350,6 +355,40 @@ class SQLAlchemyProductTaxRuleRepository:
         await self.session.commit()
         await self.session.refresh(model)
         return _to_product_tax_rule(model)
+
+    async def save_sefaz_authorization(
+        self, authorization: TaxRuleSefazAuthorization
+    ) -> TaxRuleSefazAuthorization:
+        model = TaxRuleSefazAuthorizationModel(
+            rule_id=authorization.rule_id,
+            accountant_user_id=authorization.accountant_user_id,
+            authorized_xml_storage_key=authorization.authorized_xml_storage_key,
+            xml_sha256=authorization.xml_sha256,
+            access_key=authorization.access_key,
+            protocol=authorization.protocol,
+            authorized_at=authorization.authorized_at,
+            recorded_at=authorization.recorded_at,
+        )
+        self.session.add(model)
+        await self.session.commit()
+        return authorization
+
+    async def get_sefaz_authorization(
+        self, rule_id: uuid.UUID
+    ) -> Optional[TaxRuleSefazAuthorization]:
+        model = await self.session.get(TaxRuleSefazAuthorizationModel, rule_id)
+        if model is None:
+            return None
+        return TaxRuleSefazAuthorization(
+            rule_id=model.rule_id,
+            accountant_user_id=model.accountant_user_id,
+            authorized_xml_storage_key=model.authorized_xml_storage_key,
+            xml_sha256=model.xml_sha256,
+            access_key=model.access_key,
+            protocol=model.protocol,
+            authorized_at=model.authorized_at,
+            recorded_at=model.recorded_at,
+        )
 
     async def retire_rule(self, rule: ProductTaxRule) -> ProductTaxRule:
         model = await self.session.get(ProductTaxRuleModel, rule.id)
@@ -868,6 +907,7 @@ class SQLAlchemyFiscalArtifactRepository:
             status=document.status,
             access_key=document.access_key,
             protocol=document.protocol,
+            authorized_at=document.authorized_at,
             artifact_type=artifact.artifact_type,
             storage_key=artifact.storage_key,
             sha256=artifact.sha256,
