@@ -61,4 +61,6 @@ def test_legacy_decimal_and_string_snapshots_remain_verifiable() -> None:
         '{"icms":{"own_amount":"1.01","own_rate":"18.0000"},'
         '"persisted":"2.00"}'
     )
-    assert fiscal_snapshot_sha256(snapshot) == fiscal_snapshot_sha256(snapshot)
+    assert fiscal_snapshot_sha256(snapshot) == (
+        "56ebe494284660d4d6dd9e6cadfd9dfa49b538d3df4c0aa8590c041532964550"
+    )

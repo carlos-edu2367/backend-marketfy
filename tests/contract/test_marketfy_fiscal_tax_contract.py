@@ -18,7 +18,7 @@ if app_dir not in sys.path:
 
 from application.services.fiscal.fiscal_pre_validator import FiscalPreValidator  # noqa: E402
 from application.services.fiscal.snapshot_integrity import (  # noqa: E402
-    CALCULATION_VERSION,
+    LEGACY_CALCULATION_VERSION,
     fiscal_snapshot_sha256,
 )
 from domain.shared import BusinessRuleException  # noqa: E402
@@ -202,7 +202,7 @@ def test_v1_payload_rejects_nonzero_values_for_non_taxed_groups(
         {"base": Decimal("100.00"), "rate": Decimal("0.00"), "amount": Decimal("0.00")}
     )
     item.fiscal_tax_snapshot[section][field] = Decimal("100.00")
-    item.fiscal_calculation_version = CALCULATION_VERSION
+    item.fiscal_calculation_version = LEGACY_CALCULATION_VERSION
     item.snapshot_sha256 = fiscal_snapshot_sha256(item.fiscal_tax_snapshot)
 
     with pytest.raises(BusinessRuleException, match=r"fiscal\.snapshot_amount_mismatch"):

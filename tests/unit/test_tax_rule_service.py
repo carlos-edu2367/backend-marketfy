@@ -48,6 +48,27 @@ def make_rule(*, version: int, status: ProductTaxRuleStatus, effective_from: dat
         pis_rate=Decimal("0.00"),
         cofins_cst="07",
         cofins_rate=Decimal("0.00"),
+        tax_parameters={
+            "icms_mode": "retained_st",
+            "retained_st_base": "140.00",
+            "retained_st_rate": "18.0000",
+            "retained_st_amount": "25.20",
+            "pis": {
+                "group": "PIS07",
+                "cst": "07",
+                "base": "0.00",
+                "rate": "0.0000",
+                "amount": "0.00",
+            },
+            "cofins": {
+                "group": "COFINS07",
+                "cst": "07",
+                "base": "0.00",
+                "rate": "0.0000",
+                "amount": "0.00",
+            },
+        },
+        approval={"reference": "CRC-GO-2026-0001"},
     )
 
 
@@ -315,9 +336,11 @@ async def test_sale_persists_rule_version_and_tax_snapshot() -> None:
     assert item.tax_rule_version_snapshot == 2
     assert item.fiscal_tax_snapshot["rule_id"] == str(rule.id)
     assert item.fiscal_tax_snapshot["cfop"] == "5405"
-    assert item.fiscal_tax_snapshot["icms"]["st_amount"] == Decimal("7.20")
+    assert item.fiscal_tax_snapshot["icms"]["st_amount"] == Decimal("0.00")
+    assert item.fiscal_tax_snapshot["icms"]["current_st_amount"] == "0.00"
+    assert item.fiscal_tax_snapshot["icms"]["retained_st_amount"] == "25.20"
     assert item.snapshot_sha256
-    assert item.fiscal_calculation_version == "marketfy.fiscal-tax-calculation.v1"
+    assert item.fiscal_calculation_version == "marketfy-tax-calc.v2"
 
 
 @pytest.mark.asyncio

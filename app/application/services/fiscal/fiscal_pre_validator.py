@@ -21,7 +21,10 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, List, Mapping, Optional
 
 from domain.shared import BusinessRuleException
-from application.services.fiscal.snapshot_integrity import CALCULATION_VERSION, fiscal_snapshot_sha256
+from application.services.fiscal.snapshot_integrity import (
+    LEGACY_CALCULATION_VERSION,
+    fiscal_snapshot_sha256,
+)
 
 
 SEFAZ_PAYMENT_CODES = {
@@ -165,7 +168,10 @@ class FiscalPreValidator:
         supported emissions keep their prior validation path, while v1 sales
         are fail-closed for a missing or altered integrity hash.
         """
-        if getattr(item, "fiscal_calculation_version", None) != CALCULATION_VERSION:
+        if (
+            getattr(item, "fiscal_calculation_version", None)
+            != LEGACY_CALCULATION_VERSION
+        ):
             return False
         stored_hash = getattr(item, "snapshot_sha256", None)
         if not isinstance(stored_hash, str) or stored_hash != fiscal_snapshot_sha256(snapshot):
@@ -382,7 +388,8 @@ class FiscalPreValidator:
     def _normalise_sale_tax_snapshots(self, sale, fiscal_config) -> list[dict]:
         snapshots = [self._normalise_item_tax_snapshot(item, fiscal_config) for item in sale.items]
         if not all(
-            getattr(item, "fiscal_calculation_version", None) == CALCULATION_VERSION
+            getattr(item, "fiscal_calculation_version", None)
+            == LEGACY_CALCULATION_VERSION
             for item in sale.items
         ):
             return snapshots

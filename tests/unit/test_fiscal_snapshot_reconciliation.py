@@ -14,7 +14,11 @@ if app_dir not in sys.path:
     sys.path.append(app_dir)
 
 from application.services.fiscal.fiscal_pre_validator import FiscalPreValidator
-from application.services.fiscal.snapshot_integrity import canonical_fiscal_snapshot_json, fiscal_snapshot_sha256
+from application.services.fiscal.snapshot_integrity import (
+    LEGACY_CALCULATION_VERSION,
+    canonical_fiscal_snapshot_json,
+    fiscal_snapshot_sha256,
+)
 from domain.shared import BusinessRuleException
 
 
@@ -36,7 +40,7 @@ class Item:
     tax_rule_version_snapshot: int = 1
     fiscal_tax_snapshot: dict = field(default_factory=tax_snapshot)
     snapshot_sha256: str | None = None
-    fiscal_calculation_version: str | None = "marketfy.fiscal-tax-calculation.v1"
+    fiscal_calculation_version: str | None = LEGACY_CALCULATION_VERSION
 
 
 @dataclass
