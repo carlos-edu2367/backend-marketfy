@@ -20,7 +20,6 @@ from domain.identity import User, Email, CPF, UserRole, Market, CNPJ, Plan, Plan
 from domain.finance import Customer, FinancialTransaction, CustomerStatus, TransactionType, CustomerLedger, LedgerType
 from domain.support import Ticket, TicketStatus, TicketPriority, TicketMessage
 from domain.fiscal import FiscalConfig, Invoice, FiscalEnvironment, InvoiceStatus
-from application.services.fiscal.snapshot_integrity import canonical_fiscal_snapshot_json
 
 # Infra Models
 from infra.database.models import (
@@ -705,13 +704,13 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
         return s
 
 
-def _serialize_fiscal_tax_snapshot(snapshot: Optional[dict]) -> Optional[str]:
-    if snapshot is None:
-        return None
-    return canonical_fiscal_snapshot_json(snapshot)
+def _serialize_fiscal_tax_snapshot(snapshot: Optional[dict]) -> Optional[dict]:
+    return snapshot
 
-def _deserialize_fiscal_tax_snapshot(snapshot: Optional[str]) -> Optional[dict]:
-    return json.loads(snapshot) if snapshot else None
+def _deserialize_fiscal_tax_snapshot(snapshot: Optional[dict | str]) -> Optional[dict]:
+    if not snapshot:
+        return None
+    return json.loads(snapshot) if isinstance(snapshot, str) else snapshot
 # ==================================================================================
 # CUSTOMER REPOSITORY
 # ==================================================================================

@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, Integer, ForeignKey, DateTime, Numeric, Text, UniqueConstraint, Index, Date
+from sqlalchemy import Column, String, Boolean, Integer, ForeignKey, DateTime, Numeric, Text, UniqueConstraint, Index, Date, JSON
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from infra.database.setup import Base
 
 # =============================================================================
@@ -119,10 +119,16 @@ class ProductModel(Base):
     origin = Column(Integer, default=0)
     tax_rule_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("product_tax_rules.id", name="fk_products_tax_rule_id"),
+        ForeignKey(
+            "product_tax_rules.id",
+            name="fk_products_tax_rule_id",
+            ondelete="RESTRICT",
+        ),
         nullable=True,
     )
-    tax_rule = relationship("ProductTaxRuleModel", foreign_keys=[tax_rule_id])
+    tax_rule = relationship(
+        "ProductTaxRuleModel", foreign_keys=[tax_rule_id], back_populates="products"
+    )
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -224,9 +230,11 @@ class SaleItemModel(Base):
     product_name_snapshot = Column(String, nullable=True)
     ncm_snapshot = Column(String, nullable=True)
     origin_snapshot = Column(Integer, default=0) # Restaurado
-    fiscal_tax_snapshot_json = Column(Text, nullable=True)
+    fiscal_tax_snapshot_json = Column(JSON, nullable=True)
+    tax_rule_id_snapshot = Column(UUID(as_uuid=True), nullable=True)
     tax_rule_version_snapshot = Column(Integer, nullable=True)
     snapshot_sha256 = Column(String(64), nullable=True)
+    fiscal_snapshot_sha256 = synonym("snapshot_sha256")
     fiscal_calculation_version = Column(String(64), nullable=True)
     
     quantity = Column(Numeric(10, 3), nullable=False)
@@ -524,6 +532,7 @@ class FiscalTenantConfigModel(Base):
     environment = Column(String, default="homologacao", nullable=False)
     enabled = Column(Boolean, default=False, nullable=False)
     fiscal_rule_enforcement = Column(String(8), default="off", server_default="off", nullable=False)
+    product_rule_enforcement = synonym("fiscal_rule_enforcement")
 
     legal_name = Column(String, nullable=True)
     trade_name = Column(String, nullable=True)
@@ -599,8 +608,15 @@ class ProductTaxRuleModel(Base):
 
     __tablename__ = "product_tax_rules"
     __table_args__ = (
-        Index("ix_ptr_market_status_effective", "market_id", "status", "effective_from"),
+        Index(
+            "ix_ptr_market_status_effective",
+            "market_id",
+            "status",
+            "effective_from",
+            "effective_to",
+        ),
         Index("ix_ptr_market_name_version", "market_id", "name", "version"),
+        UniqueConstraint("market_id", "name", "version", name="uq_ptr_market_name_version"),
         UniqueConstraint("rule_family_id", "version", name="uq_product_tax_rule_family_version"),
     )
 
@@ -614,10 +630,15 @@ class ProductTaxRuleModel(Base):
     effective_from = Column(Date, nullable=True)
     effective_to = Column(Date, nullable=True)
 
+    issuer_regime = Column(String(32), nullable=True)
+    destination_uf = Column(String(2), nullable=True)
+    document_model = Column(String(2), nullable=True)
+
     ncm = Column(String, nullable=True)
     cest = Column(String, nullable=True)
     origin = Column(String, nullable=True)
     cfop = Column(String, nullable=True)
+    cbenef = Column(String(16), nullable=True)
 
     icms_group = Column(String, nullable=True)
     icms_cst = Column(String, nullable=True)
@@ -635,10 +656,18 @@ class ProductTaxRuleModel(Base):
     cofins_cst = Column(String, nullable=True)
     cofins_rate = Column(Numeric(9, 4), nullable=True)
 
+    tax_parameters_json = Column(JSON, nullable=True)
+    approval_json = Column(JSON, nullable=True)
+
     approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     approved_at = Column(DateTime, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    retired_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    products = relationship("ProductModel", back_populates="tax_rule")
+    assignments = relationship("ProductTaxRuleAssignmentModel", back_populates="tax_rule")
 
 
 class TaxRuleApprovalModel(Base):
@@ -680,11 +709,17 @@ class ProductTaxRuleAssignmentModel(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id"), nullable=False)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
-    tax_rule_id = Column(UUID(as_uuid=True), ForeignKey("product_tax_rules.id"), nullable=False)
+    tax_rule_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("product_tax_rules.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
     effective_from = Column(Date, nullable=False)
     effective_to = Column(Date, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    tax_rule = relationship("ProductTaxRuleModel", back_populates="assignments")
 
 
 class FiscalDocumentModel(Base):
@@ -720,6 +755,9 @@ class FiscalDocumentModel(Base):
     contingency_mode = Column(Boolean, default=False, nullable=False)
     offline_receipt_id = Column(String, nullable=True)
     last_attempt_id = Column(UUID(as_uuid=True), nullable=True)
+    request_contract_version = Column(String(64), nullable=True)
+    request_payload_json = Column(JSON, nullable=True)
+    request_payload_sha256 = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
