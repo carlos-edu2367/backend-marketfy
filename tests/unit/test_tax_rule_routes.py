@@ -50,6 +50,18 @@ def _approved_rule_payload() -> dict:
     }
 
 
+class FakeApprovalEvidenceService:
+    async def capture_approval(self, *, rule_id, accountant_user_id, source_storage_key, **_kwargs):
+        from domain.fiscal import TaxRuleApproval
+
+        return TaxRuleApproval.from_verified_artifact(
+            rule_id=rule_id,
+            accountant_user_id=accountant_user_id,
+            homologation_xml_storage_key=f"fiscal/homologacao/{MARKET_ID}/tax_rule_approvals/{rule_id}.xml",
+            canonical_xml=b"<NFe></NFe>",
+        )
+
+
 class InMemoryTaxRuleRepository:
     def __init__(self, _session):
         self.rules = _RULES
@@ -178,6 +190,11 @@ def client(monkeypatch):
     from infra.web.routers import inventory as inventory_router
 
     monkeypatch.setattr(fiscal_repo, "SQLAlchemyProductTaxRuleRepository", InMemoryTaxRuleRepository)
+    monkeypatch.setattr(
+        fiscal_router,
+        "_get_tax_rule_approval_evidence_service",
+        lambda: FakeApprovalEvidenceService(),
+    )
 
     class Member:
         def __init__(self, role):
@@ -282,7 +299,7 @@ def test_fiscal_user_can_create_a_draft_and_cannot_publish_an_incomplete_rule(cl
     rule_id = draft.json()["id"]
     publish = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{rule_id}/publish",
-        json={"homologation_xml_reference": "s3://homologation/incomplete.xml"},
+        json={"homologation_xml_storage_key": f"fiscal/homologacao/{MARKET_ID}/source/incomplete.xml"},
     )
 
     assert publish.status_code == 400
@@ -295,13 +312,34 @@ def test_publication_rejects_a_forged_approver_identity_from_the_client(client):
     response = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
         json={
-            "homologation_xml_reference": "s3://homologation/st.xml",
+            "homologation_xml_storage_key": f"fiscal/homologacao/{MARKET_ID}/source/st.xml",
             "approved_by": str(uuid.uuid4()),
             "approved_at": "2026-07-14T10:00:00Z",
         },
     )
 
     assert response.status_code == 422
+
+
+def test_publication_rejects_missing_homologation_artifact(client, monkeypatch):
+    http, _app, _audit = client
+    from application.services.fiscal.tax_rule_approval_evidence import TaxRuleApprovalArtifactError
+    from infra.web.routers import fiscal as fiscal_router
+
+    class MissingEvidence:
+        async def capture_approval(self, **_kwargs):
+            raise TaxRuleApprovalArtifactError("O XML homologado informado não foi encontrado.")
+
+    monkeypatch.setattr(fiscal_router, "_get_tax_rule_approval_evidence_service", lambda: MissingEvidence())
+    created = http.post(f"/api/v1/fiscal/{MARKET_ID}/tax-rules", json=_approved_rule_payload())
+
+    response = http.post(
+        f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
+        json={"homologation_xml_storage_key": f"fiscal/homologacao/{MARKET_ID}/source/missing.xml"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "tax_rule.approval_artifact_invalid"
 
 
 def test_owner_cannot_publish_without_accountant_membership(client):
@@ -323,7 +361,7 @@ def test_owner_cannot_publish_without_accountant_membership(client):
 
     response = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
-        json={"homologation_xml_reference": "s3://homologation/st.xml"},
+        json={"homologation_xml_storage_key": f"fiscal/homologacao/{MARKET_ID}/source/st.xml"},
     )
 
     assert response.status_code == 422
@@ -336,7 +374,7 @@ def test_publication_records_the_authenticated_fiscal_actor_as_approver(client):
 
     response = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
-        json={"homologation_xml_reference": "s3://homologation/st.xml"},
+        json={"homologation_xml_storage_key": f"fiscal/homologacao/{MARKET_ID}/source/st.xml"},
     )
 
     assert response.status_code == 200
@@ -348,7 +386,7 @@ def test_correction_creates_successor_in_the_same_rule_family(client):
     created = http.post(f"/api/v1/fiscal/{MARKET_ID}/tax-rules", json=_approved_rule_payload())
     published = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{created.json()['id']}/publish",
-        json={"homologation_xml_reference": "s3://homologation/st.xml"},
+        json={"homologation_xml_storage_key": f"fiscal/homologacao/{MARKET_ID}/source/st.xml"},
     )
 
     response = http.post(
@@ -380,7 +418,7 @@ def test_only_published_rule_can_be_assigned_and_bulk_change_is_audited(client):
 
     published = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{rule_id}/publish",
-        json={"homologation_xml_reference": "s3://homologation/st.xml"},
+        json={"homologation_xml_storage_key": f"fiscal/homologacao/{MARKET_ID}/source/st.xml"},
     )
     assert published.status_code == 200
 

@@ -644,7 +644,7 @@ class TaxRuleApprovalModel(Base):
 
     rule_id = Column(UUID(as_uuid=True), ForeignKey("product_tax_rules.id"), primary_key=True)
     accountant_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    homologation_xml_reference = Column(Text, nullable=False)
+    homologation_xml_storage_key = Column(Text, nullable=False)
     homologation_xml_sha256 = Column(String(64), nullable=False)
     approved_at = Column(DateTime, nullable=False)
 

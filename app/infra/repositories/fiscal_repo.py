@@ -340,7 +340,7 @@ class SQLAlchemyProductTaxRuleRepository:
             TaxRuleApprovalModel(
                 rule_id=approval.rule_id,
                 accountant_user_id=approval.accountant_user_id,
-                homologation_xml_reference=approval.homologation_xml_reference,
+                homologation_xml_storage_key=approval.homologation_xml_storage_key,
                 homologation_xml_sha256=approval.homologation_xml_sha256,
                 approved_at=approval.approved_at,
             )

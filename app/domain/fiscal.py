@@ -83,26 +83,27 @@ class TaxRuleApproval:
 
     rule_id: uuid.UUID
     accountant_user_id: uuid.UUID
-    homologation_xml_reference: str
+    homologation_xml_storage_key: str
     homologation_xml_sha256: str
     approved_at: datetime
 
     @classmethod
-    def from_authenticated_actor(
+    def from_verified_artifact(
         cls,
         *,
         rule_id: uuid.UUID,
         accountant_user_id: uuid.UUID,
-        homologation_xml_reference: str,
+        homologation_xml_storage_key: str,
+        canonical_xml: bytes,
     ) -> "TaxRuleApproval":
-        reference = homologation_xml_reference.strip()
-        if not reference:
-            raise BusinessRuleException("A referência do XML homologado é obrigatória.")
+        storage_key = homologation_xml_storage_key.strip()
+        if not storage_key or not canonical_xml:
+            raise BusinessRuleException("O artefato XML homologado é obrigatório.")
         return cls(
             rule_id=rule_id,
             accountant_user_id=accountant_user_id,
-            homologation_xml_reference=reference,
-            homologation_xml_sha256=hashlib.sha256(reference.encode("utf-8")).hexdigest(),
+            homologation_xml_storage_key=storage_key,
+            homologation_xml_sha256=hashlib.sha256(canonical_xml).hexdigest(),
             approved_at=datetime.utcnow(),
         )
 

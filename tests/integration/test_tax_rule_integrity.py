@@ -62,17 +62,19 @@ async def test_accountant_approval_uses_authenticated_actor_and_server_time():
     accountant_id = uuid.uuid4()
     before = datetime.utcnow()
 
-    approval = TaxRuleApproval.from_authenticated_actor(
+    canonical_xml = b'<NFe><infNFe></infNFe></NFe>'
+    approval = TaxRuleApproval.from_verified_artifact(
         rule_id=rule_id,
         accountant_user_id=accountant_id,
-        homologation_xml_reference="s3://homologation/nfce-st-001.xml",
+        homologation_xml_storage_key=f"fiscal/homologacao/{uuid.uuid4()}/tax_rule_approvals/{rule_id}.xml",
+        canonical_xml=canonical_xml,
     )
 
     assert approval.rule_id == rule_id
     assert approval.accountant_user_id == accountant_id
     assert approval.approved_at >= before
     assert approval.homologation_xml_sha256 == hashlib.sha256(
-        b"s3://homologation/nfce-st-001.xml"
+        canonical_xml
     ).hexdigest()
 
 

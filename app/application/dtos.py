@@ -559,7 +559,7 @@ class ProductTaxRulePublishDTO(BaseModel):
     """Publication has no client-controlled approval identity or timestamp."""
 
     model_config = ConfigDict(extra="forbid")
-    homologation_xml_reference: str = Field(min_length=1, max_length=2048)
+    homologation_xml_storage_key: str = Field(min_length=1, max_length=2048)
 
 
 class ProductTaxRuleSuccessorDTO(BaseModel):

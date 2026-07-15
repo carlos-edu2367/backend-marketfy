@@ -46,6 +46,13 @@ logger = get_logger("fiscal_router")
 router = APIRouter()
 
 
+def _get_tax_rule_approval_evidence_service():
+    from application.services.fiscal.tax_rule_approval_evidence import TaxRuleApprovalEvidenceService
+    from infra.storage.fiscal_artifact_storage import FiscalArtifactStorage
+
+    return TaxRuleApprovalEvidenceService(FiscalArtifactStorage())
+
+
 async def _require_tax_rule_accountant(*, db: AsyncSession, market_id: uuid.UUID, current_user: User) -> None:
     """Publication is deliberately stricter than general fiscal write access."""
     from infra.repositories.market_member_repo import SQLAlchemyMarketMemberRepository
@@ -780,16 +787,24 @@ async def publish_tax_rule(
     if rule is None:
         raise HTTPException(404, "Regra fiscal não encontrada.")
     await _require_tax_rule_accountant(db=db, market_id=market_id, current_user=current_user)
-    from domain.fiscal import TaxRuleApproval
-
-    # Approval identity and timestamp are server-derived; the caller only
-    # references the accountant-approved homologation XML.
+    # Approval identity and timestamp are server-derived. The submitted key is
+    # resolved through private storage and copied into an immutable evidence key.
     rule.approved_by = current_user.id
-    approval = TaxRuleApproval.from_authenticated_actor(
-        rule_id=rule.id,
-        accountant_user_id=current_user.id,
-        homologation_xml_reference=dto.homologation_xml_reference,
-    )
+    evidence_service = _get_tax_rule_approval_evidence_service()
+    from application.services.fiscal.tax_rule_approval_evidence import TaxRuleApprovalArtifactError
+
+    try:
+        approval = await evidence_service.capture_approval(
+            rule_id=rule.id,
+            market_id=market_id,
+            accountant_user_id=current_user.id,
+            source_storage_key=dto.homologation_xml_storage_key,
+        )
+    except TaxRuleApprovalArtifactError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "tax_rule.approval_artifact_invalid", "message": str(exc)},
+        )
     rule.approved_at = approval.approved_at
     try:
         saved = await repo.publish_rule_with_approval(rule, approval)
