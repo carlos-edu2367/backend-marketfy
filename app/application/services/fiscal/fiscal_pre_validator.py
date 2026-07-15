@@ -75,7 +75,11 @@ _CPF_RE = re.compile(r"^\d{11}$")
 _CNPJ_RE = re.compile(r"^\d{14}$")
 _HUNDRED = Decimal("100")
 _MONEY = Decimal("0.01")
+_ZERO = Decimal("0.00")
 _TAX_CONTRACT_VERSION = "marketfy.fiscal-tax-snapshot.v1"
+_ZERO_VALUE_ICMS_GROUPS = frozenset({"ICMSSN102", "ICMS40"})
+_ZERO_VALUE_PIS_GROUPS = frozenset({"PIS07"})
+_ZERO_VALUE_COFINS_GROUPS = frozenset({"COFINS07"})
 
 
 def _money(value: Decimal) -> Decimal:
@@ -264,9 +268,14 @@ class FiscalPreValidator:
                 "st_mva_rate": Decimal("0.00"),
             }
         )
-        expected_own_base = _money(
-            _decimal(getattr(item, "total", None), sku=sku, field="item.total")
-            * (Decimal("1") - icms_rates["reduction_rate"] / _HUNDRED)
+        is_zero_value_icms_group = is_v1_snapshot and icms_group in _ZERO_VALUE_ICMS_GROUPS
+        expected_own_base = (
+            _ZERO
+            if is_zero_value_icms_group
+            else _money(
+                _decimal(getattr(item, "total", None), sku=sku, field="item.total")
+                * (Decimal("1") - icms_rates["reduction_rate"] / _HUNDRED)
+            )
         )
         if icms_money["own_base"] != expected_own_base:
             raise BusinessRuleException(
@@ -321,12 +330,25 @@ class FiscalPreValidator:
                 _rate_decimal(section.get("rate"), sku=sku, field=f"{name}.rate")
                 if is_v1_snapshot else _decimal(section.get("rate"), sku=sku, field=f"{name}.rate")
             )
-            expected_base = _decimal(getattr(item, "total", None), sku=sku, field="item.total")
-            expected_amount = _money(expected_base * rate / _HUNDRED)
+            zero_value_group = is_v1_snapshot and (
+                group in _ZERO_VALUE_PIS_GROUPS or group in _ZERO_VALUE_COFINS_GROUPS
+            )
+            expected_base = (
+                _ZERO
+                if zero_value_group
+                else _decimal(getattr(item, "total", None), sku=sku, field="item.total")
+            )
+            expected_rate = _ZERO if zero_value_group else rate
+            expected_amount = _money(expected_base * expected_rate / _HUNDRED)
             if is_v1_snapshot and numbers["base"] != expected_base:
                 raise BusinessRuleException(
                     f"fiscal.snapshot_amount_mismatch; sku={sku}; field={name}.base; "
                     f"expected={_canonical_decimal(expected_base)}"
+                )
+            if is_v1_snapshot and rate != expected_rate:
+                raise BusinessRuleException(
+                    f"fiscal.snapshot_amount_mismatch; sku={sku}; field={name}.rate; "
+                    f"expected={_canonical_rate(expected_rate)}"
                 )
             if is_v1_snapshot and numbers["amount"] != expected_amount:
                 raise BusinessRuleException(

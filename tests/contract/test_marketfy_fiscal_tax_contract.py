@@ -17,6 +17,10 @@ if app_dir not in sys.path:
     sys.path.append(app_dir)
 
 from application.services.fiscal.fiscal_pre_validator import FiscalPreValidator
+from application.services.fiscal.snapshot_integrity import (
+    CALCULATION_VERSION,
+    fiscal_snapshot_sha256,
+)
 from domain.shared import BusinessRuleException
 
 
@@ -160,6 +164,46 @@ def test_neectify_payload_blocks_missing_snapshot_with_sku_error() -> None:
 def test_neectify_payload_rejects_unreconciled_item_totals() -> None:
     sale = FakeSale()
     sale.items[0].fiscal_tax_snapshot["icms"]["own_base"] = Decimal("99.99")
+
+    with pytest.raises(BusinessRuleException, match=r"fiscal\.snapshot_amount_mismatch"):
+        _build(sale)
+
+
+@pytest.mark.parametrize(
+    ("section", "field"),
+    [("icms", "own_base"), ("pis", "base"), ("cofins", "base")],
+)
+def test_v1_payload_rejects_nonzero_values_for_non_taxed_groups(
+    section: str, field: str
+) -> None:
+    sale = FakeSale()
+    item = sale.items[0]
+    assert item.fiscal_tax_snapshot is not None
+    item.product_name = "Produto normal"
+    item.fiscal_tax_snapshot["cest"] = None
+    item.fiscal_tax_snapshot["cfop"] = "5102"
+    item.fiscal_tax_snapshot["icms"].update(
+        {
+            "group": "ICMSSN102",
+            "csosn": "102",
+            "own_base": Decimal("100.00"),
+            "own_rate": Decimal("0.00"),
+            "own_amount": Decimal("0.00"),
+            "st_base": Decimal("0.00"),
+            "st_rate": Decimal("0.00"),
+            "st_amount": Decimal("0.00"),
+            "fcp_amount": Decimal("0.00"),
+        }
+    )
+    item.fiscal_tax_snapshot["pis"].update(
+        {"base": Decimal("100.00"), "rate": Decimal("0.00"), "amount": Decimal("0.00")}
+    )
+    item.fiscal_tax_snapshot["cofins"].update(
+        {"base": Decimal("100.00"), "rate": Decimal("0.00"), "amount": Decimal("0.00")}
+    )
+    item.fiscal_tax_snapshot[section][field] = Decimal("100.00")
+    item.fiscal_calculation_version = CALCULATION_VERSION
+    item.snapshot_sha256 = fiscal_snapshot_sha256(item.fiscal_tax_snapshot)
 
     with pytest.raises(BusinessRuleException, match=r"fiscal\.snapshot_amount_mismatch"):
         _build(sale)

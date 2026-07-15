@@ -11,6 +11,10 @@ from domain.sales import SaleItem
 
 _HUNDRED = Decimal("100")
 _MONEY = Decimal("0.01")
+_ZERO = Decimal("0.00")
+_ZERO_VALUE_ICMS_GROUPS = frozenset({"ICMSSN102", "ICMS40"})
+_ZERO_VALUE_PIS_GROUPS = frozenset({"PIS07"})
+_ZERO_VALUE_COFINS_GROUPS = frozenset({"COFINS07"})
 
 
 def _money(value: Decimal) -> Decimal:
@@ -87,22 +91,33 @@ class TaxRuleCalculator:
     def calculate(self, *, item: SaleItem, rule: ProductTaxRule) -> ItemFiscalSnapshot:
         gross_base = _money(item.total)
         reduction_rate = Decimal(rule.icms_reduction_rate or "0")
-        own_base = _money(gross_base * (Decimal("1") - reduction_rate / _HUNDRED))
+        is_zero_value_icms_group = rule.icms_group in _ZERO_VALUE_ICMS_GROUPS
+        own_base = (
+            _ZERO
+            if is_zero_value_icms_group
+            else _money(gross_base * (Decimal("1") - reduction_rate / _HUNDRED))
+        )
         own_rate = Decimal(rule.icms_rate or "0")
-        own_amount = _rate_amount(own_base, own_rate)
+        own_amount = _ZERO if is_zero_value_icms_group else _rate_amount(own_base, own_rate)
 
-        has_st = rule.icms_st_rate is not None
+        has_st = not is_zero_value_icms_group and rule.icms_st_rate is not None
         st_rate = Decimal(rule.icms_st_rate or "0")
         mva_rate = Decimal(rule.icms_st_mva_rate or "0")
-        st_base = _money(own_base * (Decimal("1") + mva_rate / _HUNDRED)) if has_st else Decimal("0.00")
-        st_gross = _rate_amount(st_base, st_rate) if has_st else Decimal("0.00")
-        st_amount = max(st_gross - own_amount, Decimal("0.00")) if has_st else Decimal("0.00")
+        st_base = _money(own_base * (Decimal("1") + mva_rate / _HUNDRED)) if has_st else _ZERO
+        st_gross = _rate_amount(st_base, st_rate) if has_st else _ZERO
+        st_amount = max(st_gross - own_amount, _ZERO) if has_st else _ZERO
 
         fcp_rate = Decimal(rule.fcp_rate or "0")
         fcp_base = st_base if has_st else own_base
-        fcp_amount = _rate_amount(fcp_base, fcp_rate)
-        pis_rate = Decimal(rule.pis_rate or "0")
-        cofins_rate = Decimal(rule.cofins_rate or "0")
+        fcp_amount = _ZERO if is_zero_value_icms_group else _rate_amount(fcp_base, fcp_rate)
+        pis_group = f"PIS{rule.pis_cst or ''}"
+        cofins_group = f"COFINS{rule.cofins_cst or ''}"
+        pis_base = _ZERO if pis_group in _ZERO_VALUE_PIS_GROUPS else gross_base
+        cofins_base = _ZERO if cofins_group in _ZERO_VALUE_COFINS_GROUPS else gross_base
+        pis_rate = _ZERO if pis_group in _ZERO_VALUE_PIS_GROUPS else Decimal(rule.pis_rate or "0")
+        cofins_rate = (
+            _ZERO if cofins_group in _ZERO_VALUE_COFINS_GROUPS else Decimal(rule.cofins_rate or "0")
+        )
 
         return ItemFiscalSnapshot(
             rule_id=str(rule.id),
@@ -127,17 +142,17 @@ class TaxRuleCalculator:
                 fcp_amount=fcp_amount,
             ),
             pis=ContributionSnapshot(
-                group=f"PIS{rule.pis_cst or ''}",
+                group=pis_group,
                 cst=rule.pis_cst,
-                base=gross_base,
+                base=pis_base,
                 rate=pis_rate,
-                amount=_rate_amount(gross_base, pis_rate),
+                amount=_rate_amount(pis_base, pis_rate),
             ),
             cofins=ContributionSnapshot(
-                group=f"COFINS{rule.cofins_cst or ''}",
+                group=cofins_group,
                 cst=rule.cofins_cst,
-                base=gross_base,
+                base=cofins_base,
                 rate=cofins_rate,
-                amount=_rate_amount(gross_base, cofins_rate),
+                amount=_rate_amount(cofins_base, cofins_rate),
             ),
         )

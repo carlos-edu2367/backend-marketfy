@@ -3,6 +3,8 @@ import sys
 import uuid
 from decimal import Decimal
 
+import pytest
+
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 app_dir = os.path.abspath(os.path.join(current_dir, "../../app"))
@@ -88,3 +90,38 @@ def test_calculation_applies_the_approved_icms_base_reduction_before_rates() -> 
     assert snapshot.icms.own_amount == Decimal("14.40")
     assert snapshot.icms.st_base == Decimal("112.00")
     assert snapshot.icms.st_amount == Decimal("5.76")
+
+
+@pytest.mark.parametrize(
+    ("group", "cst", "csosn"),
+    [("ICMSSN102", None, "102"), ("ICMS40", "40", None)],
+)
+def test_non_taxed_groups_calculate_only_zero_values(
+    group: str, cst: str | None, csosn: str | None
+) -> None:
+    snapshot = TaxRuleCalculator().calculate(
+        item=make_item(),
+        rule=make_st_rule(
+            icms_group=group,
+            icms_cst=cst,
+            icms_csosn=csosn,
+            icms_rate=Decimal("0.00"),
+            icms_st_mva_rate=None,
+            icms_st_rate=None,
+            fcp_rate=Decimal("0.00"),
+        ),
+    )
+
+    assert (
+        snapshot.icms.own_base,
+        snapshot.icms.own_amount,
+        snapshot.icms.st_base,
+        snapshot.icms.st_amount,
+        snapshot.icms.fcp_amount,
+    ) == (Decimal("0.00"),) * 5
+    assert (snapshot.pis.base, snapshot.pis.rate, snapshot.pis.amount) == (
+        Decimal("0.00"),
+    ) * 3
+    assert (snapshot.cofins.base, snapshot.cofins.rate, snapshot.cofins.amount) == (
+        Decimal("0.00"),
+    ) * 3
