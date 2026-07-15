@@ -880,6 +880,9 @@ class SQLAlchemyFiscalDocumentRepository:
         m.contingency_mode = doc.contingency_mode
         m.offline_receipt_id = doc.offline_receipt_id
         m.last_attempt_id = doc.last_attempt_id
+        m.request_contract_version = doc.request_contract_version
+        m.request_payload_json = _to_native_json(doc.request_payload_json) if doc.request_payload_json is not None else None
+        m.request_payload_sha256 = doc.request_payload_sha256
 
         if commit:
             await self.session.commit()
@@ -911,6 +914,9 @@ def _to_document(m: FiscalDocumentModel) -> FiscalDocument:
         contingency_mode=m.contingency_mode,
         offline_receipt_id=m.offline_receipt_id,
         last_attempt_id=m.last_attempt_id,
+        request_contract_version=m.request_contract_version,
+        request_payload_json=m.request_payload_json,
+        request_payload_sha256=m.request_payload_sha256,
         created_at=m.created_at,
         updated_at=m.updated_at,
     )

@@ -1,0 +1,115 @@
+"""Immutable outbound contract built from completed-sale fiscal evidence."""
+from __future__ import annotations
+
+import sys
+import uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "app"))
+
+from application.services.fiscal.snapshot_integrity import CALCULATION_VERSION, canonical_sha256
+
+
+@dataclass
+class Payment:
+    method: str
+    amount: Decimal
+
+
+@dataclass
+class Item:
+    product_id: uuid.UUID
+    product_name: str
+    quantity: Decimal
+    unit_price: Decimal
+    total: Decimal
+    fiscal_tax_snapshot: dict
+    snapshot_sha256: str
+    fiscal_calculation_version: str = CALCULATION_VERSION
+
+
+@dataclass
+class Sale:
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    market_id: uuid.UUID = field(default_factory=uuid.uuid4)
+    created_at: datetime = field(default_factory=lambda: datetime(2026, 7, 15, tzinfo=UTC))
+    items: list[Item] = field(default_factory=list)
+    payments: list[Payment] = field(default_factory=lambda: [Payment("pix", Decimal("30.00"))])
+    customer_cpf: str | None = None
+
+
+@dataclass
+class Config:
+    environment: str = "homologacao"
+    default_cfop: str = "9999"  # serializer must never read mutable defaults
+
+
+def _snapshot(*, group: str, cfop: str, cest: str | None, amount: str) -> dict:
+    retained = group == "ICMSSN500"
+    return {
+        "rule_id": str(uuid.uuid4()), "rule_version": 1,
+        "calculation_version": CALCULATION_VERSION,
+        "ncm": "22021000", "cest": cest, "origin": "0", "cfop": cfop,
+        "cbenef": None, "approval_ref": "go-in-042-2026",
+        "icms": {
+            "mode": "retained_st" if retained else "non_taxed", "group": group,
+            "cst": None, "csosn": "500" if retained else "102",
+            "own_base": "0.00", "own_rate": "0.0000", "own_amount": "0.00",
+            "current_st_base": "0.00", "current_st_rate": "0.0000", "current_st_amount": "0.00",
+            "retained_st_base": "42.00" if retained else None,
+            "retained_st_rate": "18.0000" if retained else None,
+            "retained_st_amount": "7.56" if retained else None,
+            "retained_fcp_base": None, "retained_fcp_rate": None, "retained_fcp_amount": None,
+        },
+        "pis": {"group": "PIS07", "cst": "07", "base": "0.00", "rate": "0.0000", "amount": "0.00"},
+        "cofins": {"group": "COFINS07", "cst": "07", "base": "0.00", "rate": "0.0000", "amount": "0.00"},
+        "audit_input": amount,
+    }
+
+
+def _item(*, group: str, cfop: str, cest: str | None, amount: str) -> Item:
+    snapshot = _snapshot(group=group, cfop=cfop, cest=cest, amount=amount)
+    return Item(
+        product_id=uuid.uuid4(), product_name=group, quantity=Decimal("1"),
+        unit_price=Decimal(amount), total=Decimal(amount),
+        fiscal_tax_snapshot=snapshot, snapshot_sha256=canonical_sha256(snapshot),
+    )
+
+
+def test_v2_payload_uses_only_sale_item_snapshots() -> None:
+    from application.services.fiscal.fiscal_contract_v2 import (
+        FiscalContractV2Serializer, canonical_contract_sha256,
+    )
+
+    mixed_sale = Sale(items=[
+        _item(group="ICMSSN102", cfop="5102", cest=None, amount="10.00"),
+        _item(group="ICMSSN500", cfop="5405", cest="0300700", amount="20.00"),
+    ])
+    payload = FiscalContractV2Serializer().build(mixed_sale, Config(), "iss_1", "marketfy-ref")
+
+    assert payload["contract_version"] == "marketfy.fiscal-tax-snapshot.v2"
+    assert payload["items"][0]["tax"]["icms"]["group"] == "ICMSSN102"
+    assert payload["items"][1]["tax"]["icms"]["group"] == "ICMSSN500"
+    assert payload["items"][1]["cfop"] == "5405"
+    assert payload["totals"]["current_st_amount"] == "0.00"
+    assert payload["snapshot_sha256"] == canonical_contract_sha256(payload)
+    assert "9999" not in repr(payload)
+
+
+def test_v2_contract_rejects_tampered_sale_snapshot() -> None:
+    from domain.shared import BusinessRuleException
+    from application.services.fiscal.fiscal_contract_v2 import FiscalContractV2Serializer
+
+    item = _item(group="ICMSSN102", cfop="5102", cest=None, amount="10.00")
+    item.fiscal_tax_snapshot["cfop"] = "5405"
+
+    try:
+        FiscalContractV2Serializer().build(Sale(items=[item]), Config(), "iss_1", "ref")
+    except BusinessRuleException as exc:
+        assert "snapshot_sha256" in str(exc)
+    else:
+        raise AssertionError("serializer accepted a snapshot changed after sale finalisation")

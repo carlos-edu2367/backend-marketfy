@@ -29,6 +29,10 @@ from domain.fiscal import (
     FiscalQuotaExceededError,
 )
 from domain.shared import BusinessRuleException
+from application.services.fiscal.fiscal_contract_v2 import (
+    FiscalContractV2Serializer,
+    canonical_contract_sha256,
+)
 from infra.config.logger import get_logger
 from infra.repositories.fiscal_repo import (
     SQLAlchemyFiscalDocumentRepository,
@@ -51,6 +55,7 @@ class FiscalEmissionService:
         market_repo,            # MarketRepositoryInterface
         arq_pool=None,          # ARQ pool (opcional — None em testes)
         plan_access_service=None,  # PlanAccessService (opcional — None em testes)
+        contract_serializer=None,
     ):
         self.config_repo = config_repo
         self.doc_repo = doc_repo
@@ -61,6 +66,12 @@ class FiscalEmissionService:
         self.market_repo = market_repo
         self.arq_pool = arq_pool
         self.plan_access_service = plan_access_service
+        self.contract_serializer = contract_serializer or FiscalContractV2Serializer()
+
+    @staticmethod
+    def _is_block_mode(cfg) -> bool:
+        mode = getattr(cfg, "fiscal_rule_enforcement", "off")
+        return (mode.value if hasattr(mode, "value") else str(mode)).lower() == "block"
 
     async def request_emission(
         self,
@@ -134,6 +145,13 @@ class FiscalEmissionService:
                 )
                 return self._doc_to_response(doc)
 
+            # A evidence v2 is the retry boundary: never revalidate/rebuild it
+            # from the mutable product catalog or tenant defaults.
+            if self._is_block_mode(cfg) and not doc.request_payload_json:
+                doc.set_manual_action_required("Payload fiscal persistido ausente em modo block.")
+                await self.doc_repo.save(doc)
+                return self._doc_to_response(doc)
+
             # Para os demais estados (QUEUED, PROCESSING, PROVIDER_ERROR, REJECTED, etc.),
             # permitimos reenfileirar. O job_id deterministico evita duplicar job ativo.
             # Vamos re-validar a venda (caso os itens ou dados tenham mudado)
@@ -143,15 +161,13 @@ class FiscalEmissionService:
             if str(sale.market_id) != str(market_id):
                 raise BusinessRuleException("Venda não pertence a este mercado.")
 
-            validation = self.pre_validator.validate(
-                sale_items=sale.items,
-                payments=sale.payments,
+            validation = None if doc.request_payload_json else self.pre_validator.validate(
+                sale_items=sale.items, payments=sale.payments,
                 customer_cpf=getattr(sale, "customer_cpf", None),
-                sale_status=getattr(sale, "status", None),
-                fiscal_config=cfg,
+                sale_status=getattr(sale, "status", None), fiscal_config=cfg,
             )
 
-            if not validation.is_valid:
+            if validation is not None and not validation.is_valid:
                 doc.status = FiscalDocumentStatus.REJECTED
                 doc.sefaz_message = "; ".join(validation.errors[:3])
                 await self.doc_repo.save(doc)
@@ -235,15 +251,23 @@ class FiscalEmissionService:
 
 
         # 4. Pré-validação
-        validation = self.pre_validator.validate(
-            sale_items=sale.items,
-            payments=sale.payments,
-            customer_cpf=getattr(sale, "customer_cpf", None),
-            sale_status=getattr(sale, "status", None),
-            fiscal_config=cfg,
-        )
-
         provider_ref = f"marketfy-{market_id}-{sale_id}"
+        payload = None
+        payload_error = None
+        if self._is_block_mode(cfg):
+            try:
+                payload = self.contract_serializer.build(
+                    sale, cfg, getattr(cfg, "neectify_issuer_id", None) or "", provider_ref
+                )
+            except BusinessRuleException as exc:
+                payload_error = str(exc)
+            validation = None
+        else:
+            validation = self.pre_validator.validate(
+                sale_items=sale.items, payments=sale.payments,
+                customer_cpf=getattr(sale, "customer_cpf", None),
+                sale_status=getattr(sale, "status", None), fiscal_config=cfg,
+            )
 
         # 5. Criar FiscalDocument
         doc = FiscalDocument(
@@ -256,9 +280,9 @@ class FiscalEmissionService:
             idempotency_key=provider_ref,
         )
 
-        if not validation.is_valid:
+        if payload_error or (validation is not None and not validation.is_valid):
             doc.status = FiscalDocumentStatus.REJECTED
-            doc.sefaz_message = "; ".join(validation.errors[:3])
+            doc.sefaz_message = payload_error or "; ".join(validation.errors[:3])
             await self.doc_repo.save(doc)
             await self._append_event(doc, "pre_validation_failed",
                                       f"Pré-validação: {doc.sefaz_message}")
@@ -273,6 +297,10 @@ class FiscalEmissionService:
             )
             return self._doc_to_response(doc)
 
+        if payload is not None:
+            doc.request_contract_version = payload["contract_version"]
+            doc.request_payload_json = payload
+            doc.request_payload_sha256 = canonical_contract_sha256(payload)
         doc.status = FiscalDocumentStatus.QUEUED
         await self.doc_repo.save(doc)
 

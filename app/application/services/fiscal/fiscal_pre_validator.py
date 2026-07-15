@@ -627,3 +627,22 @@ class FiscalPreValidator:
                 payload["consumer"] = {"document": cpf_digits}
 
         return payload
+
+    def build_legacy_neectify_payload(
+        self,
+        sale,
+        fiscal_config,
+        issuer_id: str,
+        provider_ref: Optional[str] = None,
+    ) -> dict:
+        """Explicit compatibility builder for off/warn retries only.
+
+        Keep ``build_neectify_payload`` intact as the v1 serializer.  New
+        block-mode requests cannot reach this method; their v2 evidence is
+        persisted before the worker is queued.
+        """
+        payload = self.build_neectify_payload(
+            sale, fiscal_config, issuer_id, provider_ref
+        )
+        payload.pop("contract_version", None)
+        return payload

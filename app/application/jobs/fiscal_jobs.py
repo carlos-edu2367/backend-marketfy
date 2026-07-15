@@ -24,6 +24,42 @@ from infra.queues.arq_config import QUEUE_FISCAL_RECONCILE
 logger = get_logger("fiscal_jobs")
 
 
+async def _select_persisted_payload_for_emission(doc, fiscal_config, doc_repo):
+    """Return immutable request evidence or the explicit legacy fallback marker."""
+    from application.services.fiscal.fiscal_contract_v2 import canonical_contract_sha256
+
+    payload = getattr(doc, "request_payload_json", None)
+    if payload is not None:
+        if not isinstance(payload, dict):
+            doc.set_manual_action_required("Payload fiscal persistido possui formato inválido.")
+            await doc_repo.save(doc)
+            return {"status": "payload_invalid"}
+        stored_hash = getattr(doc, "request_payload_sha256", None)
+        calculated_hash = canonical_contract_sha256(payload)
+        if (
+            stored_hash != calculated_hash
+            or payload.get("snapshot_sha256") != stored_hash
+            or getattr(doc, "request_contract_version", None) != payload.get("contract_version")
+        ):
+            doc.set_manual_action_required("Hash do payload fiscal persistido é inválido.")
+            await doc_repo.save(doc)
+            return {"status": "payload_invalid"}
+        return payload
+
+    mode = getattr(fiscal_config, "fiscal_rule_enforcement", "off")
+    mode = mode.value if hasattr(mode, "value") else str(mode)
+    if mode.lower() == "block":
+        doc.set_manual_action_required("Payload fiscal persistido ausente em modo block.")
+        await doc_repo.save(doc)
+        return {"status": "payload_missing"}
+
+    logger.info(
+        "legacy_payload_rebuilt",
+        extra={"extra_data": {"doc_id": str(doc.id), "metric_tag": "legacy_payload_rebuilt"}},
+    )
+    return None
+
+
 # =============================================================================
 # EMIT JOB
 # =============================================================================
@@ -99,20 +135,13 @@ async def emit_nfce_job(
         # Mantemos a variável para compatibilidade com a interface do provider
         api_token = settings.NEECTIFY_API_KEY or ""
 
-        # Obter venda para montar payload
-        from infra.repositories.sqlalchemy_repos import SQLAlchemySaleRepository
-        sale_repo = SQLAlchemySaleRepository(session)
-        sale = await sale_repo.get_by_id(doc.sale_id)
-        if not sale:
-            doc.set_manual_action_required("Venda não encontrada.")
-            await doc_repo.save(doc)
-            return {"status": "sale_not_found"}
-
-        # Montar payload fiscal no formato Neectify
-        validator = FiscalPreValidator()
         provider_name = settings.FISCAL_PROVIDER
         quota_service = FiscalQuotaService(usage_repo)
         emit_period = period or datetime.utcnow().strftime("%Y%m")
+
+        payload = await _select_persisted_payload_for_emission(doc, cfg_raw, doc_repo)
+        if isinstance(payload, dict) and "status" in payload:
+            return payload
 
         async def block_invalid_tax_snapshot(exc: BusinessRuleException) -> dict:
             """Reject and audit a mutated/invalid snapshot before provider I/O."""
@@ -140,24 +169,27 @@ async def emit_nfce_job(
             )
             return {"status": "blocked", "error_code": "sale.fiscal_tax_snapshot_invalid"}
 
-        if provider_name == "neectify_fiscal":
-            issuer_id = getattr(cfg_raw, "neectify_issuer_id", None) or ""
+        if payload is None:
+            # Legacy documents predate immutable request evidence. This branch
+            # is deliberately unavailable to new block-mode documents.
+            from infra.repositories.sqlalchemy_repos import SQLAlchemySaleRepository
+            sale = await SQLAlchemySaleRepository(session).get_by_id(doc.sale_id)
+            if not sale:
+                doc.set_manual_action_required("Venda não encontrada.")
+                await doc_repo.save(doc)
+                return {"status": "sale_not_found"}
+            validator = FiscalPreValidator()
             try:
-                payload = validator.build_neectify_payload(
-                    sale=sale,
-                    fiscal_config=cfg_raw,
-                    issuer_id=issuer_id,
-                    provider_ref=doc.provider_ref,
-                )
-            except BusinessRuleException as exc:
-                return await block_invalid_tax_snapshot(exc)
-        else:
-            try:
-                payload = validator.build_fiscal_payload(
-                    sale=sale,
-                    fiscal_config=cfg_raw,
-                    provider_ref=doc.provider_ref,
-                )
+                if provider_name == "neectify_fiscal":
+                    payload = validator.build_legacy_neectify_payload(
+                        sale=sale, fiscal_config=cfg_raw,
+                        issuer_id=getattr(cfg_raw, "neectify_issuer_id", None) or "",
+                        provider_ref=doc.provider_ref,
+                    )
+                else:
+                    payload = validator.build_fiscal_payload(
+                        sale=sale, fiscal_config=cfg_raw, provider_ref=doc.provider_ref,
+                    )
             except BusinessRuleException as exc:
                 return await block_invalid_tax_snapshot(exc)
 

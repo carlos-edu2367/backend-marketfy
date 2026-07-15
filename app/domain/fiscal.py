@@ -674,6 +674,12 @@ class FiscalDocument(Entity):
     # Rastreio
     last_attempt_id: Optional[uuid.UUID] = None
 
+    # Evidência imutável do pedido enviada ao provider. É criada antes da fila
+    # para que retries nunca reconstruam tributação a partir de dados mutáveis.
+    request_contract_version: Optional[str] = None
+    request_payload_json: Optional[dict] = None
+    request_payload_sha256: Optional[str] = None
+
     def set_authorized(self, access_key: str, protocol: str, number: int,
                        series: int, sefaz_code: str, sefaz_msg: str):
         self.status = FiscalDocumentStatus.AUTHORIZED
