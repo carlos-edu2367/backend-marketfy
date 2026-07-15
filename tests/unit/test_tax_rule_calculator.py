@@ -64,7 +64,11 @@ def make_retained_st_rule(**overrides) -> ProductTaxRule:
             "pis": make_contribution("PIS07", "07"),
             "cofins": make_contribution("COFINS07", "07"),
         },
-        "approval": {"reference": "CRC-GO-2026-0001"},
+        "approval": {
+            "reference": "CRC-GO-2026-0001",
+            "checksum": "a" * 64,
+            "catalog_version": "go-nfce-v2.1",
+        },
     }
     values.update(overrides)
     return ProductTaxRule(**values)
@@ -223,6 +227,8 @@ def test_snapshot_copies_only_explicit_rule_classification_and_evidence() -> Non
     assert snapshot["cfop"] == "5405"
     assert snapshot["cbenef"] == "GO123"
     assert snapshot["approval_ref"] == "CRC-GO-2026-0001"
+    assert snapshot["catalog_version"] == "go-nfce-v2.1"
+    assert snapshot["approval_checksum"] == "a" * 64
     assert snapshot["pis"] == make_contribution("PIS07", "07")
     assert snapshot["cofins"] == make_contribution("COFINS07", "07")
 

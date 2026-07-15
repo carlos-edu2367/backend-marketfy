@@ -78,7 +78,11 @@ def make_rule(*, version: int, status: ProductTaxRuleStatus, effective_from: dat
                 "amount": "0.00",
             },
         },
-        approval={"reference": "CRC-GO-2026-0001"},
+        approval={
+            "reference": "CRC-GO-2026-0001",
+            "checksum": "a" * 64,
+            "catalog_version": "go-nfce-v2.1",
+        },
     )
 
 
@@ -121,6 +125,7 @@ def publication_rule(**overrides) -> ProductTaxRule:
         "approval": {
             "reference": "Decreto GO 10.734/2025, Anexo V-B",
             "checksum": "a" * 64,
+            "catalog_version": "go-nfce-v2.1",
         },
     }
     values.update(overrides)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,6 +14,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "app"))
 
 from application.services.fiscal.snapshot_integrity import CALCULATION_VERSION, canonical_sha256
+from application.services.fiscal.tax_rule_calculator import TaxRuleCalculator
+from domain.fiscal import ProductTaxRule, ProductTaxRuleStatus
+from domain.sales import SaleItem
 
 
 @dataclass
@@ -105,7 +108,7 @@ def test_v2_payload_uses_only_sale_item_snapshots() -> None:
     assert payload["items"][1]["cfop"] == "5405"
     assert payload["totals"]["current_st_amount"] == "0.00"
     assert payload["snapshot_sha256"] == canonical_contract_sha256(payload)
-    assert "9999" not in repr(payload)
+    assert all(item["cfop"] != Config().default_cfop for item in payload["items"])
 
 
 def test_v2_contract_rejects_tampered_sale_snapshot() -> None:
@@ -158,3 +161,51 @@ def test_retained_st_contract_rejects_missing_catalog_evidence(missing_field: st
 
     with pytest.raises(BusinessRuleException, match=missing_field):
         FiscalContractV2Serializer().build(Sale(items=[item]), Config(), "iss_1", "ref")
+
+
+def test_retained_st_sale_keeps_published_catalog_evidence_after_successor_change() -> None:
+    from application.services.fiscal.fiscal_contract_v2 import FiscalContractV2Serializer
+
+    rule = ProductTaxRule(
+        market_id=uuid.uuid4(), name="Bebida ST", status=ProductTaxRuleStatus.PUBLISHED,
+        effective_from=date(2026, 7, 1), ncm="22021000", cest="0300700",
+        origin="0", cfop="5405", icms_group="ICMSSN500", icms_csosn="500",
+        tax_parameters={
+            "icms_mode": "retained_st", "retained_st_base": "42.00",
+            "retained_st_rate": "18.0000", "retained_st_amount": "7.56",
+            "pis": {"group": "PIS07", "cst": "07", "base": "0.00", "rate": "0.0000", "amount": "0.00"},
+            "cofins": {"group": "COFINS07", "cst": "07", "base": "0.00", "rate": "0.0000", "amount": "0.00"},
+        },
+        approval={
+            "reference": "Decreto GO 10.734/2025, Anexo V-B",
+            "checksum": "a" * 64,
+            "catalog_version": "go-nfce-v2.1",
+        },
+    )
+    fiscal_snapshot = TaxRuleCalculator().calculate(
+        item=SaleItem(
+            sale_id=uuid.uuid4(), product_id=uuid.uuid4(), product_name="Bebida ST",
+            quantity=Decimal("1"), unit_price=Decimal("20.00"), total=Decimal("20.00"),
+        ),
+        rule=rule,
+    ).as_persistence_dict()
+    sale_item = Item(
+        product_id=uuid.uuid4(), product_name="Bebida ST", quantity=Decimal("1"),
+        unit_price=Decimal("20.00"), total=Decimal("20.00"),
+        fiscal_tax_snapshot=fiscal_snapshot,
+        snapshot_sha256=canonical_sha256(fiscal_snapshot),
+    )
+
+    successor = rule.create_successor(effective_from=date(2026, 8, 1))
+    successor.approval["catalog_version"] = "go-nfce-v2.2"
+    successor.approval["checksum"] = "b" * 64
+
+    tax = FiscalContractV2Serializer().build(
+        Sale(items=[sale_item]), Config(), "iss_1", "ref"
+    )["items"][0]["tax"]
+
+    assert tax["rule_id"] == str(rule.id)
+    assert tax["rule_version"] == rule.version
+    assert tax["catalog_version"] == "go-nfce-v2.1"
+    assert tax["approval_ref"] == "Decreto GO 10.734/2025, Anexo V-B"
+    assert tax["approval_checksum"] == "a" * 64

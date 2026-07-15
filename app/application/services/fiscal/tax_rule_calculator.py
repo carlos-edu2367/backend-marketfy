@@ -151,6 +151,8 @@ class ItemFiscalSnapshot:
     icms: IcmsSnapshot
     pis: ContributionSnapshot
     cofins: ContributionSnapshot
+    catalog_version: Optional[str] = None
+    approval_checksum: Optional[str] = None
 
     def as_contract_dict(self) -> dict[str, Any]:
         return {
@@ -163,6 +165,8 @@ class ItemFiscalSnapshot:
             "cfop": self.cfop,
             "cbenef": self.cbenef,
             "approval_ref": self.approval_ref,
+            "catalog_version": self.catalog_version,
+            "approval_checksum": self.approval_checksum,
             "icms": self.icms.as_dict(),
             "pis": self.pis.as_dict(),
             "cofins": self.cofins.as_dict(),
@@ -224,6 +228,19 @@ class TaxRuleCalculator:
         ):
             raise BusinessRuleException("Referência de aprovação fiscal é obrigatória.")
 
+        catalog_version = approval.get("catalog_version")
+        approval_checksum = approval.get("checksum")
+        if rule.icms_group in _RETAINED_ST_GROUPS and (
+            not isinstance(catalog_version, str)
+            or not catalog_version.strip()
+            or not isinstance(approval_checksum, str)
+            or len(approval_checksum) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in approval_checksum)
+        ):
+            raise BusinessRuleException(
+                "ST retida exige versão de catálogo e checksum da evidência oficial."
+            )
+
         is_retained = rule.icms_group in _RETAINED_ST_GROUPS
         icms = IcmsSnapshot(
             mode=params["icms_mode"],
@@ -271,6 +288,8 @@ class TaxRuleCalculator:
             cfop=rule.cfop,
             cbenef=rule.cbenef,
             approval_ref=approval["reference"],
+            catalog_version=catalog_version,
+            approval_checksum=approval_checksum,
             icms=icms,
             pis=_contribution(params, "pis"),
             cofins=_contribution(params, "cofins"),

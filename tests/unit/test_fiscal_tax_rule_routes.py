@@ -74,6 +74,7 @@ def _draft_payload() -> dict:
         "approval": {
             "reference": "Decreto GO 10.734/2025",
             "checksum": "a" * 64,
+            "catalog_version": "go-nfce-v2.1",
         },
     }
 
@@ -117,6 +118,7 @@ def test_draft_dto_maps_explicit_nested_tax_parameters_to_domain() -> None:
     assert values["tax_parameters"]["pis"]["rate"] == "0.0000"
     assert values["tax_parameters"]["cofins"]["amount"] == "0.00"
     assert values["approval"]["checksum"] == "a" * 64
+    assert values["approval"]["catalog_version"] == "go-nfce-v2.1"
 
 
 def test_canonical_tax_rule_lifecycle_uses_the_strict_draft_contract() -> None:

@@ -56,6 +56,7 @@ class FiscalContributionParameters(StrictFiscalModel):
 class FiscalApprovalReference(StrictFiscalModel):
     reference: str = Field(min_length=1, max_length=2048)
     checksum: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    catalog_version: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class FiscalTaxRuleDraftRequest(StrictFiscalModel):
