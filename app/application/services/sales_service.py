@@ -25,7 +25,7 @@ from application.services.fiscal.tax_rule_service import (
     TaxRuleNotFoundError,
     TaxRuleService,
 )
-from domain.fiscal import FiscalEnvironment
+from domain.fiscal import FiscalRuleEnforcement
 from infra.config.logger import get_logger
 
 logger = get_logger("sales_service")
@@ -391,15 +391,11 @@ class SalesService:
             raise BusinessRuleException("sale.offline_clock_out_of_window; reason=future_client_clock")
 
     async def _requires_fiscal_rule_enforcement(self, market_id: uuid.UUID) -> bool:
-        if self.environment != "production" or not self.fiscal_config_repo:
+        if not self.fiscal_config_repo:
             return False
 
         config = await self.fiscal_config_repo.get_by_market(market_id)
-        return bool(
-            config
-            and config.enabled
-            and config.environment is FiscalEnvironment.PRODUCTION
-        )
+        return bool(config and config.fiscal_rule_enforcement is FiscalRuleEnforcement.BLOCK)
 
     async def list_sales(self, market_id: uuid.UUID, limit: int, offset: int) -> List[SaleResponseDTO]:
         sales = await self.sale_repo.list_by_market(market_id, limit, offset)

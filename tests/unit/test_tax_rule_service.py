@@ -22,7 +22,7 @@ from application.services.fiscal.tax_rule_service import (
     TaxRuleService,
 )
 from application.services.sales_service import SalesService
-from domain.fiscal import FiscalEnvironment, FiscalTenantConfig, ProductTaxRule, ProductTaxRuleStatus
+from domain.fiscal import FiscalEnvironment, FiscalRuleEnforcement, FiscalTenantConfig, ProductTaxRule, ProductTaxRuleStatus
 from domain.inventory import Product
 from domain.sales import Box, BoxStatus
 
@@ -241,11 +241,15 @@ class FakeProductRepository:
 
 
 class FakeFiscalConfigRepository:
+    def __init__(self, mode=FiscalRuleEnforcement.BLOCK):
+        self.mode = mode
+
     async def get_by_market(self, market_id):
         return FiscalTenantConfig(
             market_id=market_id,
             enabled=True,
             environment=FiscalEnvironment.PRODUCTION,
+            fiscal_rule_enforcement=self.mode,
         )
 
 
@@ -327,3 +331,13 @@ async def test_missing_rule_returns_structured_error_without_persisting_partial_
     assert exc_info.value.affected_products == [{"id": str(product_repository.product.id), "name": "Refrigerante"}]
     assert sale_repository.saved == []
     assert product_repository.saved == []
+
+
+@pytest.mark.asyncio
+async def test_off_mode_preserves_legacy_sale_without_a_v1_snapshot() -> None:
+    service, sale_repository, _ = make_sale_service(FakeRuleRepository([]))
+    service.fiscal_config_repo = FakeFiscalConfigRepository(FiscalRuleEnforcement.OFF)
+
+    await service.process_sync(MARKET_ID, [make_sale_request()])
+
+    assert sale_repository.saved[0].items[0].fiscal_tax_snapshot is None
