@@ -122,3 +122,64 @@ async def test_worker_reuses_exact_persisted_payload_after_defaults_change() -> 
 
     assert canonical_json(transmitted) == before
     assert transmitted["snapshot_sha256"] == canonical_contract_sha256(transmitted)
+
+
+@pytest.mark.asyncio
+async def test_block_emission_with_invalid_snapshot_returns_controlled_rejection() -> None:
+    """Invalid v2 evidence is a fiscal rejection, never an HTTP 500 path."""
+    from application.services.fiscal.fiscal_emission_service import FiscalEmissionService
+    from domain.fiscal import FiscalEnvironment, FiscalRuleEnforcement
+    from domain.shared import BusinessRuleException
+
+    market_id, sale_id = uuid.uuid4(), uuid.uuid4()
+    config = SimpleNamespace(
+        enabled=True, provider="neectify_fiscal", environment=FiscalEnvironment.HOMOLOGATION,
+        fiscal_rule_enforcement=FiscalRuleEnforcement.BLOCK, neectify_issuer_id="iss_1",
+        is_ready_for_emission=lambda: True,
+    )
+    sale = SimpleNamespace(id=sale_id, market_id=market_id, items=[], payments=[])
+    serializer = MagicMock()
+    serializer.build.side_effect = BusinessRuleException("sale.fiscal_tax_snapshot_missing; sku=product-1")
+    saved: list[FiscalDocument] = []
+    doc_repo = AsyncMock(get_by_sale=AsyncMock(return_value=None))
+    async def save(doc):
+        saved.append(doc)
+        return doc
+    doc_repo.save.side_effect = save
+    quota = AsyncMock()
+    service = FiscalEmissionService(
+        config_repo=AsyncMock(get_by_market=AsyncMock(return_value=config)),
+        doc_repo=doc_repo, event_repo=AsyncMock(), quota_service=quota,
+        pre_validator=MagicMock(), sale_repo=AsyncMock(get_by_id=AsyncMock(return_value=sale)),
+        market_repo=AsyncMock(), contract_serializer=serializer,
+    )
+
+    result = await service.request_emission(market_id, sale_id, uuid.uuid4())
+
+    assert result["status"] == FiscalDocumentStatus.REJECTED.value
+    assert saved[-1].sefaz_message == "sale.fiscal_tax_snapshot_missing; sku=product-1"
+    quota.check_and_reserve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["marketfy.fiscal-tax-snapshot.v1", "legacy", None])
+async def test_block_worker_rejects_any_non_v2_persisted_contract(version: str | None) -> None:
+    """Block mode accepts only the production v2 contract at provider boundary."""
+    from application.jobs.fiscal_jobs import _select_persisted_payload_for_emission
+    from application.services.fiscal.fiscal_contract_v2 import canonical_contract_sha256
+    from domain.fiscal import FiscalRuleEnforcement
+
+    payload = {"contract_version": version, "items": []}
+    payload["snapshot_sha256"] = canonical_contract_sha256(payload)
+    doc = FiscalDocument(market_id=uuid.uuid4(), sale_id=uuid.uuid4())
+    doc.request_contract_version = version
+    doc.request_payload_json = payload
+    doc.request_payload_sha256 = canonical_contract_sha256(payload)
+    repo = AsyncMock()
+    config = SimpleNamespace(fiscal_rule_enforcement=FiscalRuleEnforcement.BLOCK)
+
+    result = await _select_persisted_payload_for_emission(doc, config, repo)
+
+    assert result == {"status": "payload_invalid"}
+    assert doc.status is FiscalDocumentStatus.MANUAL_ACTION_REQUIRED
+    repo.save.assert_awaited_once_with(doc)

@@ -26,7 +26,14 @@ logger = get_logger("fiscal_jobs")
 
 async def _select_persisted_payload_for_emission(doc, fiscal_config, doc_repo):
     """Return immutable request evidence or the explicit legacy fallback marker."""
-    from application.services.fiscal.fiscal_contract_v2 import canonical_contract_sha256
+    from application.services.fiscal.fiscal_contract_v2 import (
+        CONTRACT_VERSION,
+        canonical_contract_sha256,
+    )
+
+    mode = getattr(fiscal_config, "fiscal_rule_enforcement", "off")
+    mode = mode.value if hasattr(mode, "value") else str(mode)
+    is_block_mode = mode.lower() == "block"
 
     payload = getattr(doc, "request_payload_json", None)
     if payload is not None:
@@ -40,15 +47,20 @@ async def _select_persisted_payload_for_emission(doc, fiscal_config, doc_repo):
             stored_hash != calculated_hash
             or payload.get("snapshot_sha256") != stored_hash
             or getattr(doc, "request_contract_version", None) != payload.get("contract_version")
+            or (
+                is_block_mode
+                and (
+                    getattr(doc, "request_contract_version", None) != CONTRACT_VERSION
+                    or payload.get("contract_version") != CONTRACT_VERSION
+                )
+            )
         ):
             doc.set_manual_action_required("Hash do payload fiscal persistido é inválido.")
             await doc_repo.save(doc)
             return {"status": "payload_invalid"}
         return payload
 
-    mode = getattr(fiscal_config, "fiscal_rule_enforcement", "off")
-    mode = mode.value if hasattr(mode, "value") else str(mode)
-    if mode.lower() == "block":
+    if is_block_mode:
         doc.set_manual_action_required("Payload fiscal persistido ausente em modo block.")
         await doc_repo.save(doc)
         return {"status": "payload_missing"}

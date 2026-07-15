@@ -292,7 +292,7 @@ class FiscalEmissionService:
                     "doc_id": str(doc.id),
                     "market_id": str(market_id),
                     "sale_id": str(sale_id),
-                    "errors": validation.errors,
+                    "errors": validation.errors if validation is not None else [payload_error],
                 }}
             )
             return self._doc_to_response(doc)
