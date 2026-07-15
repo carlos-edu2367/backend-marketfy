@@ -847,6 +847,32 @@ class SQLAlchemyFiscalArtifactRepository:
         m = r.scalars().first()
         return _to_artifact(m) if m else None
 
+    async def get_by_storage_key(self, storage_key: str):
+        """Return the issuance provenance needed to approve a tax-rule XML."""
+        result = await self.session.execute(
+            select(FiscalArtifactModel, FiscalDocumentModel)
+            .join(FiscalDocumentModel, FiscalArtifactModel.fiscal_document_id == FiscalDocumentModel.id)
+            .where(FiscalArtifactModel.storage_key == storage_key)
+        )
+        row = result.first()
+        if row is None:
+            return None
+        artifact, document = row
+        from application.services.fiscal.tax_rule_approval_evidence import HomologationFiscalArtifact
+
+        return HomologationFiscalArtifact(
+            market_id=document.market_id,
+            document_id=document.id,
+            document_type=document.document_type,
+            environment=document.environment,
+            status=document.status,
+            access_key=document.access_key,
+            protocol=document.protocol,
+            artifact_type=artifact.artifact_type,
+            storage_key=artifact.storage_key,
+            sha256=artifact.sha256,
+        )
+
     async def save(self, artifact: FiscalArtifact, commit: bool = True) -> FiscalArtifact:
         m = FiscalArtifactModel(id=artifact.id)
         self.session.add(m)

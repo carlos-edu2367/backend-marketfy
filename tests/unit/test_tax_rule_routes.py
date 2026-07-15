@@ -193,7 +193,7 @@ def client(monkeypatch):
     monkeypatch.setattr(
         fiscal_router,
         "_get_tax_rule_approval_evidence_service",
-        lambda: FakeApprovalEvidenceService(),
+        lambda _db: FakeApprovalEvidenceService(),
     )
 
     class Member:
@@ -330,7 +330,7 @@ def test_publication_rejects_missing_homologation_artifact(client, monkeypatch):
         async def capture_approval(self, **_kwargs):
             raise TaxRuleApprovalArtifactError("O XML homologado informado não foi encontrado.")
 
-    monkeypatch.setattr(fiscal_router, "_get_tax_rule_approval_evidence_service", lambda: MissingEvidence())
+    monkeypatch.setattr(fiscal_router, "_get_tax_rule_approval_evidence_service", lambda _db: MissingEvidence())
     created = http.post(f"/api/v1/fiscal/{MARKET_ID}/tax-rules", json=_approved_rule_payload())
 
     response = http.post(

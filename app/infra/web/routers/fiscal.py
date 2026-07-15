@@ -46,11 +46,14 @@ logger = get_logger("fiscal_router")
 router = APIRouter()
 
 
-def _get_tax_rule_approval_evidence_service():
+def _get_tax_rule_approval_evidence_service(db):
     from application.services.fiscal.tax_rule_approval_evidence import TaxRuleApprovalEvidenceService
+    from infra.repositories.fiscal_repo import SQLAlchemyFiscalArtifactRepository
     from infra.storage.fiscal_artifact_storage import FiscalArtifactStorage
 
-    return TaxRuleApprovalEvidenceService(FiscalArtifactStorage())
+    return TaxRuleApprovalEvidenceService(
+        FiscalArtifactStorage(), SQLAlchemyFiscalArtifactRepository(db)
+    )
 
 
 async def _require_tax_rule_accountant(*, db: AsyncSession, market_id: uuid.UUID, current_user: User) -> None:
@@ -790,7 +793,7 @@ async def publish_tax_rule(
     # Approval identity and timestamp are server-derived. The submitted key is
     # resolved through private storage and copied into an immutable evidence key.
     rule.approved_by = current_user.id
-    evidence_service = _get_tax_rule_approval_evidence_service()
+    evidence_service = _get_tax_rule_approval_evidence_service(db)
     from application.services.fiscal.tax_rule_approval_evidence import TaxRuleApprovalArtifactError
 
     try:
