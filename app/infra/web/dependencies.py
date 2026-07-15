@@ -200,6 +200,7 @@ def require_admin(current_user = Depends(get_current_user)):
 def _build_market_dependency(
     permission: Optional[MarketPermission],
     owner_only: bool,
+    return_access: bool = False,
 ) -> Callable:
     async def _dep(
         market_id: uuid.UUID,
@@ -213,6 +214,7 @@ def _build_market_dependency(
                 db=db,
                 permission=permission,
                 owner_only=owner_only,
+                return_access=return_access,
             )
         except MarketNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
@@ -228,6 +230,17 @@ def require_market_access(permission: Optional[MarketPermission] = None) -> Call
     Owner sempre passa. Membros (PR 10) passam se o role tem a permissão.
     """
     return _build_market_dependency(permission=permission, owner_only=False)
+
+
+def require_market_access_context(
+    permission: Optional[MarketPermission] = None,
+) -> Callable:
+    """Return the market plus the active tenant member checked for permission."""
+    return _build_market_dependency(
+        permission=permission,
+        owner_only=False,
+        return_access=True,
+    )
 
 
 def require_market_owner() -> Callable:

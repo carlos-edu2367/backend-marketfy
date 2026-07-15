@@ -227,28 +227,50 @@ def test_cashier_has_no_fiscal_permission_but_manager_can_review() -> None:
 
 
 @pytest.mark.parametrize(
-    ("role", "allowed"),
+    ("global_role", "member_role", "is_owner", "allowed"),
     [
-        pytest.param("owner", True, id="owner"),
-        pytest.param("manager", True, id="manager"),
-        pytest.param("accountant", False, id="accountant"),
-        pytest.param("cashier", False, id="cashier"),
+        pytest.param("accountant", None, True, True, id="owner-bypass"),
+        pytest.param("manager", "accountant", False, False, id="global-manager-member-accountant"),
+        pytest.param("cashier", "manager", False, True, id="global-cashier-member-manager"),
+        pytest.param("accountant", "accountant", False, False, id="accountant-member"),
+        pytest.param("cashier", "cashier", False, False, id="cashier-member"),
     ],
 )
-def test_enforcement_gate_allows_only_owner_or_manager(role: str, allowed: bool) -> None:
+def test_enforcement_gate_uses_market_member_role(
+    global_role: str,
+    member_role: str | None,
+    is_owner: bool,
+    allowed: bool,
+) -> None:
     from domain.identity import UserRole
     from infra.web.routers.fiscal_tax_rules import assert_enforcement_role
 
     owner_id = uuid.uuid4()
-    user_id = owner_id if role == "owner" else uuid.uuid4()
+    user_id = owner_id if is_owner else uuid.uuid4()
     market = SimpleNamespace(owner_id=owner_id)
-    user = SimpleNamespace(id=user_id, role=UserRole(role))
+    user = SimpleNamespace(id=user_id, role=UserRole(global_role))
+    member = (
+        None
+        if member_role is None
+        else SimpleNamespace(role=UserRole(member_role), market_id=MARKET_ID, user_id=user_id)
+    )
 
     if allowed:
-        assert assert_enforcement_role(current_user=user, market=market) is market
+        assert (
+            assert_enforcement_role(
+                current_user=user,
+                market=market,
+                market_member=member,
+            )
+            is market
+        )
     else:
         with pytest.raises(HTTPException) as error:
-            assert_enforcement_role(current_user=user, market=market)
+            assert_enforcement_role(
+                current_user=user,
+                market=market,
+                market_member=member,
+            )
         assert error.value.status_code == 403
         assert error.value.detail["code"] == "fiscal.rule_enforcement_forbidden"
 

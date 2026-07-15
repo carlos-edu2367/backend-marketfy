@@ -189,6 +189,29 @@ async def test_resolve_market_access_active_member_with_permission(patch_repos):
 
 
 @pytest.mark.asyncio
+async def test_resolve_market_access_context_preserves_checked_tenant_member(patch_repos):
+    owner_id = uuid.uuid4()
+    member_id = uuid.uuid4()
+    market_id = uuid.uuid4()
+    patch_repos(
+        [FakeMarket(id=market_id, owner_id=owner_id)],
+        [FakeMember(market_id=market_id, user_id=member_id, role=UserRole.MANAGER)],
+    )
+
+    access = await resolve_market_access(
+        market_id,
+        FakeUser(id=member_id, role=UserRole.CASHIER),
+        FakeSession(),
+        permission=MarketPermission.FISCAL_WRITE,
+        return_access=True,
+    )
+
+    assert access.market.id == market_id
+    assert access.member is not None
+    assert access.member.role is UserRole.MANAGER
+
+
+@pytest.mark.asyncio
 async def test_resolve_market_access_cashier_lacks_finance_write(patch_repos):
     owner_id = uuid.uuid4()
     member_id = uuid.uuid4()

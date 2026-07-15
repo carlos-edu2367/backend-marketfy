@@ -12,8 +12,9 @@ contra o mapa role -> permissions, mas o owner sempre é autorizado.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -89,6 +90,14 @@ class MarketAccessDenied(Exception):
         self.detail = detail
 
 
+@dataclass(frozen=True)
+class MarketAccessContext:
+    """The tenant data already checked by the central access policy."""
+
+    market: Any
+    member: Any | None
+
+
 def role_has_permission(role: UserRole, permission: Optional[MarketPermission]) -> bool:
     if permission is None:
         return True
@@ -102,6 +111,7 @@ async def resolve_market_access(
     db: AsyncSession,
     permission: Optional[MarketPermission] = None,
     owner_only: bool = False,
+    return_access: bool = False,
 ):
     """Retorna o `Market` se o usuário tem acesso. Caso contrário, levanta exceção.
 
@@ -118,7 +128,7 @@ async def resolve_market_access(
         raise MarketNotFoundError("Loja não encontrada")
 
     if market.owner_id == user.id:
-        return market
+        return MarketAccessContext(market, None) if return_access else market
 
     if owner_only:
         raise MarketAccessDenied("Acesso restrito ao proprietário da loja.")
@@ -139,4 +149,4 @@ async def resolve_market_access(
     if not role_has_permission(member.role, permission):
         raise MarketAccessDenied("Permissão insuficiente para este recurso.")
 
-    return market
+    return MarketAccessContext(market, member) if return_access else market

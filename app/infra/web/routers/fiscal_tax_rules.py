@@ -32,6 +32,7 @@ from infra.web.dependencies import (
     get_current_user,
     get_sales_service,
     require_market_access,
+    require_market_access_context,
 )
 
 
@@ -44,9 +45,11 @@ def _tax_rule_service(db: AsyncSession) -> TaxRuleService:
     return TaxRuleService(SQLAlchemyProductTaxRuleRepository(db))
 
 
-def assert_enforcement_role(*, current_user: User, market):
+def assert_enforcement_role(*, current_user: User, market, market_member):
     """Restrict fiscal rollout changes to the market owner or a manager."""
-    if market.owner_id == current_user.id or current_user.role is UserRole.MANAGER:
+    if market.owner_id == current_user.id or (
+        market_member is not None and market_member.role is UserRole.MANAGER
+    ):
         return market
     raise HTTPException(
         status_code=403,
@@ -59,9 +62,13 @@ def assert_enforcement_role(*, current_user: User, market):
 
 async def require_enforcement_access(
     current_user: User = Depends(get_current_user),
-    market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
+    access=Depends(require_market_access_context(MarketPermission.FISCAL_WRITE)),
 ):
-    return assert_enforcement_role(current_user=current_user, market=market)
+    return assert_enforcement_role(
+        current_user=current_user,
+        market=access.market,
+        market_member=access.member,
+    )
 
 
 def rollout_context_from_tenant_config(config) -> tuple[str, str]:
