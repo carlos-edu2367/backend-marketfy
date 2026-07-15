@@ -7,6 +7,7 @@ import sys
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+import pytest
 import sqlalchemy as sa
 
 
@@ -309,3 +310,25 @@ def test_snapshot_json_adapter_preserves_postgresql_json_objects(monkeypatch) ->
 
     assert persisted == snapshot
     assert repository._deserialize_fiscal_tax_snapshot(persisted) == snapshot
+
+
+@pytest.mark.parametrize(
+    ("persisted", "expected"),
+    [
+        pytest.param({}, {}, id="empty-dict"),
+        pytest.param([], [], id="empty-list"),
+        pytest.param("", None, id="empty-string"),
+        pytest.param("   ", None, id="whitespace-string"),
+    ],
+)
+def test_snapshot_json_adapter_distinguishes_empty_containers_from_empty_strings(
+    monkeypatch, persisted, expected
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/test")
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    sys.path.insert(0, str(VERSIONS_PATH.parents[1] / "app"))
+    repository = importlib.import_module("infra.repositories.sqlalchemy_repos")
+
+    if isinstance(persisted, (dict, list)):
+        assert repository._serialize_fiscal_tax_snapshot(persisted) == expected
+    assert repository._deserialize_fiscal_tax_snapshot(persisted) == expected

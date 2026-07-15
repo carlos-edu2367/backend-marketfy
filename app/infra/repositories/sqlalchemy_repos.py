@@ -704,13 +704,21 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
         return s
 
 
-def _serialize_fiscal_tax_snapshot(snapshot: Optional[dict]) -> Optional[dict]:
+def _serialize_fiscal_tax_snapshot(
+    snapshot: Optional[dict | list],
+) -> Optional[dict | list]:
     return snapshot
 
-def _deserialize_fiscal_tax_snapshot(snapshot: Optional[dict | str]) -> Optional[dict]:
-    if not snapshot:
+def _deserialize_fiscal_tax_snapshot(
+    snapshot: Optional[dict | list | str],
+) -> Optional[dict | list]:
+    if snapshot is None:
         return None
-    return json.loads(snapshot) if isinstance(snapshot, str) else snapshot
+    if isinstance(snapshot, str):
+        if not snapshot.strip():
+            return None
+        return json.loads(snapshot)
+    return snapshot
 # ==================================================================================
 # CUSTOMER REPOSITORY
 # ==================================================================================

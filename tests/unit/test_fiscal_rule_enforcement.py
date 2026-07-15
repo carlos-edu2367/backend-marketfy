@@ -26,7 +26,7 @@ def test_enforcement_migration_exists_after_current_tax_rule_approval_revision()
         Path(__file__).resolve().parents[2]
         / "alembic"
         / "versions"
-        / "20260715_0005_fiscal_rule_enforcement.py"
+        / "20260715_0006_fiscal_rule_enforcement.py"
     )
 
     assert migration_path.exists()
@@ -35,4 +35,4 @@ def test_enforcement_migration_exists_after_current_tax_rule_approval_revision()
     assert spec.loader is not None
     spec.loader.exec_module(module)
 
-    assert module.down_revision == "20260715_0004"
+    assert module.down_revision == "20260715_0005"
