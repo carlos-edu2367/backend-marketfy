@@ -17,10 +17,13 @@ from sqlalchemy import and_, desc, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from application.services.fiscal.tax_rule_service import ProductTaxRuleCandidate
+from application.services.fiscal.tax_rule_service import (
+    ProductTaxRuleAssociation,
+    ProductTaxRuleCandidate,
+    TaxRuleService,
+)
 from domain.shared import BusinessRuleException
 from domain.interfaces import ProductTaxRuleRepositoryInterface
-from infra.config.settings import get_settings
 
 from domain.fiscal import (
     FiscalArtifact,
@@ -33,6 +36,7 @@ from domain.fiscal import (
     FiscalEmissionPackage,
     FiscalEnvironment,
     FiscalRuleEnforcement,
+    FiscalRuleError,
     FiscalEvent,
     FiscalEventSource,
     FiscalNotification,
@@ -439,25 +443,45 @@ class SQLAlchemyProductTaxRuleRepository(ProductTaxRuleRepositoryInterface):
         if not rule.is_effective_on(effective_from):
             raise BusinessRuleException("A regra fiscal publicada não está vigente para a associação.")
 
+        locked_rule = await self.session.get(
+            ProductTaxRuleModel, rule.id, with_for_update=True
+        )
+        if locked_rule is None or locked_rule.market_id != market_id:
+            raise FiscalRuleError("tax_rule.not_found", "Regra fiscal não encontrada.")
+        if locked_rule.status != ProductTaxRuleStatus.PUBLISHED.value:
+            raise FiscalRuleError(
+                "tax_rule.not_published",
+                "Somente regras fiscais publicadas podem ser atribuídas.",
+            )
+
         products = (
             await self.session.execute(
                 select(ProductModel).where(
                     ProductModel.market_id == market_id,
                     ProductModel.id.in_(product_ids),
                     ProductModel.deleted_at.is_(None),
-                )
+                ).with_for_update()
             )
         ).scalars().all()
         products_by_id = {product.id: product for product in products}
+        missing_product_ids = [
+            product_id for product_id in product_ids if product_id not in products_by_id
+        ]
+        if missing_product_ids:
+            raise FiscalRuleError(
+                "tax_rule.product_market_mismatch",
+                "Um ou mais produtos não existem no mercado informado.",
+                [
+                    {"product_id": str(product_id)}
+                    for product_id in missing_product_ids
+                ],
+            )
         updated: List[uuid.UUID] = []
         skipped: List[dict] = []
         audit_changes: List[dict] = []
 
         for product_id in product_ids:
             product = products_by_id.get(product_id)
-            if product is None:
-                skipped.append({"product_id": str(product_id), "reason": "product_not_found"})
-                continue
 
             assignments = (
                 await self.session.execute(
@@ -526,6 +550,42 @@ class SQLAlchemyProductTaxRuleRepository(ProductTaxRuleRepositoryInterface):
                     ) from exc
                 raise
         return updated, skipped, audit_changes
+
+    async def list_product_rule_associations(
+        self, market_id: uuid.UUID, product_ids: List[uuid.UUID]
+    ) -> dict[uuid.UUID, List[ProductTaxRuleAssociation]]:
+        """Load raw tenant-scoped history; status classification belongs to the service."""
+        associations: dict[uuid.UUID, List[ProductTaxRuleAssociation]] = {
+            product_id: [] for product_id in product_ids
+        }
+        if not product_ids:
+            return associations
+        result = await self.session.execute(
+            select(ProductTaxRuleAssignmentModel, ProductTaxRuleModel)
+            .join(
+                ProductTaxRuleModel,
+                ProductTaxRuleAssignmentModel.tax_rule_id == ProductTaxRuleModel.id,
+            )
+            .where(
+                ProductTaxRuleAssignmentModel.market_id == market_id,
+                ProductTaxRuleModel.market_id == market_id,
+                ProductTaxRuleAssignmentModel.product_id.in_(product_ids),
+            )
+            .order_by(
+                ProductTaxRuleAssignmentModel.product_id,
+                ProductTaxRuleAssignmentModel.effective_from,
+            )
+        )
+        for assignment, rule_model in result.all():
+            associations.setdefault(assignment.product_id, []).append(
+                ProductTaxRuleAssociation(
+                    association_id=assignment.id,
+                    effective_from=assignment.effective_from,
+                    effective_to=assignment.effective_to,
+                    rule=_to_product_tax_rule(rule_model),
+                )
+            )
+        return associations
 
     async def list_product_fiscal_status(
         self, market_id: uuid.UUID, product_ids: List[uuid.UUID], when: date
@@ -657,40 +717,7 @@ class SQLAlchemyProductTaxRuleRepository(ProductTaxRuleRepositoryInterface):
 
     @staticmethod
     def _validate_for_publication(rule: ProductTaxRule) -> None:
-        approved_groups = {
-            value.strip() for value in get_settings().FISCAL_APPROVED_ICMS_GROUPS.split(",") if value.strip()
-        }
-        group_requirements = {
-            "ICMSSN500": {
-                "required": {"cest", "icms_csosn", "icms_st_mod_bc", "icms_st_mva_rate", "icms_st_rate"},
-                "csosn": "500",
-                "cst": None,
-            },
-        }
-        if (
-            not rule.icms_group
-            or rule.icms_group not in approved_groups
-            or rule.icms_group not in group_requirements
-        ):
-            raise BusinessRuleException(
-                "O grupo ICMS informado não possui catálogo contábil homologado para publicação."
-            )
-
-        required_fields = {
-            "name", "effective_from", "ncm", "origin", "cfop", "icms_group", "pis_cst", "cofins_cst",
-            "approved_by", "approved_at",
-        }
-        group = group_requirements[rule.icms_group]
-        required_fields |= group["required"]
-        missing = sorted(field for field in required_fields if getattr(rule, field) is None)
-        if missing:
-            raise BusinessRuleException(
-                "Regra fiscal sem campos obrigatórios para publicação: " + ", ".join(missing) + "."
-            )
-        if rule.icms_csosn != group["csosn"] or rule.icms_cst != group["cst"]:
-            raise BusinessRuleException(
-                f"Grupo ICMS {rule.icms_group} exige CSOSN {group['csosn']} e não aceita CST."
-            )
+        TaxRuleService._validate_for_publication(rule)
 
 
 def _to_product_tax_rule(model: ProductTaxRuleModel) -> ProductTaxRule:

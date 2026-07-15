@@ -11,6 +11,10 @@ from types import SimpleNamespace
 import pytest
 
 
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+os.environ.setdefault("SECRET_KEY", "test-secret-key")
+
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "../../app"))
 if APP_DIR not in sys.path:
@@ -23,13 +27,16 @@ ACTOR_ID = uuid.uuid4()
 
 
 def published_st_rule(*, csosn: str = "500"):
-    from domain.fiscal import ProductTaxRule, ProductTaxRuleStatus
+    from domain.fiscal import ProductTaxRule, ProductTaxRuleStatus, TaxRegime
 
     return ProductTaxRule(
         market_id=MARKET_ID,
         name="Refrigerante ST",
         status=ProductTaxRuleStatus.PUBLISHED,
         effective_from=date.today(),
+        issuer_regime=TaxRegime.SIMPLES_NACIONAL,
+        destination_uf="GO",
+        document_model="65",
         ncm="22021000",
         cest="0300700",
         origin="0",
@@ -43,8 +50,42 @@ def published_st_rule(*, csosn: str = "500"):
         pis_rate=Decimal("0.00"),
         cofins_cst="07",
         cofins_rate=Decimal("0.00"),
+        tax_parameters={
+            "icms_mode": "retained_st",
+            "pis": {"group": "PIS07", "cst": "07"},
+            "cofins": {"group": "COFINS07", "cst": "07"},
+        },
+        approval={"reference": "Decreto GO 10.734/2025", "checksum": "a" * 64},
         approved_by=ACTOR_ID,
         approved_at=datetime.utcnow(),
+    )
+
+
+def publication_rule(*, group, regime, cst, csosn, mode, cest):
+    from domain.fiscal import ProductTaxRule
+
+    return ProductTaxRule(
+        market_id=MARKET_ID,
+        name=f"Regra {group}",
+        effective_from=date.today(),
+        issuer_regime=regime,
+        destination_uf="GO",
+        document_model="65",
+        ncm="22021000",
+        cest=cest,
+        origin="0",
+        cfop="5405" if mode == "retained_st" else "5102",
+        icms_group=group,
+        icms_cst=cst,
+        icms_csosn=csosn,
+        pis_cst="07",
+        cofins_cst="07",
+        tax_parameters={
+            "icms_mode": mode,
+            "pis": {"group": "PIS07", "cst": "07"},
+            "cofins": {"group": "COFINS07", "cst": "07"},
+        },
+        approval={"reference": "Decreto GO 10.734/2025", "checksum": "a" * 64},
     )
 
 
@@ -77,6 +118,15 @@ class AssignmentSession:
         )
         self.assignments = [existing_assignment] if existing_assignment else []
         self.added = []
+        self.get_calls = []
+
+    async def get(self, model, key, **kwargs):
+        self.get_calls.append((model, key, kwargs))
+        return SimpleNamespace(
+            id=key,
+            market_id=MARKET_ID,
+            status="published",
+        )
 
     async def execute(self, _query):
         if not hasattr(self, "_returned_products"):
@@ -99,9 +149,38 @@ def test_production_publication_validator_rejects_inconsistent_icmssn500_csosn(m
     from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
 
     get_settings.cache_clear()
-    with pytest.raises(BusinessRuleException, match="CSOSN"):
-        SQLAlchemyProductTaxRuleRepository._validate_for_publication(published_st_rule(csosn="102"))
+    with pytest.raises(BusinessRuleException):
+        SQLAlchemyProductTaxRuleRepository._validate_for_publication(
+            published_st_rule(csosn="102")
+        )
     get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("group", "regime_name", "cst", "csosn", "mode", "cest"),
+    [
+        ("ICMSSN102", "SIMPLES_NACIONAL", None, "102", "non_taxed", None),
+        ("ICMS40", "LUCRO_PRESUMIDO", "40", None, "non_taxed", None),
+        ("ICMSSN500", "SIMPLES_NACIONAL", None, "500", "retained_st", "0300700"),
+        ("ICMS60", "LUCRO_REAL", "60", None, "retained_st", "0300700"),
+    ],
+)
+def test_production_repository_uses_the_service_publication_matrix(
+    group, regime_name, cst, csosn, mode, cest
+):
+    from domain.fiscal import TaxRegime
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    SQLAlchemyProductTaxRuleRepository._validate_for_publication(
+        publication_rule(
+            group=group,
+            regime=getattr(TaxRegime, regime_name),
+            cst=cst,
+            csosn=csosn,
+            mode=mode,
+            cest=cest,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -123,6 +202,52 @@ async def test_production_repository_rejects_duplicate_product_id_before_creatin
         )
 
     assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_production_repository_rejects_missing_or_foreign_products_atomically():
+    from domain.fiscal import FiscalRuleError
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    session = AssignmentSession()
+    foreign_or_missing_id = uuid.uuid4()
+
+    with pytest.raises(FiscalRuleError) as error:
+        await SQLAlchemyProductTaxRuleRepository(session).assign_published_rule(
+            market_id=MARKET_ID,
+            product_ids=[PRODUCT_ID, foreign_or_missing_id],
+            rule=published_st_rule(),
+            effective_from=date.today(),
+            actor_id=ACTOR_ID,
+            reason="Reclassificação oficial",
+        )
+
+    assert error.value.code == "tax_rule.product_market_mismatch"
+    assert error.value.items == [{"product_id": str(foreign_or_missing_id)}]
+    assert session.added == []
+    assert session.product.tax_rule_id is None
+
+
+@pytest.mark.asyncio
+async def test_assignment_locks_the_rule_before_product_history_changes():
+    from infra.database.models import ProductTaxRuleModel
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    session = AssignmentSession()
+    rule = published_st_rule()
+
+    await SQLAlchemyProductTaxRuleRepository(session).assign_published_rule(
+        market_id=MARKET_ID,
+        product_ids=[PRODUCT_ID],
+        rule=rule,
+        effective_from=date.today(),
+        actor_id=ACTOR_ID,
+        reason="Reclassificação oficial",
+    )
+
+    assert session.get_calls == [
+        (ProductTaxRuleModel, rule.id, {"with_for_update": True})
+    ]
 
 
 @pytest.mark.asyncio

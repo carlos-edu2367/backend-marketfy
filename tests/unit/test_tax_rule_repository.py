@@ -41,6 +41,9 @@ class _Result:
     def scalars(self):
         return _Scalars(self._values)
 
+    def all(self):
+        return self._values
+
 
 class CapturingSession:
     def __init__(self, rows):
@@ -175,3 +178,34 @@ def test_repository_converts_frozen_evidence_to_native_json_containers() -> None
     assert type(model.approval_json) is dict
     assert type(model.approval_json["review"]["items"]) is list
     assert model.approval_json == {"review": {"items": [{"field": "ncm"}]}}
+
+
+@pytest.mark.asyncio
+async def test_pendency_history_query_is_tenant_scoped_and_returns_raw_associations() -> None:
+    from types import SimpleNamespace
+
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    assignment_id = uuid.uuid4()
+    assignment = SimpleNamespace(
+        id=assignment_id,
+        market_id=MARKET_ID,
+        product_id=PRODUCT_ID,
+        effective_from=date(2026, 7, 1),
+        effective_to=None,
+    )
+    session = CapturingSession([(assignment, _rule_model())])
+
+    result = await SQLAlchemyProductTaxRuleRepository(
+        session
+    ).list_product_rule_associations(MARKET_ID, [PRODUCT_ID])
+
+    association = result[PRODUCT_ID][0]
+    assert association.association_id == assignment_id
+    assert association.effective_from == date(2026, 7, 1)
+    assert association.rule.market_id == MARKET_ID
+    sql = _compiled_sql(session.statement)
+    assert "product_tax_rule_assignments.market_id" in sql
+    assert "product_tax_rules.market_id" in sql
+    assert str(MARKET_ID) in sql
+    assert str(PRODUCT_ID) in sql
