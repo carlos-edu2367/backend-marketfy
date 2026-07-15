@@ -199,7 +199,7 @@ class SaleModel(Base):
     customer_cpf = Column(String, nullable=True)
     offline_id = Column(String, nullable=True)
     synced_at = Column(DateTime, nullable=True)
-    received_at = Column(DateTime, nullable=True)
+    received_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Relacionamentos

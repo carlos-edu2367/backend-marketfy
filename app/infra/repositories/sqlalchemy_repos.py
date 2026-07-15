@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, cast, Date, extract
 from sqlalchemy.orm import selectinload
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Domain Interfaces & Entities
 from domain.interfaces import (
@@ -528,10 +528,14 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
             model.synced_at = sale.synced_at.replace(tzinfo=None)
         else:
             model.synced_at = sale.synced_at
-        if sale.received_at and sale.received_at.tzinfo:
-            model.received_at = sale.received_at.replace(tzinfo=None)
-        else:
-            model.received_at = sale.received_at
+        if sale.received_at:
+            # All persisted receipt times are an instant in UTC. The migration
+            # interprets preexisting naive values with the same UTC convention.
+            model.received_at = (
+                sale.received_at.replace(tzinfo=timezone.utc)
+                if sale.received_at.tzinfo is None
+                else sale.received_at.astimezone(timezone.utc)
+            )
             
         if sale.created_at and sale.created_at.tzinfo:
             model.created_at = sale.created_at.replace(tzinfo=None)
@@ -629,7 +633,11 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
             customer_cpf=m.customer_cpf,
             offline_id=m.offline_id,
             synced_at=m.synced_at,
-            received_at=m.received_at,
+            received_at=(
+                m.received_at.replace(tzinfo=timezone.utc)
+                if m.received_at and m.received_at.tzinfo is None
+                else m.received_at.astimezone(timezone.utc) if m.received_at else None
+            ),
         )
         s.id = m.id
         s.created_at = m.created_at

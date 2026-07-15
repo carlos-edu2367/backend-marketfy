@@ -96,6 +96,21 @@ def _decimal(value: Any, *, sku: str, field: str) -> Decimal:
     return _money(decimal)
 
 
+def _rate_decimal(value: Any, *, sku: str, field: str) -> Decimal:
+    """Validate approved rate input without applying currency rounding."""
+    try:
+        decimal = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise BusinessRuleException(
+            f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={field}; reason=decimal_invalid"
+        ) from exc
+    if not decimal.is_finite() or decimal.as_tuple().exponent < -4:
+        raise BusinessRuleException(
+            f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={field}; reason=rate_precision_invalid"
+        )
+    return decimal
+
+
 def _text(value: Any, *, sku: str, field: str, required: bool = True) -> Optional[str]:
     if value is None:
         if required:
@@ -114,6 +129,10 @@ def _text(value: Any, *, sku: str, field: str, required: bool = True) -> Optiona
 def _canonical_decimal(value: Decimal) -> str:
     """The only Decimal-to-string boundary for the Fiscal contract."""
     return f"{_money(value):.2f}"
+
+
+def _canonical_rate(value: Decimal) -> str:
+    return format(value, "f")
 
 
 @dataclass
@@ -135,24 +154,21 @@ class FiscalPreValidator:
 
     fiscal_snapshot_sha256 = staticmethod(fiscal_snapshot_sha256)
 
-    def _verify_snapshot_integrity(self, item, snapshot: Mapping[str, Any], *, sku: str) -> None:
+    def _verify_snapshot_integrity(self, item, snapshot: Mapping[str, Any], *, sku: str) -> bool:
         """Reject persisted snapshots altered after sale finalisation.
 
-        New domain items always expose these attributes. The ``hasattr`` guard
-        keeps compatibility with narrow legacy test doubles only; persisted
-        SaleItem entities with missing values are fail-closed.
+        The v1 calculation marker is the explicit rollout boundary. Legacy
+        supported emissions keep their prior validation path, while v1 sales
+        are fail-closed for a missing or altered integrity hash.
         """
-        if not hasattr(item, "snapshot_sha256"):
-            return
         if getattr(item, "fiscal_calculation_version", None) != CALCULATION_VERSION:
-            raise BusinessRuleException(
-                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=calculation_version; reason=unsupported"
-            )
+            return False
         stored_hash = getattr(item, "snapshot_sha256", None)
         if not isinstance(stored_hash, str) or stored_hash != fiscal_snapshot_sha256(snapshot):
             raise BusinessRuleException(
                 f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=snapshot_sha256; reason=mismatch"
             )
+        return True
 
     def _normalise_item_tax_snapshot(self, item, fiscal_config) -> dict:
         """Validate and serialise one immutable sale-item tax snapshot.
@@ -168,7 +184,7 @@ class FiscalPreValidator:
                 f"sale.fiscal_tax_snapshot_missing; sku={sku}; action=assign_published_tax_rule"
             )
 
-        self._verify_snapshot_integrity(item, snapshot, sku=sku)
+        is_v1_snapshot = self._verify_snapshot_integrity(item, snapshot, sku=sku)
 
         rule_id = _text(snapshot.get("rule_id"), sku=sku, field="rule_id")
         rule_version = snapshot.get("rule_version")
@@ -230,18 +246,29 @@ class FiscalPreValidator:
                 f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=icms.group; reason=incompatible_with_crt_3"
             )
 
-        icms_numbers = {
+        icms_money = {
             name: _decimal(icms.get(name), sku=sku, field=f"icms.{name}")
             for name in (
-                "own_base", "reduction_rate", "own_rate", "own_amount", "st_base",
-                "st_mva_rate", "st_rate", "st_amount", "fcp_rate", "fcp_amount",
+                "own_base", "own_amount", "st_base", "st_amount", "fcp_amount",
             )
         }
+        rate_fields = ("reduction_rate", "own_rate", "st_mva_rate", "st_rate", "fcp_rate")
+        icms_rates = (
+            {name: _rate_decimal(icms.get(name), sku=sku, field=f"icms.{name}") for name in rate_fields}
+            if is_v1_snapshot
+            else {
+                **{
+                    name: _decimal(icms.get(name), sku=sku, field=f"icms.{name}")
+                    for name in rate_fields if name != "st_mva_rate"
+                },
+                "st_mva_rate": Decimal("0.00"),
+            }
+        )
         expected_own_base = _money(
             _decimal(getattr(item, "total", None), sku=sku, field="item.total")
-            * (Decimal("1") - icms_numbers["reduction_rate"] / _HUNDRED)
+            * (Decimal("1") - icms_rates["reduction_rate"] / _HUNDRED)
         )
-        if icms_numbers["own_base"] != expected_own_base:
+        if icms_money["own_base"] != expected_own_base:
             raise BusinessRuleException(
                 f"fiscal.snapshot_amount_mismatch; sku={sku}; field=icms.own_base; "
                 f"expected={_canonical_decimal(expected_own_base)}"
@@ -255,29 +282,30 @@ class FiscalPreValidator:
                 f"fiscal.snapshot_amount_mismatch; sku={sku}; field=item.total; "
                 f"expected={_canonical_decimal(expected_item_total)}"
             )
-        expected_own_amount = _money(icms_numbers["own_base"] * icms_numbers["own_rate"] / _HUNDRED)
-        expected_st_base = _money(
-            icms_numbers["own_base"] * (Decimal("1") + icms_numbers["st_mva_rate"] / _HUNDRED)
-        ) if icms_numbers["st_rate"] > Decimal("0.00") else Decimal("0.00")
-        expected_st_amount = max(
-            _money(expected_st_base * icms_numbers["st_rate"] / _HUNDRED) - expected_own_amount,
-            Decimal("0.00"),
-        ) if icms_numbers["st_rate"] > Decimal("0.00") else Decimal("0.00")
-        expected_fcp_base = expected_st_base if icms_numbers["st_rate"] > Decimal("0.00") else expected_own_base
-        expected_fcp_amount = _money(expected_fcp_base * icms_numbers["fcp_rate"] / _HUNDRED)
-        expected_icms = {
-            "own_amount": expected_own_amount,
-            "st_base": expected_st_base,
-            "st_amount": expected_st_amount,
-            "fcp_amount": expected_fcp_amount,
-        }
-        for field, expected in expected_icms.items():
-            if icms_numbers[field] != expected:
-                raise BusinessRuleException(
-                    f"fiscal.snapshot_amount_mismatch; sku={sku}; field=icms.{field}; "
-                    f"expected={_canonical_decimal(expected)}"
-                )
-        if (icms_numbers["st_base"] > Decimal("0.00") or icms_numbers["st_amount"] > Decimal("0.00")) and not cest:
+        if is_v1_snapshot:
+            expected_own_amount = _money(icms_money["own_base"] * icms_rates["own_rate"] / _HUNDRED)
+            expected_st_base = _money(
+                icms_money["own_base"] * (Decimal("1") + icms_rates["st_mva_rate"] / _HUNDRED)
+            ) if icms_rates["st_rate"] > Decimal("0.00") else Decimal("0.00")
+            expected_st_amount = max(
+                _money(expected_st_base * icms_rates["st_rate"] / _HUNDRED) - expected_own_amount,
+                Decimal("0.00"),
+            ) if icms_rates["st_rate"] > Decimal("0.00") else Decimal("0.00")
+            expected_fcp_base = expected_st_base if icms_rates["st_rate"] > Decimal("0.00") else expected_own_base
+            expected_fcp_amount = _money(expected_fcp_base * icms_rates["fcp_rate"] / _HUNDRED)
+            expected_icms = {
+                "own_amount": expected_own_amount,
+                "st_base": expected_st_base,
+                "st_amount": expected_st_amount,
+                "fcp_amount": expected_fcp_amount,
+            }
+            for field, expected in expected_icms.items():
+                if icms_money[field] != expected:
+                    raise BusinessRuleException(
+                        f"fiscal.snapshot_amount_mismatch; sku={sku}; field=icms.{field}; "
+                        f"expected={_canonical_decimal(expected)}"
+                    )
+        if (icms_money["st_base"] > Decimal("0.00") or icms_money["st_amount"] > Decimal("0.00")) and not cest:
             raise BusinessRuleException(
                 f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=cest; reason=required_for_st"
             )
@@ -287,21 +315,26 @@ class FiscalPreValidator:
             cst = _text(section.get("cst"), sku=sku, field=f"{name}.cst")
             numbers = {
                 key: _decimal(section.get(key), sku=sku, field=f"{name}.{key}")
-                for key in ("base", "rate", "amount")
+                for key in ("base", "amount")
             }
+            rate = (
+                _rate_decimal(section.get("rate"), sku=sku, field=f"{name}.rate")
+                if is_v1_snapshot else _decimal(section.get("rate"), sku=sku, field=f"{name}.rate")
+            )
             expected_base = _decimal(getattr(item, "total", None), sku=sku, field="item.total")
-            expected_amount = _money(expected_base * numbers["rate"] / _HUNDRED)
-            if numbers["base"] != expected_base:
+            expected_amount = _money(expected_base * rate / _HUNDRED)
+            if is_v1_snapshot and numbers["base"] != expected_base:
                 raise BusinessRuleException(
                     f"fiscal.snapshot_amount_mismatch; sku={sku}; field={name}.base; "
                     f"expected={_canonical_decimal(expected_base)}"
                 )
-            if numbers["amount"] != expected_amount:
+            if is_v1_snapshot and numbers["amount"] != expected_amount:
                 raise BusinessRuleException(
                     f"fiscal.snapshot_amount_mismatch; sku={sku}; field={name}.amount; "
                     f"expected={_canonical_decimal(expected_amount)}"
                 )
-            return {"group": group, "cst": cst, **{key: _canonical_decimal(value) for key, value in numbers.items()}}
+            rate_value = _canonical_rate(rate) if is_v1_snapshot else _canonical_decimal(rate)
+            return {"group": group, "cst": cst, **{key: _canonical_decimal(value) for key, value in numbers.items()}, "rate": rate_value}
 
         return {
             "rule_id": rule_id,
@@ -314,7 +347,11 @@ class FiscalPreValidator:
                 "group": icms_group,
                 "cst": icms_cst,
                 "csosn": icms_csosn,
-                **{name: _canonical_decimal(value) for name, value in icms_numbers.items()},
+                **{name: _canonical_decimal(value) for name, value in icms_money.items()},
+                **{
+                    name: _canonical_rate(value) if is_v1_snapshot else _canonical_decimal(value)
+                    for name, value in icms_rates.items() if is_v1_snapshot or name != "st_mva_rate"
+                },
             },
             "pis": contribution("pis", pis),
             "cofins": contribution("cofins", cofins),
@@ -322,6 +359,11 @@ class FiscalPreValidator:
 
     def _normalise_sale_tax_snapshots(self, sale, fiscal_config) -> list[dict]:
         snapshots = [self._normalise_item_tax_snapshot(item, fiscal_config) for item in sale.items]
+        if not all(
+            getattr(item, "fiscal_calculation_version", None) == CALCULATION_VERSION
+            for item in sale.items
+        ):
+            return snapshots
         products_amount = _money(sum(
             (_decimal(getattr(item, "total", None), sku=str(getattr(item, "product_id", "unknown")), field="item.total") for item in sale.items),
             Decimal("0.00"),

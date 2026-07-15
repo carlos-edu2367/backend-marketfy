@@ -9,15 +9,20 @@ from typing import Any, Mapping
 
 CALCULATION_VERSION = "marketfy.fiscal-tax-calculation.v1"
 _MONEY = Decimal("0.01")
+_RATE_FIELDS = {
+    "reduction_rate", "own_rate", "st_mva_rate", "st_rate", "fcp_rate", "rate",
+}
 
 
-def _normalise(value: Any) -> Any:
+def _normalise(value: Any, path: tuple[str, ...] = ()) -> Any:
     if isinstance(value, Decimal):
+        if path and path[-1] in _RATE_FIELDS:
+            return format(value, "f")
         return f"{value.quantize(_MONEY, rounding=ROUND_HALF_UP):.2f}"
     if isinstance(value, Mapping):
-        return {str(key): _normalise(value[key]) for key in sorted(value, key=str)}
+        return {str(key): _normalise(value[key], path + (str(key),)) for key in sorted(value, key=str)}
     if isinstance(value, (list, tuple)):
-        return [_normalise(item) for item in value]
+        return [_normalise(item, path) for item in value]
     return value
 
 

@@ -14,6 +14,7 @@ if app_dir not in sys.path:
     sys.path.append(app_dir)
 
 from application.services.fiscal.fiscal_pre_validator import FiscalPreValidator
+from application.services.fiscal.snapshot_integrity import canonical_fiscal_snapshot_json, fiscal_snapshot_sha256
 from domain.shared import BusinessRuleException
 
 
@@ -41,6 +42,8 @@ class Item:
 @dataclass
 class Sale:
     items: list
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    market_id: uuid.UUID = field(default_factory=uuid.uuid4)
     payments: list = field(default_factory=list)
     total_amount: Decimal = Decimal("10.00")
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -72,3 +75,30 @@ def test_st_fcp_pis_and_cofins_amount_mismatch_blocks_emission():
 
         with pytest.raises(BusinessRuleException, match=r"fiscal\.snapshot_amount_mismatch"):
             FiscalPreValidator().build_neectify_payload(Sale([item]), Config(), "issuer")
+
+
+def test_rate_precision_survives_snapshot_persist_reload_and_revalidation():
+    item = signed_item()
+    item.fiscal_tax_snapshot["icms"]["st_mva_rate"] = Decimal("40.1234")
+    item.fiscal_tax_snapshot["icms"]["st_base"] = Decimal("14.01")
+    item.snapshot_sha256 = fiscal_snapshot_sha256(item.fiscal_tax_snapshot)
+
+    reloaded_snapshot = __import__("json").loads(canonical_fiscal_snapshot_json(item.fiscal_tax_snapshot))
+    item.fiscal_tax_snapshot = reloaded_snapshot
+
+    payload = FiscalPreValidator().build_neectify_payload(Sale([item]), Config(), "issuer")
+
+    assert reloaded_snapshot["icms"]["st_mva_rate"] == "40.1234"
+    assert payload["items"][0]["tax"]["icms"]["st_mva_rate"] == "40.1234"
+
+
+def test_legacy_snapshot_does_not_enter_v1_snapshot_reconciliation_barrier():
+    item = Item(fiscal_calculation_version=None, snapshot_sha256=None)
+    item.fiscal_tax_snapshot["icms"].pop("st_mva_rate", None)
+    item.fiscal_tax_snapshot["icms"]["st_amount"] = "0.71"
+
+    payload = FiscalPreValidator().build_neectify_payload(
+        Sale([item], total_amount=Decimal("9.00")), Config(), "issuer"
+    )
+
+    assert payload["items"][0]["tax"]["icms"]["st_amount"] == "0.71"
