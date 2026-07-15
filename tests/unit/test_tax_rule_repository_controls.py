@@ -52,8 +52,14 @@ def published_st_rule(*, csosn: str = "500"):
         cofins_rate=Decimal("0.00"),
         tax_parameters={
             "icms_mode": "retained_st",
-            "pis": {"group": "PIS07", "cst": "07"},
-            "cofins": {"group": "COFINS07", "cst": "07"},
+            "pis": {
+                "group": "PIS07", "cst": "07", "base": "0.00",
+                "rate": "0.0000", "amount": "0.00",
+            },
+            "cofins": {
+                "group": "COFINS07", "cst": "07", "base": "0.00",
+                "rate": "0.0000", "amount": "0.00",
+            },
         },
         approval={"reference": "Decreto GO 10.734/2025", "checksum": "a" * 64},
         approved_by=ACTOR_ID,
@@ -82,8 +88,14 @@ def publication_rule(*, group, regime, cst, csosn, mode, cest):
         cofins_cst="07",
         tax_parameters={
             "icms_mode": mode,
-            "pis": {"group": "PIS07", "cst": "07"},
-            "cofins": {"group": "COFINS07", "cst": "07"},
+            "pis": {
+                "group": "PIS07", "cst": "07", "base": "0.00",
+                "rate": "0.0000", "amount": "0.00",
+            },
+            "cofins": {
+                "group": "COFINS07", "cst": "07", "base": "0.00",
+                "rate": "0.0000", "amount": "0.00",
+            },
         },
         approval={"reference": "Decreto GO 10.734/2025", "checksum": "a" * 64},
     )
@@ -248,6 +260,39 @@ async def test_assignment_locks_the_rule_before_product_history_changes():
     assert session.get_calls == [
         (ProductTaxRuleModel, rule.id, {"with_for_update": True})
     ]
+
+
+@pytest.mark.asyncio
+async def test_assignment_normalizes_known_database_overlap_conflict():
+    from sqlalchemy.exc import IntegrityError
+
+    from domain.fiscal import FiscalRuleError
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    class ConflictingSession(AssignmentSession):
+        async def commit(self):
+            raise IntegrityError(
+                "insert assignment",
+                {},
+                Exception("ex_product_tax_rule_assignment_effective_range"),
+            )
+
+        async def rollback(self):
+            return None
+
+    with pytest.raises(FiscalRuleError) as error:
+        await SQLAlchemyProductTaxRuleRepository(
+            ConflictingSession()
+        ).assign_published_rule(
+            market_id=MARKET_ID,
+            product_ids=[PRODUCT_ID],
+            rule=published_st_rule(),
+            effective_from=date.today(),
+            actor_id=ACTOR_ID,
+            reason="Reclassificação oficial",
+        )
+
+    assert error.value.code == "tax_rule.assignment_conflict"
 
 
 @pytest.mark.asyncio

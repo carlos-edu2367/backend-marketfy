@@ -103,8 +103,20 @@ def publication_rule(**overrides) -> ProductTaxRule:
         "cofins_cst": "07",
         "tax_parameters": {
             "icms_mode": "non_taxed",
-            "pis": {"group": "PIS07", "cst": "07"},
-            "cofins": {"group": "COFINS07", "cst": "07"},
+            "pis": {
+                "group": "PIS07",
+                "cst": "07",
+                "base": "0.00",
+                "rate": "0.0000",
+                "amount": "0.00",
+            },
+            "cofins": {
+                "group": "COFINS07",
+                "cst": "07",
+                "base": "0.00",
+                "rate": "0.0000",
+                "amount": "0.00",
+            },
         },
         "approval": {
             "reference": "Decreto GO 10.734/2025, Anexo V-B",
@@ -168,8 +180,14 @@ async def test_publish_accepts_only_the_release_compatibility_matrix(
         cest=cest,
         tax_parameters={
             "icms_mode": mode,
-            "pis": {"group": "PIS07", "cst": "07"},
-            "cofins": {"group": "COFINS07", "cst": "07"},
+            "pis": {
+                "group": "PIS07", "cst": "07", "base": "0.00",
+                "rate": "0.0000", "amount": "0.00",
+            },
+            "cofins": {
+                "group": "COFINS07", "cst": "07", "base": "0.00",
+                "rate": "0.0000", "amount": "0.00",
+            },
         },
     )
     repository = LifecycleRuleRepository(rule)
@@ -204,6 +222,80 @@ async def test_publish_requires_verifiable_official_reference_and_checksum() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tax_parameters",
+    [
+        {
+            "icms_mode": "non_taxed",
+            "pis": {},
+            "cofins": {},
+        },
+        {
+            "icms_mode": "non_taxed",
+            "pis": {
+                "group": "PIS99",
+                "cst": "99",
+                "base": "0.00",
+                "rate": "0.0000",
+                "amount": "0.00",
+            },
+            "cofins": {
+                "group": "COFINS07",
+                "cst": "07",
+                "base": "0.00",
+                "rate": "0.0000",
+                "amount": "0.00",
+            },
+        },
+    ],
+)
+async def test_publish_rejects_incomplete_or_divergent_contribution_evidence(
+    tax_parameters,
+) -> None:
+    rule = publication_rule(tax_parameters=tax_parameters)
+    service = TaxRuleService(
+        LifecycleRuleRepository(rule), evidence_service=VerifiedEvidenceService()
+    )
+
+    with pytest.raises(FiscalRuleError) as error:
+        await service.publish(
+            market_id=MARKET_ID,
+            rule_id=rule.id,
+            approved_by=uuid.uuid4(),
+            source_storage_key=f"fiscal/homologacao/{MARKET_ID}/authorized.xml",
+        )
+
+    assert error.value.code == "tax_rule.contribution_invalid"
+    assert error.value.items
+
+
+class DivergentReviewerEvidenceService(VerifiedEvidenceService):
+    async def capture_approval(self, **kwargs):
+        kwargs["accountant_user_id"] = uuid.uuid4()
+        return await super().capture_approval(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_evidence_captured_for_another_reviewer() -> None:
+    rule = publication_rule()
+    authenticated_reviewer = uuid.uuid4()
+    service = TaxRuleService(
+        LifecycleRuleRepository(rule),
+        evidence_service=DivergentReviewerEvidenceService(),
+    )
+
+    with pytest.raises(FiscalRuleError) as error:
+        await service.publish(
+            market_id=MARKET_ID,
+            rule_id=rule.id,
+            approved_by=authenticated_reviewer,
+            source_storage_key=f"fiscal/homologacao/{MARKET_ID}/authorized.xml",
+        )
+
+    assert error.value.code == "tax_rule.reviewer_mismatch"
+
+
+@pytest.mark.asyncio
 async def test_publish_never_loads_a_rule_from_another_tenant() -> None:
     rule = publication_rule()
     repository = LifecycleRuleRepository(rule)
@@ -231,6 +323,15 @@ class AssignmentRuleRepository(LifecycleRuleRepository):
     async def assign_published_rule(self, **kwargs):
         self.assignment_calls.append(kwargs)
         return self.response
+
+
+class FailingAssignmentRepository(AssignmentRuleRepository):
+    def __init__(self, rule, error):
+        super().__init__(rule, response=None)
+        self.error = error
+
+    async def assign_published_rule(self, **kwargs):
+        raise self.error
 
 
 @pytest.mark.asyncio
@@ -294,6 +395,66 @@ async def test_assignment_rejects_missing_or_foreign_market_product_ids() -> Non
 
     assert error.value.code == "tax_rule.product_market_mismatch"
     assert error.value.items == [{"product_id": str(foreign_product_id)}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "code"),
+    [
+        (
+            "A associação fiscal deve vigorar na data atual.",
+            "tax_rule.assignment_date_invalid",
+        ),
+        (
+            "A regra fiscal publicada não está vigente para a associação.",
+            "tax_rule.rule_not_effective",
+        ),
+        (
+            "Conflito de vigência: o produto já possui regra fiscal para este período.",
+            "tax_rule.assignment_conflict",
+        ),
+    ],
+)
+async def test_assignment_normalizes_only_known_business_conflicts(
+    message, code
+) -> None:
+    from domain.shared import BusinessRuleException
+
+    rule = publication_rule(status=ProductTaxRuleStatus.PUBLISHED)
+    repository = FailingAssignmentRepository(rule, BusinessRuleException(message))
+
+    with pytest.raises(FiscalRuleError) as error:
+        await TaxRuleService(repository).assign_products(
+            market_id=MARKET_ID,
+            rule_id=rule.id,
+            product_ids=[PRODUCT_ID],
+            effective_from=date.today(),
+            actor_id=uuid.uuid4(),
+            reason="Reclassificação fiscal oficial",
+        )
+
+    assert error.value.code == code
+
+
+@pytest.mark.asyncio
+async def test_assignment_does_not_swallow_an_unknown_business_failure() -> None:
+    from domain.shared import BusinessRuleException
+
+    rule = publication_rule(status=ProductTaxRuleStatus.PUBLISHED)
+    unexpected = BusinessRuleException("Falha de persistência desconhecida.")
+    repository = FailingAssignmentRepository(rule, unexpected)
+
+    with pytest.raises(BusinessRuleException) as error:
+        await TaxRuleService(repository).assign_products(
+            market_id=MARKET_ID,
+            rule_id=rule.id,
+            product_ids=[PRODUCT_ID],
+            effective_from=date.today(),
+            actor_id=uuid.uuid4(),
+            reason="Reclassificação fiscal oficial",
+        )
+
+    assert error.value is unexpected
 
 
 def pendency_product(name: str, *, legacy_rule_id=None) -> Product:

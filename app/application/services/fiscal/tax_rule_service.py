@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol, Sequence
 
+from application.services.fiscal.tax_rule_calculator import TaxRuleCalculator
 from domain.fiscal import (
     FiscalRuleError,
     ProductTaxRule,
@@ -155,6 +156,18 @@ PENDENCY_STATUSES = (
     "legacy_only",
 )
 
+KNOWN_ASSIGNMENT_ERROR_CODES = {
+    "A associação fiscal deve vigorar na data atual.": (
+        "tax_rule.assignment_date_invalid"
+    ),
+    "A regra fiscal publicada não está vigente para a associação.": (
+        "tax_rule.rule_not_effective"
+    ),
+    "Conflito de vigência: o produto já possui regra fiscal para este período.": (
+        "tax_rule.assignment_conflict"
+    ),
+}
+
 
 class TaxRuleNotFoundError(BusinessRuleException):
     """No published, effective rule exists for a linked product."""
@@ -244,6 +257,11 @@ class TaxRuleService:
                 "A evidência fiscal não pertence à regra ou não possui "
                 "checksum verificável.",
             )
+        if approval.accountant_user_id != approved_by:
+            raise FiscalRuleError(
+                "tax_rule.reviewer_mismatch",
+                "A evidência fiscal foi capturada para outro revisor.",
+            )
 
         rule.approved_by = approved_by
         rule.approved_at = approval.approved_at
@@ -300,7 +318,10 @@ class TaxRuleService:
         except FiscalRuleError:
             raise
         except BusinessRuleException as exc:
-            raise FiscalRuleError("tax_rule.assignment_invalid", str(exc)) from exc
+            code = KNOWN_ASSIGNMENT_ERROR_CODES.get(str(exc))
+            if code is None:
+                raise
+            raise FiscalRuleError(code, str(exc)) from exc
 
         mismatches = [
             {"product_id": item["product_id"]}
@@ -453,22 +474,44 @@ class TaxRuleService:
                 [{"field": "cest", "reason": "required_for_retained_st"}],
             )
 
-        if not isinstance(parameters, Mapping) or not all(
-            isinstance(parameters.get(name), Mapping) for name in ("pis", "cofins")
+        contribution_items: list[dict[str, str]] = []
+        for name, rule_cst, expected_prefix in (
+            ("pis", rule.pis_cst, "PIS"),
+            ("cofins", rule.cofins_cst, "COFINS"),
         ):
-            raise FiscalRuleError(
-                "tax_rule.invalid",
-                "A publicação exige parâmetros explícitos de PIS e COFINS.",
-                [
-                    {"field": name, "reason": "required"}
-                    for name in ("tax_parameters.pis", "tax_parameters.cofins")
-                    if not isinstance(
-                        parameters.get(name)
-                        if isinstance(parameters, Mapping)
-                        else None,
-                        Mapping,
+            raw = parameters.get(name) if isinstance(parameters, Mapping) else None
+            if not isinstance(raw, Mapping):
+                contribution_items.append(
+                    {"field": f"tax_parameters.{name}", "reason": "required"}
+                )
+                continue
+            for field in ("group", "cst", "base", "rate", "amount"):
+                if field not in raw:
+                    contribution_items.append(
+                        {
+                            "field": f"tax_parameters.{name}.{field}",
+                            "reason": "required",
+                        }
                     )
-                ],
+            if raw.get("cst") != rule_cst:
+                contribution_items.append(
+                    {
+                        "field": f"tax_parameters.{name}.cst",
+                        "reason": "rule_cst_mismatch",
+                    }
+                )
+            if raw.get("group") != f"{expected_prefix}{rule_cst}":
+                contribution_items.append(
+                    {
+                        "field": f"tax_parameters.{name}.group",
+                        "reason": "rule_group_mismatch",
+                    }
+                )
+        if contribution_items:
+            raise FiscalRuleError(
+                "tax_rule.contribution_invalid",
+                "Parâmetros de PIS/COFINS estão incompletos ou divergentes da regra.",
+                contribution_items,
             )
 
         evidence = rule.approval
@@ -485,6 +528,15 @@ class TaxRuleService:
                 "tax_rule.evidence_required",
                 "A publicação exige referência oficial/revisão e checksum SHA-256.",
             )
+
+        try:
+            TaxRuleCalculator().calculate(item=None, rule=rule)  # type: ignore[arg-type]
+        except BusinessRuleException as exc:
+            raise FiscalRuleError(
+                "tax_rule.contribution_invalid",
+                str(exc),
+                [{"field": "tax_parameters", "reason": "invalid_contract_shape"}],
+            ) from exc
 
     async def resolve_for_sale_item(
         self,

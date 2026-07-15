@@ -347,16 +347,30 @@ class SQLAlchemyProductTaxRuleRepository(ProductTaxRuleRepositoryInterface):
     async def publish_rule_with_approval(
         self, rule: ProductTaxRule, approval: TaxRuleApproval
     ) -> ProductTaxRule:
-        model = await self.session.get(ProductTaxRuleModel, rule.id)
+        model = await self.session.get(
+            ProductTaxRuleModel, rule.id, with_for_update=True
+        )
         if model is None or model.market_id != rule.market_id:
-            raise BusinessRuleException("Regra fiscal não encontrada.")
+            raise FiscalRuleError("tax_rule.not_found", "Regra fiscal não encontrada.")
         if model.status != ProductTaxRuleStatus.DRAFT.value:
-            raise BusinessRuleException("Somente rascunhos fiscais podem ser publicados.")
+            raise FiscalRuleError(
+                "tax_rule.not_draft",
+                "Somente rascunhos fiscais podem ser publicados.",
+            )
 
         if approval.rule_id != rule.id:
-            raise BusinessRuleException("A aprovação contábil não pertence à regra fiscal.")
-        self._validate_for_publication(rule)
-        self._copy_rule_to_model(rule, model)
+            raise FiscalRuleError(
+                "tax_rule.evidence_required",
+                "A evidência fiscal não pertence à regra.",
+            )
+        if model.updated_at != rule.updated_at:
+            raise FiscalRuleError(
+                "tax_rule.stale_review",
+                "O rascunho mudou após a revisão; revise e capture nova evidência.",
+            )
+
+        canonical_rule = _to_product_tax_rule(model)
+        self._validate_for_publication(canonical_rule)
         self.session.add(
             TaxRuleApprovalModel(
                 rule_id=approval.rule_id,
@@ -366,6 +380,8 @@ class SQLAlchemyProductTaxRuleRepository(ProductTaxRuleRepositoryInterface):
                 approved_at=approval.approved_at,
             )
         )
+        model.approved_by = approval.accountant_user_id
+        model.approved_at = approval.approved_at
         model.status = ProductTaxRuleStatus.PUBLISHED.value
         model.updated_at = datetime.utcnow()
         await self.session.commit()
@@ -435,13 +451,25 @@ class SQLAlchemyProductTaxRuleRepository(ProductTaxRuleRepositoryInterface):
         Historical dates remain resolved by the durable assignment timeline.
         """
         if rule.status is not ProductTaxRuleStatus.PUBLISHED:
-            raise BusinessRuleException("Somente regras fiscais publicadas podem ser atribuídas.")
+            raise FiscalRuleError(
+                "tax_rule.not_published",
+                "Somente regras fiscais publicadas podem ser atribuídas.",
+            )
         if len(set(product_ids)) != len(product_ids):
-            raise BusinessRuleException("A associação em massa contém produto duplicado.")
+            raise FiscalRuleError(
+                "tax_rule.duplicate_product",
+                "A associação em massa contém produto duplicado.",
+            )
         if effective_from != date.today():
-            raise BusinessRuleException("A associação fiscal deve vigorar na data atual.")
+            raise FiscalRuleError(
+                "tax_rule.assignment_date_invalid",
+                "A associação fiscal deve vigorar na data atual.",
+            )
         if not rule.is_effective_on(effective_from):
-            raise BusinessRuleException("A regra fiscal publicada não está vigente para a associação.")
+            raise FiscalRuleError(
+                "tax_rule.rule_not_effective",
+                "A regra fiscal publicada não está vigente para a associação.",
+            )
 
         locked_rule = await self.session.get(
             ProductTaxRuleModel, rule.id, with_for_update=True
@@ -545,8 +573,9 @@ class SQLAlchemyProductTaxRuleRepository(ProductTaxRuleRepositoryInterface):
                     "ex_product_tax_rule_assignment_effective_range" in str(exc)
                     or sqlstate == "40P01"
                 ):
-                    raise BusinessRuleException(
-                        "Conflito de vigência: o produto já possui regra fiscal para este período."
+                    raise FiscalRuleError(
+                        "tax_rule.assignment_conflict",
+                        "Conflito de vigência: o produto já possui regra fiscal para este período.",
                     ) from exc
                 raise
         return updated, skipped, audit_changes

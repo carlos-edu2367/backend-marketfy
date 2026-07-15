@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -178,6 +178,83 @@ def test_repository_converts_frozen_evidence_to_native_json_containers() -> None
     assert type(model.approval_json) is dict
     assert type(model.approval_json["review"]["items"]) is list
     assert model.approval_json == {"review": {"items": [{"field": "ncm"}]}}
+
+
+class PublishingSession:
+    def __init__(self, model):
+        self.model = model
+        self.get_calls = []
+        self.added = []
+        self.commits = 0
+
+    async def get(self, model_type, key, **kwargs):
+        self.get_calls.append((model_type, key, kwargs))
+        return self.model
+
+    def add(self, model):
+        self.added.append(model)
+
+    async def commit(self):
+        self.commits += 1
+
+    async def refresh(self, _model):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_publication_locks_and_rejects_a_draft_changed_after_review() -> None:
+    from domain.fiscal import FiscalRuleError, TaxRuleApproval
+    from infra.repositories.fiscal_repo import (
+        SQLAlchemyProductTaxRuleRepository,
+        _to_product_tax_rule,
+    )
+
+    reviewed_at = datetime(2026, 7, 15, 12, 0, 0)
+    model = _rule_model()
+    model.status = "draft"
+    model.cest = "0300700"
+    model.icms_csosn = "500"
+    model.pis_cst = "07"
+    model.cofins_cst = "07"
+    model.tax_parameters_json = {
+        "icms_mode": "retained_st",
+        "pis": {
+            "group": "PIS07", "cst": "07", "base": "0.00",
+            "rate": "0.0000", "amount": "0.00",
+        },
+        "cofins": {
+            "group": "COFINS07", "cst": "07", "base": "0.00",
+            "rate": "0.0000", "amount": "0.00",
+        },
+    }
+    model.approval_json = {"reference": "Decreto GO", "checksum": "a" * 64}
+    model.created_at = reviewed_at
+    model.updated_at = reviewed_at
+    reviewed_rule = _to_product_tax_rule(model)
+
+    model.name = "Editada concorrentemente"
+    model.updated_at = datetime(2026, 7, 15, 12, 1, 0)
+    session = PublishingSession(model)
+    approval = TaxRuleApproval.from_verified_artifact(
+        rule_id=reviewed_rule.id,
+        accountant_user_id=uuid.uuid4(),
+        homologation_xml_storage_key=f"fiscal/homologacao/{MARKET_ID}/authorized.xml",
+        canonical_xml=b"<NFe/>",
+    )
+
+    with pytest.raises(FiscalRuleError) as error:
+        await SQLAlchemyProductTaxRuleRepository(session).publish_rule_with_approval(
+            reviewed_rule, approval
+        )
+
+    assert error.value.code == "tax_rule.stale_review"
+    assert session.get_calls == [
+        (ProductTaxRuleModel, reviewed_rule.id, {"with_for_update": True})
+    ]
+    assert model.name == "Editada concorrentemente"
+    assert model.status == "draft"
+    assert session.added == []
+    assert session.commits == 0
 
 
 @pytest.mark.asyncio
