@@ -1,11 +1,34 @@
 import hashlib
 import uuid
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, ClassVar, FrozenSet, Optional, List
 from datetime import date, datetime
 from decimal import Decimal
 from domain.shared import Entity, BusinessRuleException
+
+
+def _deep_freeze_json(value: Any) -> Any:
+    """Detach and recursively freeze a JSON-compatible value."""
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _deep_freeze_json(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze_json(item) for item in value)
+    return deepcopy(value)
+
+
+def _deep_mutable_json(value: Any) -> Any:
+    """Create an independent mutable JSON-compatible value."""
+    if isinstance(value, Mapping):
+        return {key: _deep_mutable_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_deep_mutable_json(item) for item in value]
+    return deepcopy(value)
 
 # =============================================================================
 # ENUMS
@@ -451,8 +474,8 @@ class ProductTaxRule(Entity):
     cofins_cst: Optional[str] = None
     cofins_rate: Optional[Decimal] = None
 
-    tax_parameters: Optional[dict[str, Any]] = None
-    approval: Optional[dict[str, Any]] = None
+    tax_parameters: Optional[Mapping[str, Any]] = None
+    approval: Optional[Mapping[str, Any]] = None
 
     approved_by: Optional[uuid.UUID] = None
     approved_at: Optional[datetime] = None
@@ -493,10 +516,15 @@ class ProductTaxRule(Entity):
         "approved_by",
         "approved_at",
     })
+    _DEEPLY_IMMUTABLE_FIELDS: ClassVar[FrozenSet[str]] = frozenset({
+        "tax_parameters",
+        "approval",
+    })
 
     def __setattr__(self, name: str, value) -> None:
+        published = self.__dict__.get("_published_version", False)
         if (
-            self.__dict__.get("_published_version", False)
+            published
             and name in self._IMMUTABLE_BUSINESS_FIELDS
             and name in self.__dict__
             and value != self.__dict__[name]
@@ -505,8 +533,18 @@ class ProductTaxRule(Entity):
                 "Uma regra fiscal publicada é imutável; crie uma nova versão para corrigi-la."
             )
 
+        if published and name in self._DEEPLY_IMMUTABLE_FIELDS:
+            value = _deep_freeze_json(value)
+
         object.__setattr__(self, name, value)
         if name == "status" and self._is_published_status(value):
+            for field_name in self._DEEPLY_IMMUTABLE_FIELDS:
+                if field_name in self.__dict__:
+                    object.__setattr__(
+                        self,
+                        field_name,
+                        _deep_freeze_json(self.__dict__[field_name]),
+                    )
             object.__setattr__(self, "_published_version", True)
 
     def __post_init__(self) -> None:
@@ -561,8 +599,8 @@ class ProductTaxRule(Entity):
             pis_rate=self.pis_rate,
             cofins_cst=self.cofins_cst,
             cofins_rate=self.cofins_rate,
-            tax_parameters=self.tax_parameters.copy() if self.tax_parameters is not None else None,
-            approval=self.approval.copy() if self.approval is not None else None,
+            tax_parameters=_deep_mutable_json(self.tax_parameters),
+            approval=_deep_mutable_json(self.approval),
         )
 
     def is_effective_on(self, when: date) -> bool:

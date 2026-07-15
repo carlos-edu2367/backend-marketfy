@@ -126,6 +126,54 @@ def test_published_rule_context_and_evidence_are_immutable() -> None:
         rule.approval = None
 
 
+def test_published_rule_deeply_freezes_nested_context_and_evidence() -> None:
+    rule = make_rule(
+        status=TaxRuleStatus.PUBLISHED,
+        tax_parameters={"icms": {"rates": ["18.00"]}},
+        approval={"review": {"items": [{"field": "ncm"}]}},
+    )
+
+    with pytest.raises(TypeError):
+        rule.tax_parameters["icms"]["new_field"] = "forbidden"
+    with pytest.raises(AttributeError):
+        rule.tax_parameters["icms"]["rates"].append("12.00")
+    with pytest.raises(TypeError):
+        rule.approval["review"]["items"][0]["field"] = "cfop"
+
+
+def test_published_rule_is_isolated_from_external_constructor_references() -> None:
+    tax_parameters = {"icms": {"rates": ["18.00"]}}
+    approval = {"review": {"items": [{"field": "ncm"}]}}
+    rule = make_rule(
+        status=TaxRuleStatus.PUBLISHED,
+        tax_parameters=tax_parameters,
+        approval=approval,
+    )
+
+    tax_parameters["icms"]["rates"].append("12.00")
+    approval["review"]["items"][0]["field"] = "cfop"
+
+    assert list(rule.tax_parameters["icms"]["rates"]) == ["18.00"]
+    assert rule.approval["review"]["items"][0]["field"] == "ncm"
+
+
+def test_successor_has_independent_deeply_mutable_evidence() -> None:
+    published = make_rule(
+        status=TaxRuleStatus.PUBLISHED,
+        tax_parameters={"icms": {"rates": ["18.00"]}},
+        approval={"review": {"items": [{"field": "ncm"}]}},
+    )
+
+    successor = published.create_successor(effective_from=date(2026, 8, 1))
+    successor.tax_parameters["icms"]["rates"].append("12.00")
+    successor.approval["review"]["items"][0]["field"] = "cfop"
+
+    assert successor.tax_parameters["icms"]["rates"] == ["18.00", "12.00"]
+    assert successor.approval["review"]["items"][0]["field"] == "cfop"
+    assert list(published.tax_parameters["icms"]["rates"]) == ["18.00"]
+    assert published.approval["review"]["items"][0]["field"] == "ncm"
+
+
 def test_structured_fiscal_rule_error_exposes_code_and_items() -> None:
     items = [{"field": "ncm", "reason": "required"}]
     error = FiscalRuleError("fiscal.rule_invalid", "Regra inválida", items)

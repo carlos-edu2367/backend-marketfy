@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Mapping
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
@@ -70,6 +72,15 @@ from infra.database.models import (
     ProductTaxRuleAssignmentModel,
     ProductModel,
 )
+
+
+def _to_native_json(value):
+    """Detach frozen domain evidence into JSON-native mutable containers."""
+    if isinstance(value, Mapping):
+        return {key: _to_native_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_native_json(item) for item in value]
+    return deepcopy(value)
 
 
 # =============================================================================
@@ -641,8 +652,8 @@ class SQLAlchemyProductTaxRuleRepository(ProductTaxRuleRepositoryInterface):
             if field == "issuer_regime" and value is not None:
                 value = value.value
             setattr(model, field, value)
-        model.tax_parameters_json = rule.tax_parameters
-        model.approval_json = rule.approval
+        model.tax_parameters_json = _to_native_json(rule.tax_parameters)
+        model.approval_json = _to_native_json(rule.approval)
 
     @staticmethod
     def _validate_for_publication(rule: ProductTaxRule) -> None:

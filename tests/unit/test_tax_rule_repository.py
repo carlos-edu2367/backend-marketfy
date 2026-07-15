@@ -148,3 +148,30 @@ async def test_effective_rule_fails_closed_on_ambiguous_history() -> None:
             product_id=PRODUCT_ID,
             on_date=ON_DATE,
         )
+
+
+def test_repository_converts_frozen_evidence_to_native_json_containers() -> None:
+    from domain.fiscal_tax import ProductTaxRule, TaxRegime, TaxRuleStatus
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    rule = ProductTaxRule(
+        market_id=MARKET_ID,
+        name="Bebidas ST",
+        status=TaxRuleStatus.PUBLISHED,
+        effective_from=date(2026, 7, 1),
+        issuer_regime=TaxRegime.SIMPLES_NACIONAL,
+        destination_uf="GO",
+        document_model="65",
+        tax_parameters={"icms": {"rates": ["18.00"]}},
+        approval={"review": {"items": [{"field": "ncm"}]}},
+    )
+    model = ProductTaxRuleModel(id=rule.id)
+
+    SQLAlchemyProductTaxRuleRepository._copy_rule_to_model(rule, model)
+
+    assert type(model.tax_parameters_json) is dict
+    assert type(model.tax_parameters_json["icms"]["rates"]) is list
+    assert model.tax_parameters_json == {"icms": {"rates": ["18.00"]}}
+    assert type(model.approval_json) is dict
+    assert type(model.approval_json["review"]["items"]) is list
+    assert model.approval_json == {"review": {"items": [{"field": "ncm"}]}}
