@@ -110,8 +110,10 @@ def make_fiscal_config():
     return factory
 
 
-def test_legacy_neectify_payload_keeps_current_shape(make_sale, make_fiscal_config) -> None:
-    payload = FiscalPreValidator().build_neectify_payload(
+def test_off_warn_legacy_neectify_payload_keeps_current_shape(
+    make_sale, make_fiscal_config
+) -> None:
+    payload = FiscalPreValidator().build_legacy_neectify_payload(
         make_sale(ncm="22021000"), make_fiscal_config(default_cfop="5102"), "iss_1"
     )
     assert "contract_version" not in payload
