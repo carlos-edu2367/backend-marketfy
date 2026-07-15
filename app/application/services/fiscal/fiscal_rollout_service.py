@@ -9,6 +9,10 @@ from domain.fiscal import FiscalRuleEnforcement
 class FiscalRolloutTransitionError(Exception):
     code = "fiscal.rule_enforcement_transition_invalid"
 
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code or self.code
+
 
 class FiscalRolloutService:
     def __init__(self, config_repository, readiness_provider):

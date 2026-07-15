@@ -226,6 +226,50 @@ def test_cashier_has_no_fiscal_permission_but_manager_can_review() -> None:
     assert role_has_permission(UserRole.MANAGER, MarketPermission.FISCAL_WRITE)
 
 
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    [
+        pytest.param("owner", True, id="owner"),
+        pytest.param("manager", True, id="manager"),
+        pytest.param("accountant", False, id="accountant"),
+        pytest.param("cashier", False, id="cashier"),
+    ],
+)
+def test_enforcement_gate_allows_only_owner_or_manager(role: str, allowed: bool) -> None:
+    from domain.identity import UserRole
+    from infra.web.routers.fiscal_tax_rules import assert_enforcement_role
+
+    owner_id = uuid.uuid4()
+    user_id = owner_id if role == "owner" else uuid.uuid4()
+    market = SimpleNamespace(owner_id=owner_id)
+    user = SimpleNamespace(id=user_id, role=UserRole(role))
+
+    if allowed:
+        assert assert_enforcement_role(current_user=user, market=market) is market
+    else:
+        with pytest.raises(HTTPException) as error:
+            assert_enforcement_role(current_user=user, market=market)
+        assert error.value.status_code == 403
+        assert error.value.detail["code"] == "fiscal.rule_enforcement_forbidden"
+
+
+def test_rollout_context_uses_tenant_data_and_rejects_unsupported_context() -> None:
+    from application.services.fiscal.fiscal_rollout_service import (
+        FiscalRolloutTransitionError,
+    )
+    from infra.web.routers.fiscal_tax_rules import rollout_context_from_tenant_config
+
+    supported = SimpleNamespace(address_json={"uf": "GO"}, nfce_series=1)
+    assert rollout_context_from_tenant_config(supported) == ("GO", "65")
+
+    unsupported = SimpleNamespace(
+        address_json={"uf": "SP"}, nfce_series=1, document_model="55"
+    )
+    with pytest.raises(FiscalRolloutTransitionError) as error:
+        rollout_context_from_tenant_config(unsupported)
+    assert error.value.code == "fiscal.rule_enforcement_context_unsupported"
+
+
 @pytest.mark.asyncio
 async def test_preflight_aggregates_every_product_error_without_writes() -> None:
     from application.services.fiscal.tax_rule_service import (
@@ -311,3 +355,71 @@ async def test_preflight_aggregates_every_product_error_without_writes() -> None
         str(missing_id),
         str(ambiguous_id),
     }
+
+
+@pytest.mark.asyncio
+async def test_preflight_off_validates_every_item_without_writes() -> None:
+    from application.services.fiscal.tax_rule_service import TaxRuleNotFoundError
+    from application.services.sales_service import SalesService
+    from domain.fiscal import FiscalRuleEnforcement
+
+    known_id = uuid.uuid4()
+    unknown_id = uuid.uuid4()
+    product = SimpleNamespace(
+        id=known_id,
+        market_id=MARKET_ID,
+        name="Sem regra",
+        price=Decimal("10.00"),
+    )
+
+    class ProductReadsOnly:
+        async def get_by_id(self, product_id):
+            return product if product_id == known_id else None
+
+        async def save(self, *_args, **_kwargs):
+            raise AssertionError("preflight must not write products")
+
+    class ConfigReadsOnly:
+        async def get_by_market(self, _market_id):
+            return SimpleNamespace(fiscal_rule_enforcement=FiscalRuleEnforcement.OFF)
+
+        async def save(self, *_args, **_kwargs):
+            raise AssertionError("preflight must not write config")
+
+    class Resolver:
+        async def resolve_for_sale_item(self, *, product_id, **_kwargs):
+            assert product_id == known_id
+            raise TaxRuleNotFoundError("missing")
+
+    write_guard = SimpleNamespace(
+        save=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("preflight must not write")
+        )
+    )
+    service = SalesService(
+        sale_repo=write_guard,
+        box_repo=write_guard,
+        product_repo=ProductReadsOnly(),
+        market_repo=write_guard,
+        terminal_repo=write_guard,
+        user_repo=write_guard,
+        plan_repo=write_guard,
+        financial_repo=write_guard,
+        fiscal_config_repo=ConfigReadsOnly(),
+        tax_rule_service=Resolver(),
+    )
+
+    enforcement, errors = await service.fiscal_preflight(
+        market_id=MARKET_ID,
+        occurred_at=datetime(2026, 7, 15, 12, tzinfo=timezone.utc),
+        items=[
+            SimpleNamespace(product_id=unknown_id, quantity=Decimal("1")),
+            SimpleNamespace(product_id=known_id, quantity=Decimal("1")),
+        ],
+    )
+
+    assert enforcement is FiscalRuleEnforcement.OFF
+    assert [error["code"] for error in errors] == [
+        "sale.product_not_found",
+        "sale.fiscal_rule_missing",
+    ]

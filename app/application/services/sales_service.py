@@ -415,8 +415,6 @@ class SalesService:
     ) -> tuple[FiscalRuleEnforcement, list[dict]]:
         """Evaluate the same rule resolver/calculator as checkout, without writes."""
         enforcement = await self._get_fiscal_rule_enforcement(market_id)
-        if enforcement is FiscalRuleEnforcement.OFF:
-            return enforcement, []
 
         prepared_items = []
         fiscal_errors = []

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+import json
 from datetime import date
 from functools import partial
 
@@ -22,7 +23,7 @@ from application.services.fiscal.fiscal_rollout_service import (
 from application.services.fiscal.tax_rule_service import TaxRuleService
 from application.services.sales_service import SalesService
 from domain.fiscal import FiscalRuleError
-from domain.identity import User
+from domain.identity import User, UserRole
 from infra.database.setup import get_db
 from infra.observability.audit import record_audit_event
 from infra.security.market_access import MarketPermission
@@ -41,6 +42,48 @@ def _tax_rule_service(db: AsyncSession) -> TaxRuleService:
     from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
 
     return TaxRuleService(SQLAlchemyProductTaxRuleRepository(db))
+
+
+def assert_enforcement_role(*, current_user: User, market):
+    """Restrict fiscal rollout changes to the market owner or a manager."""
+    if market.owner_id == current_user.id or current_user.role is UserRole.MANAGER:
+        return market
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "fiscal.rule_enforcement_forbidden",
+            "message": "Apenas o proprietário ou gerente pode alterar o enforcement fiscal.",
+        },
+    )
+
+
+async def require_enforcement_access(
+    current_user: User = Depends(get_current_user),
+    market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
+):
+    return assert_enforcement_role(current_user=current_user, market=market)
+
+
+def rollout_context_from_tenant_config(config) -> tuple[str, str]:
+    """Read the tenant's real NFC-e context and fail closed outside the rollout."""
+    address = getattr(config, "address_json", None)
+    if isinstance(address, str):
+        try:
+            address = json.loads(address)
+        except (TypeError, ValueError):
+            address = None
+    address = address if isinstance(address, dict) else {}
+    destination_uf = address.get("uf")
+    document_model = getattr(config, "document_model", None)
+    if document_model is None and getattr(config, "nfce_series", None):
+        document_model = "65"
+
+    if destination_uf != "GO" or document_model != "65":
+        raise FiscalRolloutTransitionError(
+            "O rollout de regras fiscais suporta apenas Goiás/NFC-e modelo 65.",
+            code="fiscal.rule_enforcement_context_unsupported",
+        )
+    return destination_uf, document_model
 
 
 async def assign_tax_rule_products(
@@ -151,14 +194,15 @@ async def _market_is_ready_for_enforcement(
     config = await SQLAlchemyFiscalTenantConfigRepository(db).get_by_market(market_id)
     if config is None or config.tax_regime is None:
         return False
+    destination_uf, document_model = rollout_context_from_tenant_config(config)
     products = await SQLAlchemyProductRepository(db).list_by_market(market_id)
     report = await _tax_rule_service(db).list_pendencies(
         market_id=market_id,
         products=products,
         when=date.today(),
         issuer_regime=config.tax_regime,
-        destination_uf="GO",
-        document_model="65",
+        destination_uf=destination_uf,
+        document_model=document_model,
     )
     return report.summary["configured"] == report.summary["total"]
 
@@ -171,7 +215,7 @@ async def update_product_rule_enforcement(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     audit: AuditService = Depends(get_audit_service),
-    market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
+    market=Depends(require_enforcement_access),
 ):
     from infra.repositories.fiscal_repo import SQLAlchemyFiscalTenantConfigRepository
 
