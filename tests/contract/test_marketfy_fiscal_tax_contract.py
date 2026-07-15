@@ -16,12 +16,12 @@ app_dir = os.path.abspath(os.path.join(current_dir, "../../app"))
 if app_dir not in sys.path:
     sys.path.append(app_dir)
 
-from application.services.fiscal.fiscal_pre_validator import FiscalPreValidator
-from application.services.fiscal.snapshot_integrity import (
+from application.services.fiscal.fiscal_pre_validator import FiscalPreValidator  # noqa: E402
+from application.services.fiscal.snapshot_integrity import (  # noqa: E402
     CALCULATION_VERSION,
     fiscal_snapshot_sha256,
 )
-from domain.shared import BusinessRuleException
+from domain.shared import BusinessRuleException  # noqa: E402
 
 
 @dataclass

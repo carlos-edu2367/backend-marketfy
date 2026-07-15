@@ -11,9 +11,9 @@ app_dir = os.path.abspath(os.path.join(current_dir, "../../app"))
 if app_dir not in sys.path:
     sys.path.append(app_dir)
 
-from application.services.fiscal.tax_rule_calculator import TaxRuleCalculator
-from domain.fiscal import ProductTaxRule, ProductTaxRuleStatus
-from domain.sales import SaleItem
+from application.services.fiscal.tax_rule_calculator import TaxRuleCalculator  # noqa: E402
+from domain.fiscal import ProductTaxRule, ProductTaxRuleStatus  # noqa: E402
+from domain.sales import SaleItem  # noqa: E402
 
 
 def make_st_rule(**overrides) -> ProductTaxRule:

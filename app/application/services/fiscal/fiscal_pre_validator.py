@@ -447,7 +447,7 @@ class FiscalPreValidator:
                     )
                 amount = getattr(pay, "amount", 0)
                 if float(amount) <= 0:
-                    result.add_error(f"Pagamento com valor zero ou negativo.")
+                    result.add_error("Pagamento com valor zero ou negativo.")
 
         # CPF do consumidor
         if customer_cpf:
