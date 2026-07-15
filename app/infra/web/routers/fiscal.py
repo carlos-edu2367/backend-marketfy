@@ -33,10 +33,12 @@ from application.dtos import (
     ProductTaxRuleDraftUpdateDTO,
     ProductTaxRulePublishDTO,
     ProductTaxRuleSuccessorDTO,
+    TaxRuleSefazAuthorizationDTO,
 )
 from domain.identity import User
 from domain.shared import BusinessRuleException
 from domain.fiscal import FiscalAuthError, FiscalValidationError
+from domain.fiscal import ProductTaxRuleStatus
 from infra.observability.audit import record_audit_event
 from infra.observability.metrics import metrics_registry
 from infra.config.logger import get_logger
@@ -819,6 +821,48 @@ async def publish_tax_rule(
         metadata={"approved_by": str(saved.approved_by), "approved_at": saved.approved_at.isoformat()},
     )
     return _tax_rule_response(saved)
+
+
+@router.post("/{market_id}/tax-rules/{rule_id}/sefaz-authorization", tags=["fiscal"])
+async def record_tax_rule_sefaz_authorization(
+    request: Request,
+    market_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    dto: TaxRuleSefazAuthorizationDTO,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+    market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
+):
+    """Persist accountant-recorded proof from an internally authorized XML only."""
+    from application.services.fiscal.tax_rule_approval_evidence import TaxRuleApprovalArtifactError
+    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+
+    repo = SQLAlchemyProductTaxRuleRepository(db)
+    rule = await repo.get_rule(market_id, rule_id)
+    if rule is None:
+        raise HTTPException(404, "Regra fiscal não encontrada.")
+    if rule.status is not ProductTaxRuleStatus.PUBLISHED:
+        raise HTTPException(400, "A evidência SEFAZ exige uma regra fiscal publicada.")
+    await _require_tax_rule_accountant(db=db, market_id=market_id, current_user=current_user)
+    try:
+        authorization = await _get_tax_rule_approval_evidence_service(db).capture_sefaz_authorization(
+            rule_id=rule.id,
+            market_id=market_id,
+            accountant_user_id=current_user.id,
+            source_storage_key=dto.source_storage_key,
+        )
+        await repo.save_sefaz_authorization(authorization)
+    except TaxRuleApprovalArtifactError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "tax_rule.sefaz_authorization_invalid", "message": str(exc)},
+        )
+    await record_audit_event(
+        audit, request, actor=current_user, action="fiscal.tax_rule.sefaz_authorization_recorded",
+        resource_type="product_tax_rule", resource_id=str(rule.id), result="success", market_id=market_id,
+    )
+    return {"rule_id": str(rule.id), "recorded": True}
 
 
 @router.post("/{market_id}/tax-rules/{rule_id}/successor", status_code=201, tags=["fiscal"])

@@ -562,6 +562,13 @@ class ProductTaxRulePublishDTO(BaseModel):
     homologation_xml_storage_key: str = Field(min_length=1, max_length=2048)
 
 
+class TaxRuleSefazAuthorizationDTO(BaseModel):
+    """Accountant-supplied reference; all authorization metadata is server-derived."""
+
+    model_config = ConfigDict(extra="forbid")
+    source_storage_key: str = Field(min_length=1, max_length=2048)
+
+
 class ProductTaxRuleSuccessorDTO(BaseModel):
     model_config = ConfigDict(extra="forbid")
     effective_from: date
