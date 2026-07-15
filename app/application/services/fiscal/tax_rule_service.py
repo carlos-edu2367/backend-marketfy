@@ -190,13 +190,27 @@ class FiscalRuleAmbiguousError(BusinessRuleException):
         }
 
 
-class FiscalRuleMissingError(BusinessRuleException):
+class FiscalRuleMissingError(FiscalRuleError):
     code = "sale.fiscal_rule_missing"
 
-    def __init__(self, affected_products: list[dict[str, str]]):
+    def __init__(
+        self,
+        affected_products: list[dict[str, str]],
+        *,
+        items: list[dict[str, str]] | None = None,
+    ):
         self.affected_products = affected_products
         super().__init__(
-            "Há produtos sem regra fiscal publicada e vigente para emissão NFC-e."
+            self.code,
+            "Há produtos sem regra fiscal publicada e vigente para emissão NFC-e.",
+            items or [
+                {
+                    "code": self.code,
+                    "product_id": product["id"],
+                    "product_name": product["name"],
+                }
+                for product in affected_products
+            ],
         )
 
     def details(self) -> dict:

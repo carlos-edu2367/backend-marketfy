@@ -1,4 +1,5 @@
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -97,6 +98,15 @@ class SaleItem(Entity):
     def fiscal_snapshot_sha256(self, value: Optional[str]) -> None:
         self.snapshot_sha256 = value
 
+
+@dataclass(frozen=True)
+class SaleItemFiscalEvidence:
+    tax_rule_id_snapshot: uuid.UUID
+    tax_rule_version_snapshot: int
+    fiscal_calculation_version: str
+    fiscal_tax_snapshot: dict
+    snapshot_sha256: str
+
 @dataclass
 class Payment(Entity):
     sale_id: uuid.UUID
@@ -127,7 +137,12 @@ class Sale(Entity):
     # Campo para carregar a nota fiscal (não persistido diretamente na tabela sales)
     invoice: Any = None
 
-    def add_item(self, product: Product, quantity: Decimal):
+    def add_item(
+        self,
+        product: Product,
+        quantity: Decimal,
+        fiscal_evidence: Optional[SaleItemFiscalEvidence] = None,
+    ):
         item_total = product.price * quantity
         
         item = SaleItem(
@@ -138,7 +153,24 @@ class Sale(Entity):
             unit_price=product.price,
             total=item_total,
             ncm_snapshot=product.ncm,
-            origin_snapshot=product.origin
+            origin_snapshot=product.origin,
+            fiscal_tax_snapshot=(
+                deepcopy(fiscal_evidence.fiscal_tax_snapshot)
+                if fiscal_evidence else None
+            ),
+            tax_rule_id_snapshot=(
+                fiscal_evidence.tax_rule_id_snapshot if fiscal_evidence else None
+            ),
+            tax_rule_version_snapshot=(
+                fiscal_evidence.tax_rule_version_snapshot if fiscal_evidence else None
+            ),
+            snapshot_sha256=(
+                fiscal_evidence.snapshot_sha256 if fiscal_evidence else None
+            ),
+            fiscal_calculation_version=(
+                fiscal_evidence.fiscal_calculation_version
+                if fiscal_evidence else None
+            ),
         )
         self.items.append(item)
         self.calculate_total()

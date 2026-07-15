@@ -206,6 +206,11 @@ class SaleItemDTO(BaseModel):
     unit_price: Decimal
     total: Decimal
     ncm_snapshot: Optional[str] = None
+    fiscal_tax_snapshot: Optional[dict] = None
+    tax_rule_id_snapshot: Optional[UUID] = None
+    tax_rule_version_snapshot: Optional[int] = None
+    snapshot_sha256: Optional[str] = None
+    fiscal_calculation_version: Optional[str] = None
 
 class PaymentDTO(BaseModel):
     method: str

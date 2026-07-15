@@ -43,6 +43,7 @@ from infra.repositories.fiscal_repo import (
     SQLAlchemyProductTaxRuleRepository,
 )
 from application.services.fiscal.tax_rule_service import TaxRuleService
+from application.services.fiscal.tax_rule_calculator import TaxRuleCalculator
 
 from infra.providers.focus_nfe_provider import FocusNFeProvider
 
@@ -106,6 +107,7 @@ def get_sales_service(db: AsyncSession = Depends(get_db)):
         financial_repo=SQLAlchemyFinancialTransactionRepository(db),
         fiscal_config_repo=SQLAlchemyFiscalTenantConfigRepository(db),
         tax_rule_service=TaxRuleService(SQLAlchemyProductTaxRuleRepository(db)),
+        tax_rule_calculator=TaxRuleCalculator(),
         environment=settings.ENVIRONMENT,
         fiscal_offline_max_age_minutes=settings.FISCAL_OFFLINE_MAX_AGE_MINUTES,
     )

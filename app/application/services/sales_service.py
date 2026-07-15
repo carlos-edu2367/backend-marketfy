@@ -3,7 +3,10 @@ from decimal import Decimal
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta, timezone
 
-from domain.sales import Sale, SaleItem, SaleStatus, Payment, PaymentMethod, Box, BoxStatus, Terminal
+from domain.sales import (
+    Sale, SaleItem, SaleItemFiscalEvidence, SaleStatus, Payment, PaymentMethod,
+    Box, BoxStatus, Terminal,
+)
 from domain.inventory import StockMovementType
 from domain.shared import BusinessRuleException, CPF
 from domain.interfaces import (
@@ -17,15 +20,16 @@ from application.dtos import (
     TerminalCreateDTO, TerminalResponseDTO, BoxResponseDTO, 
     SaleResponseDTO, SaleItemDTO, PaymentDTO, CloseBoxDTO
 )
-from application.services.fiscal.tax_rule_calculator import ItemFiscalSnapshot, TaxRuleCalculator
-from application.services.fiscal.snapshot_integrity import CALCULATION_VERSION, fiscal_snapshot_sha256
+from application.services.fiscal.tax_rule_calculator import TaxRuleCalculator
+from application.services.fiscal.snapshot_integrity import canonical_sha256
 from application.services.fiscal.tax_rule_service import (
+    FiscalRuleAmbiguousError,
     FiscalRuleMissingError,
     TaxContext,
     TaxRuleNotFoundError,
     TaxRuleService,
 )
-from domain.fiscal import FiscalRuleEnforcement
+from domain.fiscal import FiscalRuleEnforcement, FiscalRuleError
 from infra.config.logger import get_logger
 
 logger = get_logger("sales_service")
@@ -43,6 +47,7 @@ class SalesService:
                  customer_repo: CustomerRepositoryInterface = None,
                  fiscal_config_repo=None,
                  tax_rule_service: TaxRuleService = None,
+                 tax_rule_calculator: TaxRuleCalculator = None,
                  environment: str = "development",
                  fiscal_offline_max_age_minutes: int = 30,
                  ): 
@@ -57,6 +62,7 @@ class SalesService:
         self.financial_repo = financial_repo
         self.fiscal_config_repo = fiscal_config_repo
         self.tax_rule_service = tax_rule_service
+        self.tax_rule_calculator = tax_rule_calculator or TaxRuleCalculator()
         self.environment = environment
         self.fiscal_offline_max_age_minutes = fiscal_offline_max_age_minutes
 
@@ -172,6 +178,17 @@ class SalesService:
                         logger.info(f"Venda {dto.id} já sincronizada. Pulando.")
                         results.append(self._map_sale_to_response(existing_sale))
                         continue
+
+                enforcement = await self._get_fiscal_rule_enforcement(market_id)
+                if enforcement is FiscalRuleEnforcement.BLOCK and dto.offline_id:
+                    raise FiscalRuleError(
+                        "sale.fiscal_connection_required",
+                        "Vendas fiscais em modo bloqueio exigem conexão online.",
+                        [{
+                            "code": "sale.fiscal_connection_required",
+                            "offline_id": dto.offline_id,
+                        }],
+                    )
                 
                 # 2. Cria Entidade Venda
                 received_at = datetime.now(timezone.utc)
@@ -193,10 +210,29 @@ class SalesService:
                 if dto.id:
                     sale.id = dto.id
 
-                if await self._requires_fiscal_rule_enforcement(market_id):
+                if enforcement is not FiscalRuleEnforcement.BLOCK:
                     self._validate_offline_sale_clock(sale)
 
-                # 3. Validação e Processamento de Pagamentos (Antes de salvar itens para garantir integridade)
+                # 3. Carrega todos os produtos e resolve o fiscal antes da fase comercial.
+                # Isso impede movimentação de estoque ou venda parcial quando há regra ausente.
+                prepared_items = []
+                for item_dto in dto.items:
+                    product = await self.product_repo.get_by_id(item_dto.product_id)
+                    if not product or product.market_id != market_id:
+                        raise BusinessRuleException(
+                            f"Erro na venda {dto.offline_id or str(dto.id)[:8]}: produto nao encontrado na loja."
+                        )
+
+                    prepared_items.append((item_dto, product))
+
+                sale._fiscal_rule_enforcement = enforcement
+                fiscal_snapshots = await self._resolve_fiscal_snapshots(
+                    market_id=market_id,
+                    sale=sale,
+                    prepared_items=prepared_items,
+                )
+
+                # 4. Validação e Processamento de Pagamentos
                 box = await self.box_repo.get_by_id(dto.box_id)
                 if not box or box.market_id != market_id or box.status != BoxStatus.OPEN:
                     raise BusinessRuleException(
@@ -223,7 +259,7 @@ class SalesService:
                                 f"Erro na venda {dto.offline_id or str(dto.id)[:8]}: "
                                 "Pagamento 'Fiado' exige CPF do cliente informado."
                             )
-                        
+
                         if not self.customer_repo:
                             raise BusinessRuleException("Serviço de clientes indisponível para processar Fiado.")
 
@@ -233,7 +269,7 @@ class SalesService:
                                 f"Erro na venda {dto.offline_id or str(dto.id)[:8]}: "
                                 f"Cliente com CPF '{dto.customer_cpf}' não encontrado. Cadastre o cliente antes de vender Fiado."
                             )
-                        
+
                         # Armazena para adicionar o débito APÓS salvar a venda (evita erro de FK no autoflush)
                         fiado_pending_list.append({
                             "customer": customer,
@@ -242,26 +278,8 @@ class SalesService:
 
                     sale.add_payment(method, pay_dto.amount, pay_dto.installments)
 
-                # 4. Carrega todos os produtos e resolve o fiscal antes de qualquer escrita.
-                # Isso impede movimentação de estoque ou venda parcial quando há regra ausente.
-                prepared_items = []
-                for item_dto in dto.items:
-                    product = await self.product_repo.get_by_id(item_dto.product_id)
-                    if not product or product.market_id != market_id:
-                        raise BusinessRuleException(
-                            f"Erro na venda {dto.offline_id or str(dto.id)[:8]}: produto nao encontrado na loja."
-                        )
-
-                    prepared_items.append((item_dto, product))
-
-                fiscal_snapshots = await self._resolve_fiscal_snapshots(
-                    market_id=market_id,
-                    sale=sale,
-                    prepared_items=prepared_items,
-                )
-
                 # 5. Adiciona itens e baixa o estoque somente após validar o lote fiscal.
-                for (item_dto, product), fiscal_snapshot in zip(prepared_items, fiscal_snapshots):
+                for (item_dto, product), fiscal_evidence in zip(prepared_items, fiscal_snapshots):
 
                     # Baixa Estoque (Movimentação do tipo VENDA)
                     product.add_movement(
@@ -272,14 +290,11 @@ class SalesService:
                     await self.product_repo.save(product, commit=False) # Commit no final
                     
                     # Adiciona item na venda
-                    sale.add_item(product, item_dto.quantity)
-                    if fiscal_snapshot:
-                        sale_item = sale.items[-1]
-                        sale_item.ncm_snapshot = fiscal_snapshot.ncm
-                        sale_item.tax_rule_version_snapshot = fiscal_snapshot.rule_version
-                        sale_item.fiscal_tax_snapshot = fiscal_snapshot.as_persistence_dict()
-                        sale_item.snapshot_sha256 = fiscal_snapshot_sha256(sale_item.fiscal_tax_snapshot)
-                        sale_item.fiscal_calculation_version = CALCULATION_VERSION
+                    sale.add_item(
+                        product,
+                        item_dto.quantity,
+                        fiscal_evidence=fiscal_evidence,
+                    )
 
                 # 6. CORREÇÃO: Atualiza Saldo do Caixa (Se houve dinheiro)
                 if cash_amount_to_add_to_box > 0:
@@ -331,16 +346,26 @@ class SalesService:
 
         return results
 
-    async def _resolve_fiscal_snapshots(self, *, market_id, sale: Sale, prepared_items) -> list[Optional[ItemFiscalSnapshot]]:
-        if not await self._requires_fiscal_rule_enforcement(market_id):
+    async def _resolve_fiscal_snapshots(
+        self,
+        *,
+        market_id,
+        sale: Sale,
+        prepared_items,
+    ) -> list[Optional[SaleItemFiscalEvidence]]:
+        enforcement = sale._fiscal_rule_enforcement
+        if enforcement is FiscalRuleEnforcement.OFF:
             return [None] * len(prepared_items)
 
-        missing_products = []
-        snapshots: list[Optional[ItemFiscalSnapshot]] = []
+        fiscal_errors = []
+        snapshots: list[Optional[SaleItemFiscalEvidence]] = []
         context = TaxContext.go_nfce_consumer_final()
-        calculator = TaxRuleCalculator()
 
         for item_dto, product in prepared_items:
+            item_error = {
+                "product_id": str(product.id),
+                "product_name": product.name,
+            }
             try:
                 if not self.tax_rule_service:
                     raise TaxRuleNotFoundError("Serviço de regras fiscais indisponível.")
@@ -351,24 +376,77 @@ class SalesService:
                     context=context,
                 )
             except TaxRuleNotFoundError:
-                missing_products.append({"id": str(product.id), "name": product.name})
+                fiscal_errors.append({
+                    "code": "sale.fiscal_rule_missing",
+                    **item_error,
+                })
+                snapshots.append(None)
+                continue
+            except FiscalRuleAmbiguousError as exc:
+                fiscal_errors.append({
+                    "code": exc.code,
+                    **item_error,
+                    **exc.details(),
+                })
+                snapshots.append(None)
+                continue
+            except FiscalRuleError as exc:
+                fiscal_errors.append({
+                    "code": exc.code,
+                    **item_error,
+                    "details": exc.items,
+                })
                 snapshots.append(None)
                 continue
 
-            snapshots.append(calculator.calculate(
-                item=SaleItem(
-                    sale_id=sale.id,
-                    product_id=product.id,
-                    product_name=product.name,
-                    quantity=item_dto.quantity,
-                    unit_price=product.price,
-                    total=product.price * item_dto.quantity,
-                ),
-                rule=rule,
-            ))
+            try:
+                fiscal_snapshot = self.tax_rule_calculator.calculate(
+                    item=SaleItem(
+                        sale_id=sale.id,
+                        product_id=product.id,
+                        product_name=product.name,
+                        quantity=item_dto.quantity,
+                        unit_price=product.price,
+                        total=product.price * item_dto.quantity,
+                    ),
+                    rule=rule,
+                )
+                snapshot_json = fiscal_snapshot.as_persistence_dict()
+                snapshots.append(SaleItemFiscalEvidence(
+                    tax_rule_id_snapshot=uuid.UUID(fiscal_snapshot.rule_id),
+                    tax_rule_version_snapshot=fiscal_snapshot.rule_version,
+                    fiscal_calculation_version=fiscal_snapshot.calculation_version,
+                    fiscal_tax_snapshot=snapshot_json,
+                    snapshot_sha256=canonical_sha256(snapshot_json),
+                ))
+            except (BusinessRuleException, TypeError, ValueError) as exc:
+                fiscal_errors.append({
+                    "code": "sale.fiscal_snapshot_invalid",
+                    **item_error,
+                    "reason": str(exc),
+                })
+                snapshots.append(None)
 
-        if missing_products:
-            raise FiscalRuleMissingError(missing_products)
+        if fiscal_errors and enforcement is FiscalRuleEnforcement.BLOCK:
+            error_codes = {item["code"] for item in fiscal_errors}
+            code = (
+                next(iter(error_codes))
+                if len(error_codes) == 1
+                else "sale.fiscal_rule_invalid"
+            )
+            if code == "sale.fiscal_rule_missing":
+                raise FiscalRuleMissingError(
+                    [
+                        {"id": item["product_id"], "name": item["product_name"]}
+                        for item in fiscal_errors
+                    ],
+                    items=fiscal_errors,
+                )
+            raise FiscalRuleError(
+                code,
+                "Há itens sem evidência fiscal v2 válida para concluir a venda.",
+                fiscal_errors,
+            )
         return snapshots
 
     def _validate_offline_sale_clock(self, sale: Sale) -> None:
@@ -391,11 +469,27 @@ class SalesService:
             raise BusinessRuleException("sale.offline_clock_out_of_window; reason=future_client_clock")
 
     async def _requires_fiscal_rule_enforcement(self, market_id: uuid.UUID) -> bool:
+        return (
+            await self._get_fiscal_rule_enforcement(market_id)
+            is FiscalRuleEnforcement.BLOCK
+        )
+
+    async def _get_fiscal_rule_enforcement(
+        self, market_id: uuid.UUID
+    ) -> FiscalRuleEnforcement:
         if not self.fiscal_config_repo:
-            return False
+            return FiscalRuleEnforcement.OFF
 
         config = await self.fiscal_config_repo.get_by_market(market_id)
-        return bool(config and config.fiscal_rule_enforcement is FiscalRuleEnforcement.BLOCK)
+        if not config:
+            return FiscalRuleEnforcement.OFF
+        mode = getattr(config, "fiscal_rule_enforcement", FiscalRuleEnforcement.OFF)
+        if isinstance(mode, FiscalRuleEnforcement):
+            return mode
+        try:
+            return FiscalRuleEnforcement(mode)
+        except (TypeError, ValueError):
+            return FiscalRuleEnforcement.OFF
 
     async def list_sales(self, market_id: uuid.UUID, limit: int, offset: int) -> List[SaleResponseDTO]:
         sales = await self.sale_repo.list_by_market(market_id, limit, offset)
@@ -458,7 +552,12 @@ class SalesService:
                     quantity=i.quantity,
                     unit_price=i.unit_price,
                     total=i.total,
-                    ncm_snapshot=i.ncm_snapshot
+                    ncm_snapshot=i.ncm_snapshot,
+                    fiscal_tax_snapshot=i.fiscal_tax_snapshot,
+                    tax_rule_id_snapshot=i.tax_rule_id_snapshot,
+                    tax_rule_version_snapshot=i.tax_rule_version_snapshot,
+                    snapshot_sha256=i.snapshot_sha256,
+                    fiscal_calculation_version=i.fiscal_calculation_version,
                 ) for i in sale.items
             ],
             payments=[
