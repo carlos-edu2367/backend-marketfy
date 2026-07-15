@@ -84,9 +84,18 @@ class SaleItem(Entity):
     ncm_snapshot: Optional[str] = None
     origin_snapshot: int = 0
     fiscal_tax_snapshot: Optional[dict] = None
+    tax_rule_id_snapshot: Optional[uuid.UUID] = None
     tax_rule_version_snapshot: Optional[int] = None
     snapshot_sha256: Optional[str] = None
     fiscal_calculation_version: Optional[str] = None
+
+    @property
+    def fiscal_snapshot_sha256(self) -> Optional[str]:
+        return self.snapshot_sha256
+
+    @fiscal_snapshot_sha256.setter
+    def fiscal_snapshot_sha256(self, value: Optional[str]) -> None:
+        self.snapshot_sha256 = value
 
 @dataclass
 class Payment(Entity):

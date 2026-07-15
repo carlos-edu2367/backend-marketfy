@@ -2,7 +2,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import ClassVar, FrozenSet, Optional, List
+from typing import Any, ClassVar, FrozenSet, Optional, List
 from datetime import date, datetime
 from decimal import Decimal
 from domain.shared import Entity, BusinessRuleException
@@ -22,6 +22,14 @@ class FiscalRuleEnforcement(str, Enum):
     OFF = "off"
     WARN = "warn"
     BLOCK = "block"
+
+
+EnforcementMode = FiscalRuleEnforcement
+
+
+class IcmsMode(str, Enum):
+    NON_TAXED = "non_taxed"
+    RETAINED_ST = "retained_st"
 
 
 class FiscalDocumentStatus(Enum):
@@ -76,13 +84,30 @@ class TaxRegime(Enum):
     MEI = "mei"
 
 
-class ProductTaxRuleStatus(Enum):
+class ProductTaxRuleStatus(str, Enum):
     """Lifecycle of an accountant-reviewed product tax rule."""
 
     DRAFT = "draft"
     HOMOLOGATED = "homologated"
     PUBLISHED = "published"
     RETIRED = "retired"
+
+
+TaxRuleStatus = ProductTaxRuleStatus
+
+
+class FiscalRuleError(BusinessRuleException):
+    """Structured, transport-neutral fiscal rule validation error."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        items: list[dict[str, str]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.items = items or []
 
 
 @dataclass(frozen=True)
@@ -400,10 +425,15 @@ class ProductTaxRule(Entity):
     effective_from: Optional[date] = None
     effective_to: Optional[date] = None
 
+    issuer_regime: Optional[TaxRegime] = None
+    destination_uf: Optional[str] = None
+    document_model: Optional[str] = None
+
     ncm: Optional[str] = None
     cest: Optional[str] = None
     origin: Optional[str] = None
     cfop: Optional[str] = None
+    cbenef: Optional[str] = None
 
     icms_group: Optional[str] = None
     icms_cst: Optional[str] = None
@@ -421,6 +451,9 @@ class ProductTaxRule(Entity):
     cofins_cst: Optional[str] = None
     cofins_rate: Optional[Decimal] = None
 
+    tax_parameters: Optional[dict[str, Any]] = None
+    approval: Optional[dict[str, Any]] = None
+
     approved_by: Optional[uuid.UUID] = None
     approved_at: Optional[datetime] = None
 
@@ -433,10 +466,14 @@ class ProductTaxRule(Entity):
         "version",
         "effective_from",
         "effective_to",
+        "issuer_regime",
+        "destination_uf",
+        "document_model",
         "ncm",
         "cest",
         "origin",
         "cfop",
+        "cbenef",
         "icms_group",
         "icms_cst",
         "icms_csosn",
@@ -451,6 +488,8 @@ class ProductTaxRule(Entity):
         "pis_rate",
         "cofins_cst",
         "cofins_rate",
+        "tax_parameters",
+        "approval",
         "approved_by",
         "approved_at",
     })
@@ -473,6 +512,8 @@ class ProductTaxRule(Entity):
     def __post_init__(self) -> None:
         if isinstance(self.status, str):
             object.__setattr__(self, "status", ProductTaxRuleStatus(self.status))
+        if isinstance(self.issuer_regime, str):
+            object.__setattr__(self, "issuer_regime", TaxRegime(self.issuer_regime))
         if self.version < 1:
             raise BusinessRuleException("A versão da regra fiscal deve ser positiva.")
         if self.rule_family_id is None:
@@ -481,7 +522,7 @@ class ProductTaxRule(Entity):
             raise BusinessRuleException("O fim da vigência não pode anteceder o início.")
 
     def rename(self, name: str) -> None:
-        self._ensure_mutable()
+        self.assert_mutable()
         self.name = name
         self.update_timestamp()
 
@@ -498,10 +539,14 @@ class ProductTaxRule(Entity):
             version=self.version + 1,
             effective_from=effective_from,
             effective_to=self.effective_to,
+            issuer_regime=self.issuer_regime,
+            destination_uf=self.destination_uf,
+            document_model=self.document_model,
             ncm=self.ncm,
             cest=self.cest,
             origin=self.origin,
             cfop=self.cfop,
+            cbenef=self.cbenef,
             icms_group=self.icms_group,
             icms_cst=self.icms_cst,
             icms_csosn=self.icms_csosn,
@@ -516,6 +561,8 @@ class ProductTaxRule(Entity):
             pis_rate=self.pis_rate,
             cofins_cst=self.cofins_cst,
             cofins_rate=self.cofins_rate,
+            tax_parameters=self.tax_parameters.copy() if self.tax_parameters is not None else None,
+            approval=self.approval.copy() if self.approval is not None else None,
         )
 
     def is_effective_on(self, when: date) -> bool:
@@ -524,11 +571,27 @@ class ProductTaxRule(Entity):
             return False
         return self.effective_to is None or when <= self.effective_to
 
-    def _ensure_mutable(self) -> None:
+    def matches_context(self, *, destination_uf: str, document_model: str) -> bool:
+        """Match only a fully explicit v2 context; nullable legacy rows fail closed."""
+        if (
+            self.issuer_regime is None
+            or self.destination_uf is None
+            or self.document_model is None
+        ):
+            return False
+        return (
+            self.destination_uf.upper() == destination_uf.upper()
+            and self.document_model == document_model
+        )
+
+    def assert_mutable(self) -> None:
         if self.__dict__.get("_published_version", False):
             raise BusinessRuleException(
                 "Uma regra fiscal publicada é imutável; crie uma nova versão para corrigi-la."
             )
+
+    def _ensure_mutable(self) -> None:
+        self.assert_mutable()
 
     @staticmethod
     def _is_published_status(status) -> bool:

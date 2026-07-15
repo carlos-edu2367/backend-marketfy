@@ -11,12 +11,13 @@ import uuid
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
-from sqlalchemy import and_, desc, func, select, update
+from sqlalchemy import and_, desc, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from application.services.fiscal.tax_rule_service import ProductTaxRuleCandidate
 from domain.shared import BusinessRuleException
+from domain.interfaces import ProductTaxRuleRepositoryInterface
 from infra.config.settings import get_settings
 
 from domain.fiscal import (
@@ -271,7 +272,7 @@ def _to_tax_profile(m: ProductTaxProfileModel) -> ProductTaxProfile:
     return p
 
 
-class SQLAlchemyProductTaxRuleRepository:
+class SQLAlchemyProductTaxRuleRepository(ProductTaxRuleRepositoryInterface):
     """Loads rules through the durable product-association timeline."""
 
     def __init__(self, session: AsyncSession):
@@ -584,15 +585,64 @@ class SQLAlchemyProductTaxRuleRepository:
             for association_id, rule_model in result.all()
         ]
 
+    async def get_effective_published_rule(
+        self,
+        *,
+        market_id: uuid.UUID,
+        product_id: uuid.UUID,
+        on_date: date,
+    ) -> Optional[ProductTaxRule]:
+        """Resolve one published rule through the durable assignment history."""
+        query = (
+            select(ProductTaxRuleModel)
+            .join(
+                ProductTaxRuleAssignmentModel,
+                ProductTaxRuleAssignmentModel.tax_rule_id == ProductTaxRuleModel.id,
+            )
+            .join(
+                ProductModel,
+                ProductModel.id == ProductTaxRuleAssignmentModel.product_id,
+            )
+            .where(
+                ProductModel.id == product_id,
+                ProductModel.market_id == market_id,
+                ProductTaxRuleAssignmentModel.product_id == product_id,
+                ProductTaxRuleAssignmentModel.market_id == market_id,
+                ProductTaxRuleModel.market_id == market_id,
+                ProductTaxRuleModel.status == ProductTaxRuleStatus.PUBLISHED.value,
+                ProductTaxRuleAssignmentModel.effective_from <= on_date,
+                or_(
+                    ProductTaxRuleAssignmentModel.effective_to.is_(None),
+                    ProductTaxRuleAssignmentModel.effective_to >= on_date,
+                ),
+                ProductTaxRuleModel.effective_from <= on_date,
+                or_(
+                    ProductTaxRuleModel.effective_to.is_(None),
+                    ProductTaxRuleModel.effective_to >= on_date,
+                ),
+            )
+            .with_for_update(read=True)
+        )
+        rows = (await self.session.execute(query)).scalars().all()
+        if len(rows) > 1:
+            raise BusinessRuleException("Mais de uma regra fiscal vigente para o produto.")
+        return _to_product_tax_rule(rows[0]) if rows else None
+
     @staticmethod
     def _copy_rule_to_model(rule: ProductTaxRule, model: ProductTaxRuleModel) -> None:
         for field in (
-            "market_id", "name", "rule_family_id", "supersedes_rule_id", "effective_from", "effective_to", "ncm", "cest", "origin", "cfop",
+            "market_id", "name", "rule_family_id", "supersedes_rule_id", "effective_from", "effective_to",
+            "issuer_regime", "destination_uf", "document_model", "ncm", "cest", "origin", "cfop", "cbenef",
             "icms_group", "icms_cst", "icms_csosn", "icms_mod_bc", "icms_rate", "icms_reduction_rate",
             "icms_st_mod_bc", "icms_st_mva_rate", "icms_st_rate", "fcp_rate", "pis_cst", "pis_rate",
             "cofins_cst", "cofins_rate", "approved_by", "approved_at",
         ):
-            setattr(model, field, getattr(rule, field))
+            value = getattr(rule, field)
+            if field == "issuer_regime" and value is not None:
+                value = value.value
+            setattr(model, field, value)
+        model.tax_parameters_json = rule.tax_parameters
+        model.approval_json = rule.approval
 
     @staticmethod
     def _validate_for_publication(rule: ProductTaxRule) -> None:
@@ -642,10 +692,14 @@ def _to_product_tax_rule(model: ProductTaxRuleModel) -> ProductTaxRule:
         status=ProductTaxRuleStatus(model.status),
         effective_from=model.effective_from,
         effective_to=model.effective_to,
+        issuer_regime=TaxRegime(model.issuer_regime) if model.issuer_regime else None,
+        destination_uf=model.destination_uf,
+        document_model=model.document_model,
         ncm=model.ncm,
         cest=model.cest,
         origin=model.origin,
         cfop=model.cfop,
+        cbenef=model.cbenef,
         icms_group=model.icms_group,
         icms_cst=model.icms_cst,
         icms_csosn=model.icms_csosn,
@@ -660,6 +714,8 @@ def _to_product_tax_rule(model: ProductTaxRuleModel) -> ProductTaxRule:
         pis_rate=model.pis_rate,
         cofins_cst=model.cofins_cst,
         cofins_rate=model.cofins_rate,
+        tax_parameters=model.tax_parameters_json,
+        approval=model.approval_json,
         approved_by=model.approved_by,
         approved_at=model.approved_at,
     )
