@@ -28,12 +28,11 @@ from infra.web.dependencies import get_current_user, require_market_access, get_
 from infra.security.market_access import MarketPermission
 from infra.security.fiscal_rule_authorization import TaxRuleApprovalEvidenceError, assert_tax_rule_approver
 from application.services.audit_service import AuditService
-from application.dtos import (
-    ProductTaxRuleDraftDTO,
-    ProductTaxRuleDraftUpdateDTO,
-    ProductTaxRulePublishDTO,
-    ProductTaxRuleSuccessorDTO,
-    TaxRuleSefazAuthorizationDTO,
+from application.dtos import ProductTaxRuleSuccessorDTO, TaxRuleSefazAuthorizationDTO
+from application.fiscal_tax_dtos import (
+    FiscalTaxRuleDraftPatchRequest,
+    FiscalTaxRuleDraftRequest,
+    ProductTaxRulePublishRequest,
 )
 from domain.identity import User
 from domain.shared import BusinessRuleException
@@ -729,7 +728,7 @@ async def list_tax_rules(
 async def create_tax_rule_draft(
     request: Request,
     market_id: uuid.UUID,
-    dto: ProductTaxRuleDraftDTO,
+    dto: FiscalTaxRuleDraftRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     audit: AuditService = Depends(get_audit_service),
@@ -738,7 +737,7 @@ async def create_tax_rule_draft(
     from domain.fiscal import ProductTaxRule
     from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
 
-    rule = ProductTaxRule(market_id=market_id, **dto.model_dump())
+    rule = ProductTaxRule(market_id=market_id, **dto.to_domain_kwargs())
     saved = await SQLAlchemyProductTaxRuleRepository(db).create_draft(rule)
     await record_audit_event(
         audit, request, actor=current_user, action="fiscal.tax_rule.draft_created",
@@ -752,7 +751,7 @@ async def update_tax_rule_draft(
     request: Request,
     market_id: uuid.UUID,
     rule_id: uuid.UUID,
-    dto: ProductTaxRuleDraftUpdateDTO,
+    dto: FiscalTaxRuleDraftPatchRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     audit: AuditService = Depends(get_audit_service),
@@ -764,7 +763,7 @@ async def update_tax_rule_draft(
     rule = await repo.get_rule(market_id, rule_id)
     if rule is None:
         raise HTTPException(404, "Regra fiscal não encontrada.")
-    changes = dto.model_dump(exclude_unset=True)
+    changes = dto.to_domain_kwargs(exclude_unset=True)
     saved = await repo.update_draft(rule, changes)
     await record_audit_event(
         audit, request, actor=current_user, action="fiscal.tax_rule.draft_updated",
@@ -779,7 +778,7 @@ async def publish_tax_rule(
     request: Request,
     market_id: uuid.UUID,
     rule_id: uuid.UUID,
-    dto: ProductTaxRulePublishDTO,
+    dto: ProductTaxRulePublishRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     audit: AuditService = Depends(get_audit_service),
@@ -791,8 +790,8 @@ async def publish_tax_rule(
     rule = await repo.get_rule(market_id, rule_id)
     if rule is None:
         raise HTTPException(404, "Regra fiscal não encontrada.")
-    await _require_tax_rule_accountant(db=db, market_id=market_id, current_user=current_user)
-    # Approval identity and timestamp are server-derived. The submitted key is
+    # The FISCAL_WRITE dependency authorizes the reviewer. Approval identity
+    # and timestamp are server-derived; the submitted key is
     # resolved through private storage and copied into an immutable evidence key.
     rule.approved_by = current_user.id
     evidence_service = _get_tax_rule_approval_evidence_service(db)
@@ -980,7 +979,10 @@ async def create_tax_profile(
 ):
     raise HTTPException(
         status_code=410,
-        detail="Perfis fiscais legados são somente leitura. Crie uma regra fiscal versionada.",
+        detail={
+            "code": "tax_profile.legacy_read_only",
+            "message": "Perfis fiscais legados são somente leitura.",
+        },
     )
 
 

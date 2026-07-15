@@ -34,19 +34,24 @@ def _approved_rule_payload() -> dict:
     return {
         "name": "Refrigerante ST",
         "effective_from": "2026-07-14",
+        "issuer_regime": "simples_nacional",
+        "destination_uf": "GO",
+        "document_model": "65",
         "ncm": "22021000",
         "cest": "0300700",
         "origin": "0",
         "cfop": "5405",
-        "icms_group": "ICMSSN500",
-        "icms_csosn": "500",
-        "icms_st_mod_bc": "4",
-        "icms_st_mva_rate": "40.00",
-        "icms_st_rate": "18.00",
-        "pis_cst": "07",
-        "pis_rate": "0.00",
-        "cofins_cst": "07",
-        "cofins_rate": "0.00",
+        "icms": {
+            "group": "ICMSSN500",
+            "csosn": "500",
+            "mode": "retained_st",
+            "retained_st_base": "100.00",
+            "retained_st_rate": "18.00",
+            "retained_st_amount": "18.00",
+        },
+        "pis": {"group": "PIS07", "cst": "07", "base": "100.00", "rate": "0.00", "amount": "0.00"},
+        "cofins": {"group": "COFINS07", "cst": "07", "base": "100.00", "rate": "0.00", "amount": "0.00"},
+        "approval": {"reference": "Decreto GO 10.734/2025", "checksum": "a" * 64},
     }
 
 
@@ -342,21 +347,21 @@ def test_publication_rejects_missing_homologation_artifact(client, monkeypatch):
     assert response.json()["detail"]["code"] == "tax_rule.approval_artifact_invalid"
 
 
-def test_owner_cannot_publish_without_accountant_membership(client):
+def test_manager_with_fiscal_write_can_publish_a_rule(client):
     http, app, _audit = client
     from domain.identity import User, UserRole
     from domain.shared import CPF, Email
     from infra.web.routers import fiscal as fiscal_router
 
-    owner = User(
+    manager = User(
         id=uuid.uuid4(),
-        name="Owner",
-        email=Email("owner@example.com"),
+        name="Manager",
+        email=Email("manager@example.com"),
         cpf=CPF("52998224725"),
         password_hash="hash",
-        role=UserRole.OWNER,
+        role=UserRole.MANAGER,
     )
-    app.dependency_overrides[fiscal_router.get_current_user] = lambda: owner
+    app.dependency_overrides[fiscal_router.get_current_user] = lambda: manager
     created = http.post(f"/api/v1/fiscal/{MARKET_ID}/tax-rules", json=_approved_rule_payload())
 
     response = http.post(
@@ -364,8 +369,8 @@ def test_owner_cannot_publish_without_accountant_membership(client):
         json={"homologation_xml_storage_key": f"fiscal/homologacao/{MARKET_ID}/source/st.xml"},
     )
 
-    assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "tax_rule.approval_evidence_missing"
+    assert response.status_code == 200
+    assert response.json()["approved_by"] == str(manager.id)
 
 
 def test_publication_records_the_authenticated_fiscal_actor_as_approver(client):
@@ -415,6 +420,7 @@ def test_only_published_rule_can_be_assigned_and_bulk_change_is_audited(client):
         },
     )
     assert rejected.status_code == 400
+    assert rejected.json()["detail"]["code"] == "tax_rule.not_published"
 
     published = http.post(
         f"/api/v1/fiscal/{MARKET_ID}/tax-rules/{rule_id}/publish",

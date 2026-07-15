@@ -31,6 +31,7 @@ from infra.web.routers import (
     finance_report,
     finance_support,
     fiscal,
+    fiscal_tax_rules,
     fiscal_credits,
     fiscal_webhooks,
     identity,
@@ -335,6 +336,7 @@ app.include_router(admin_fiscal.router, prefix="/api/v1/admin", tags=["Admin Fis
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["Analytics"])
 app.include_router(fiscal_credits.router, prefix="/api/v1/fiscal", tags=["Fiscal Credits"])
 app.include_router(fiscal.router, prefix="/api/v1/fiscal", tags=["Fiscal"])
+app.include_router(fiscal_tax_rules.router, prefix="/api/v1/fiscal", tags=["Fiscal"])
 app.include_router(fiscal_webhooks.router, prefix="/api/v1/fiscal/webhooks", tags=["Fiscal Webhooks"])
 app.include_router(billing_core_webhooks.router, prefix="/api/v1/webhooks", tags=["Billing Core Webhooks"])
 app.include_router(finance_report.router, prefix="/api/v1/finance-reports", tags=["Finance Reports"])

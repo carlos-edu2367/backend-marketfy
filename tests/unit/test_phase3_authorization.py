@@ -277,9 +277,9 @@ def test_role_permissions_cashier_cannot_write_finance_or_fiscal():
     assert MarketPermission.SALES_WRITE in cashier_set
 
 
-def test_role_permissions_manager_cannot_write_fiscal():
+def test_role_permissions_manager_can_write_fiscal():
     manager_set = ROLE_PERMISSIONS[UserRole.MANAGER]
-    assert MarketPermission.FISCAL_WRITE not in manager_set
+    assert MarketPermission.FISCAL_WRITE in manager_set
     assert MarketPermission.FINANCE_WRITE in manager_set
     assert MarketPermission.ANALYTICS_READ in manager_set
 

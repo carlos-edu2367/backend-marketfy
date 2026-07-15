@@ -19,8 +19,8 @@ from application.dtos import (
     StockMovementResponseDTO,
     ProductSyncResponseDTO,
     EditProductDTO,
-    ProductTaxRuleAssignmentDTO,
 )
+from application.fiscal_tax_dtos import ProductTaxRuleAssignmentRequest
 from domain.shared import BusinessRuleException, ValidationException
 from domain.identity import User
 from infra.observability.audit import record_audit_event
@@ -67,52 +67,23 @@ async def list_market_products(
 async def assign_product_tax_rule(
     request: Request,
     market_id: uuid.UUID,
-    dto: ProductTaxRuleAssignmentDTO,
+    dto: ProductTaxRuleAssignmentRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     audit: AuditService = Depends(get_audit_service),
     market=Depends(require_market_access(MarketPermission.FISCAL_WRITE)),
 ):
-    """Assign one published fiscal rule to explicit product IDs, with an audit trail."""
-    from infra.repositories.fiscal_repo import SQLAlchemyProductTaxRuleRepository
+    """Temporary inventory alias for the canonical fiscal assignment route."""
+    from infra.web.routers.fiscal_tax_rules import assign_tax_rule_products
 
-    repo = SQLAlchemyProductTaxRuleRepository(db)
-    rule = await repo.get_rule(market_id, dto.tax_rule_id)
-    if rule is None:
-        raise HTTPException(status_code=404, detail="Regra fiscal não encontrada.")
-    try:
-        updated, skipped, audit_changes = await repo.assign_published_rule(
-            market_id=market_id,
-            product_ids=dto.product_ids,
-            rule=rule,
-            effective_from=dto.effective_from,
-            actor_id=current_user.id,
-            reason=dto.reason,
-        )
-    except BusinessRuleException as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    await record_audit_event(
-        audit,
-        request,
-        actor=current_user,
-        action="inventory.product_tax_rule.bulk_assigned",
-        resource_type="product_tax_rule_assignment",
-        result="success",
+    return await assign_tax_rule_products(
+        request=request,
         market_id=market_id,
-        resource_id=str(dto.tax_rule_id),
-        metadata={
-            "reason": dto.reason,
-            "effective_from": dto.effective_from.isoformat(),
-            "before_after": audit_changes,
-            "after_rule_id": str(dto.tax_rule_id),
-            "skipped": skipped,
-        },
+        dto=dto,
+        db=db,
+        current_user=current_user,
+        audit=audit,
     )
-    return {
-        "updated_product_ids": [str(product_id) for product_id in updated],
-        "skipped": skipped,
-    }
 
 @router.get("/{market_id}/products/sync", response_model=ProductSyncResponseDTO)
 async def sync_products(

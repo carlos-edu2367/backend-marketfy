@@ -368,75 +368,12 @@ class SalesService:
         if enforcement is FiscalRuleEnforcement.OFF:
             return [None] * len(prepared_items)
 
-        fiscal_errors = []
-        snapshots: list[Optional[SaleItemFiscalEvidence]] = []
-        context = TaxContext.go_nfce_consumer_final()
-
-        for item_dto, product in prepared_items:
-            item_error = {
-                "product_id": str(product.id),
-                "product_name": product.name,
-            }
-            try:
-                if not self.tax_rule_service:
-                    raise TaxRuleNotFoundError("Serviço de regras fiscais indisponível.")
-                rule = await self.tax_rule_service.resolve_for_sale_item(
-                    market_id=market_id,
-                    product_id=product.id,
-                    occurred_at=sale.created_at,
-                    context=context,
-                )
-            except TaxRuleNotFoundError:
-                fiscal_errors.append({
-                    "code": "sale.fiscal_rule_missing",
-                    **item_error,
-                })
-                snapshots.append(None)
-                continue
-            except FiscalRuleAmbiguousError as exc:
-                fiscal_errors.append({
-                    "code": exc.code,
-                    **item_error,
-                    **exc.details(),
-                })
-                snapshots.append(None)
-                continue
-            except FiscalRuleError as exc:
-                fiscal_errors.append({
-                    "code": exc.code,
-                    **item_error,
-                    "details": exc.items,
-                })
-                snapshots.append(None)
-                continue
-
-            try:
-                fiscal_snapshot = self.tax_rule_calculator.calculate(
-                    item=SaleItem(
-                        sale_id=sale.id,
-                        product_id=product.id,
-                        product_name=product.name,
-                        quantity=item_dto.quantity,
-                        unit_price=product.price,
-                        total=product.price * item_dto.quantity,
-                    ),
-                    rule=rule,
-                )
-                snapshot_json = fiscal_snapshot.as_persistence_dict()
-                snapshots.append(SaleItemFiscalEvidence(
-                    tax_rule_id_snapshot=uuid.UUID(fiscal_snapshot.rule_id),
-                    tax_rule_version_snapshot=fiscal_snapshot.rule_version,
-                    fiscal_calculation_version=fiscal_snapshot.calculation_version,
-                    fiscal_tax_snapshot=snapshot_json,
-                    snapshot_sha256=canonical_sha256(snapshot_json),
-                ))
-            except (BusinessRuleException, TypeError, ValueError) as exc:
-                fiscal_errors.append({
-                    "code": "sale.fiscal_snapshot_invalid",
-                    **item_error,
-                    "reason": str(exc),
-                })
-                snapshots.append(None)
+        snapshots, fiscal_errors = await self._collect_fiscal_snapshots(
+            market_id=market_id,
+            sale_id=sale.id,
+            occurred_at=sale.created_at,
+            prepared_items=prepared_items,
+        )
 
         if fiscal_errors and enforcement is FiscalRuleEnforcement.BLOCK:
             error_codes = {item["code"] for item in fiscal_errors}
@@ -468,6 +405,122 @@ class SalesService:
                 for item in fiscal_errors
             ]
         return snapshots
+
+    async def fiscal_preflight(
+        self,
+        *,
+        market_id: uuid.UUID,
+        occurred_at: datetime,
+        items,
+    ) -> tuple[FiscalRuleEnforcement, list[dict]]:
+        """Evaluate the same rule resolver/calculator as checkout, without writes."""
+        enforcement = await self._get_fiscal_rule_enforcement(market_id)
+        if enforcement is FiscalRuleEnforcement.OFF:
+            return enforcement, []
+
+        prepared_items = []
+        fiscal_errors = []
+        for item in items:
+            product = await self.product_repo.get_by_id(item.product_id)
+            if product is None or product.market_id != market_id:
+                fiscal_errors.append(
+                    {
+                        "code": "sale.product_not_found",
+                        "product_id": str(item.product_id),
+                        "product_name": "Produto não encontrado",
+                    }
+                )
+                continue
+            prepared_items.append((item, product))
+
+        _snapshots, resolution_errors = await self._collect_fiscal_snapshots(
+            market_id=market_id,
+            sale_id=uuid.uuid4(),
+            occurred_at=occurred_at,
+            prepared_items=prepared_items,
+        )
+        fiscal_errors.extend(resolution_errors)
+        return enforcement, fiscal_errors
+
+    async def _collect_fiscal_snapshots(
+        self,
+        *,
+        market_id: uuid.UUID,
+        sale_id: uuid.UUID,
+        occurred_at: datetime,
+        prepared_items,
+    ) -> tuple[list[Optional[SaleItemFiscalEvidence]], list[dict]]:
+        fiscal_errors = []
+        snapshots: list[Optional[SaleItemFiscalEvidence]] = []
+        context = TaxContext.go_nfce_consumer_final()
+
+        for item_dto, product in prepared_items:
+            item_error = {
+                "product_id": str(product.id),
+                "product_name": product.name,
+            }
+            try:
+                if not self.tax_rule_service:
+                    raise TaxRuleNotFoundError("Serviço de regras fiscais indisponível.")
+                rule = await self.tax_rule_service.resolve_for_sale_item(
+                    market_id=market_id,
+                    product_id=product.id,
+                    occurred_at=occurred_at,
+                    context=context,
+                )
+            except TaxRuleNotFoundError:
+                fiscal_errors.append({
+                    "code": "sale.fiscal_rule_missing",
+                    **item_error,
+                })
+                snapshots.append(None)
+                continue
+            except FiscalRuleAmbiguousError as exc:
+                fiscal_errors.append({
+                    "code": exc.code,
+                    **item_error,
+                    **exc.details(),
+                })
+                snapshots.append(None)
+                continue
+            except FiscalRuleError as exc:
+                fiscal_errors.append({
+                    "code": exc.code,
+                    **item_error,
+                    "details": exc.items,
+                })
+                snapshots.append(None)
+                continue
+
+            try:
+                fiscal_snapshot = self.tax_rule_calculator.calculate(
+                    item=SaleItem(
+                        sale_id=sale_id,
+                        product_id=product.id,
+                        product_name=product.name,
+                        quantity=item_dto.quantity,
+                        unit_price=product.price,
+                        total=product.price * item_dto.quantity,
+                    ),
+                    rule=rule,
+                )
+                snapshot_json = fiscal_snapshot.as_persistence_dict()
+                snapshots.append(SaleItemFiscalEvidence(
+                    tax_rule_id_snapshot=uuid.UUID(fiscal_snapshot.rule_id),
+                    tax_rule_version_snapshot=fiscal_snapshot.rule_version,
+                    fiscal_calculation_version=fiscal_snapshot.calculation_version,
+                    fiscal_tax_snapshot=snapshot_json,
+                    snapshot_sha256=canonical_sha256(snapshot_json),
+                ))
+            except (BusinessRuleException, TypeError, ValueError) as exc:
+                fiscal_errors.append({
+                    "code": "sale.fiscal_snapshot_invalid",
+                    **item_error,
+                    "reason": str(exc),
+                })
+                snapshots.append(None)
+
+        return snapshots, fiscal_errors
 
     def _validate_offline_sale_clock(self, sale: Sale) -> None:
         """Accept client time only inside the bounded production fiscal window."""
