@@ -206,6 +206,7 @@ class SaleModel(Base):
     offline_id = Column(String, nullable=True)
     synced_at = Column(DateTime, nullable=True)
     received_at = Column(DateTime(timezone=True), nullable=True)
+    fiscal_rule_pendencies_json = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Relacionamentos

@@ -19,6 +19,7 @@ MIGRATION_PATH = (
 )
 VERSIONS_PATH = MIGRATION_PATH.parent
 V2_MIGRATION_PATH = VERSIONS_PATH / "20260715_0008_product_tax_rules_v2.py"
+V3_MIGRATION_PATH = VERSIONS_PATH / "20260715_0009_sale_fiscal_rule_pendencies.py"
 
 
 def migration_revision_ids() -> list[str]:
@@ -48,6 +49,16 @@ def load_migration_module():
 def load_v2_migration_module():
     spec = importlib.util.spec_from_file_location(
         "product_tax_rules_v2_migration", V2_MIGRATION_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_v3_migration_module():
+    spec = importlib.util.spec_from_file_location(
+        "sale_fiscal_rule_pendencies_migration", V3_MIGRATION_PATH
     )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -131,6 +142,32 @@ def test_tax_rule_v2_migration_follows_repaired_marketfy_head() -> None:
 
     assert migration.revision == "20260715_0008"
     assert migration.down_revision == "20260715_0007"
+
+
+def test_sale_fiscal_pendencies_migration_is_nullable_json_successor(
+    monkeypatch,
+) -> None:
+    migration = load_v3_migration_module()
+    recorder = OperationRecorder()
+    monkeypatch.setattr(migration, "op", recorder)
+
+    migration.upgrade()
+
+    assert migration.revision == "20260715_0009"
+    assert migration.down_revision == "20260715_0008"
+    event, args, _kwargs = recorder.events[0]
+    assert event == "add_column"
+    assert args[0] == "sales"
+    assert args[1].name == "fiscal_rule_pendencies_json"
+    assert isinstance(args[1].type, sa.JSON)
+    assert args[1].nullable is True
+    assert recorder.executed_sql == []
+
+    recorder.events.clear()
+    migration.downgrade()
+    assert recorder.events == [
+        ("drop_column", ("sales", "fiscal_rule_pendencies_json"), {})
+    ]
 
 
 def test_tax_rule_v2_upgrade_adds_only_missing_nullable_evidence(monkeypatch) -> None:

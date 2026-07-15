@@ -214,7 +214,7 @@ class FiscalRuleMissingError(FiscalRuleError):
         )
 
     def details(self) -> dict:
-        return {"affected_products": self.affected_products}
+        return super().details()
 
 
 class TaxRuleService:

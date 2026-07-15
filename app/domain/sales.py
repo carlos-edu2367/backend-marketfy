@@ -130,6 +130,7 @@ class Sale(Entity):
     synced_at: Optional[datetime] = None
     # Captured by the API server; the client-created timestamp remains a claim.
     received_at: Optional[datetime] = None
+    fiscal_rule_pendencies: Optional[List[dict[str, str]]] = None
     
     items: List[SaleItem] = field(default_factory=list)
     payments: List[Payment] = field(default_factory=list)

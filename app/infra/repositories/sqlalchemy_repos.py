@@ -1,6 +1,6 @@
 import json
 import uuid
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, cast, Date, extract
 from sqlalchemy.orm import selectinload
@@ -519,6 +519,7 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
         model.customer_cpf = sale.customer_cpf 
         
         model.offline_id = sale.offline_id
+        model.fiscal_rule_pendencies_json = sale.fiscal_rule_pendencies
         
         # --- FIX: Correção para AsyncPG (Naive vs Aware Datetime) ---
         # Removemos o tzinfo explicitamente para garantir compatibilidade 
@@ -638,6 +639,7 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                 if m.received_at and m.received_at.tzinfo is None
                 else m.received_at.astimezone(timezone.utc) if m.received_at else None
             ),
+            fiscal_rule_pendencies=m.fiscal_rule_pendencies_json,
         )
         s.id = m.id
         s.created_at = m.created_at

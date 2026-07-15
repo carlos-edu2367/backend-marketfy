@@ -245,6 +245,7 @@ class SaleResponseDTO(BaseModel):
     created_at: datetime
     synced_at: Optional[datetime]
     customer_cpf: Optional[str]
+    fiscal_rule_pendencies: Optional[List[Dict[str, str]]] = None
     items: List[SaleItemDTO] = []
     payments: List[PaymentDTO] = []
     invoice: Any = None

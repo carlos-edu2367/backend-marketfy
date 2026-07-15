@@ -132,6 +132,9 @@ class FiscalRuleError(BusinessRuleException):
         self.code = code
         self.items = items or []
 
+    def details(self) -> dict[str, Any]:
+        return {"code": self.code, "items": self.items}
+
 
 @dataclass(frozen=True)
 class TaxRuleApproval:

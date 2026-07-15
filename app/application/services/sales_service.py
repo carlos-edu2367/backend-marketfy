@@ -1,14 +1,14 @@
 import uuid
 from decimal import Decimal
-from typing import Dict, List, Any, Optional
+from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 
 from domain.sales import (
-    Sale, SaleItem, SaleItemFiscalEvidence, SaleStatus, Payment, PaymentMethod,
+    Sale, SaleItem, SaleItemFiscalEvidence, SaleStatus, PaymentMethod,
     Box, BoxStatus, Terminal,
 )
 from domain.inventory import StockMovementType
-from domain.shared import BusinessRuleException, CPF
+from domain.shared import BusinessRuleException
 from domain.interfaces import (
     SaleRepositoryInterface, BoxRepositoryInterface, ProductRepositoryInterface,
     MarketRepositoryInterface, TerminalRepositoryInterface, CustomerRepositoryInterface,
@@ -162,6 +162,14 @@ class SalesService:
         Atualiza estoque, financeiro (fiado), SALDO DO CAIXA e persiste a venda.
         """
         results = []
+
+        if len(sales_dtos) > 1:
+            batch_enforcement = await self._get_fiscal_rule_enforcement(market_id)
+            if batch_enforcement is FiscalRuleEnforcement.BLOCK:
+                raise FiscalRuleError(
+                    "sale.fiscal_single_checkout_required",
+                    "O modo fiscal bloqueio aceita uma venda online por requisição.",
+                )
         
         for dto in sales_dtos:
             try:
@@ -232,6 +240,16 @@ class SalesService:
                     prepared_items=prepared_items,
                 )
 
+                # Freeze every item before entering any commercial mutation phase.
+                for (item_dto, product), fiscal_evidence in zip(
+                    prepared_items, fiscal_snapshots
+                ):
+                    sale.add_item(
+                        product,
+                        item_dto.quantity,
+                        fiscal_evidence=fiscal_evidence,
+                    )
+
                 # 4. Validação e Processamento de Pagamentos
                 box = await self.box_repo.get_by_id(dto.box_id)
                 if not box or box.market_id != market_id or box.status != BoxStatus.OPEN:
@@ -279,7 +297,7 @@ class SalesService:
                     sale.add_payment(method, pay_dto.amount, pay_dto.installments)
 
                 # 5. Adiciona itens e baixa o estoque somente após validar o lote fiscal.
-                for (item_dto, product), fiscal_evidence in zip(prepared_items, fiscal_snapshots):
+                for item_dto, product in prepared_items:
 
                     # Baixa Estoque (Movimentação do tipo VENDA)
                     product.add_movement(
@@ -289,13 +307,6 @@ class SalesService:
                     )
                     await self.product_repo.save(product, commit=False) # Commit no final
                     
-                    # Adiciona item na venda
-                    sale.add_item(
-                        product,
-                        item_dto.quantity,
-                        fiscal_evidence=fiscal_evidence,
-                    )
-
                 # 6. CORREÇÃO: Atualiza Saldo do Caixa (Se houve dinheiro)
                 if cash_amount_to_add_to_box > 0:
                     box.current_balance += cash_amount_to_add_to_box
@@ -447,6 +458,15 @@ class SalesService:
                 "Há itens sem evidência fiscal v2 válida para concluir a venda.",
                 fiscal_errors,
             )
+        if fiscal_errors and enforcement is FiscalRuleEnforcement.WARN:
+            sale.fiscal_rule_pendencies = [
+                {
+                    "code": item["code"],
+                    "product_id": item["product_id"],
+                    "product_name": item["product_name"],
+                }
+                for item in fiscal_errors
+            ]
         return snapshots
 
     def _validate_offline_sale_clock(self, sale: Sale) -> None:
@@ -545,6 +565,7 @@ class SalesService:
             created_at=sale.created_at,
             synced_at=sale.synced_at,
             customer_cpf=sale.customer_cpf,
+            fiscal_rule_pendencies=sale.fiscal_rule_pendencies,
             items=[
                 SaleItemDTO(
                     product_id=i.product_id,

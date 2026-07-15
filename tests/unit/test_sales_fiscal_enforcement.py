@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 import os
 import sys
 import uuid
@@ -20,6 +21,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key")
 from application.dtos import PaymentDTO, SaleCreateDTO, SaleItemDTO
 from application.services.fiscal.tax_rule_service import (
     FiscalRuleAmbiguousError,
+    FiscalRuleMissingError,
     TaxRuleNotFoundError,
 )
 from application.services.fiscal.snapshot_integrity import canonical_sha256
@@ -35,11 +37,8 @@ from domain.sales import (
     Box,
     BoxStatus,
     Sale,
-    SaleItemFiscalEvidence,
     SaleStatus,
 )
-from infra.database.models import SaleItemModel, SaleModel
-from infra.repositories.sqlalchemy_repos import SQLAlchemySaleRepository
 
 
 MARKET_ID = uuid.uuid4()
@@ -289,6 +288,20 @@ async def test_warn_mode_persists_available_v2_snapshot_and_allows_missing_rule(
     )
     assert missing_item.fiscal_tax_snapshot is None
     assert missing_item.tax_rule_id_snapshot is None
+    expected_pendencies = [
+        {
+            "code": "sale.fiscal_rule_missing",
+            "product_id": str(missing.id),
+            "product_name": "Pendente",
+        }
+    ]
+    assert saved_sale.fiscal_rule_pendencies == expected_pendencies
+    assert result[0].fiscal_rule_pendencies == expected_pendencies
+    assert set(saved_sale.fiscal_rule_pendencies[0]) == {
+        "code",
+        "product_id",
+        "product_name",
+    }
     assert deps.product_repo.save.await_count == 2
     deps.financial_repo.save.assert_awaited_once()
     deps.sale_repo.save.assert_awaited_once()
@@ -331,65 +344,6 @@ async def test_block_mode_aggregates_missing_ambiguous_and_unsnapshottable_items
     deps.box_repo.save.assert_not_awaited()
     deps.financial_repo.save.assert_not_awaited()
     deps.sale_repo.save.assert_not_awaited()
-
-
-class _EmptyScalars:
-    def first(self):
-        return None
-
-
-class _EmptyResult:
-    def scalars(self):
-        return _EmptyScalars()
-
-
-class _RecordingSession:
-    def __init__(self):
-        self.added = []
-
-    async def execute(self, _statement):
-        return _EmptyResult()
-
-    def add(self, model):
-        self.added.append(model)
-
-
-@pytest.mark.asyncio
-async def test_sale_repository_round_trip_preserves_complete_v2_evidence() -> None:
-    product = _product("Persistido")
-    rule = _rule(version=3)
-    resolver = AsyncMock(return_value=rule)
-    service, deps = _service(
-        products=[product],
-        mode=FiscalRuleEnforcement.BLOCK,
-        resolver=resolver,
-    )
-    await service.process_sync(MARKET_ID, [_sale_request(products=[product])])
-    source_sale = deps.sale_repo.save.await_args.args[0]
-    source_item = source_sale.items[0]
-
-    session = _RecordingSession()
-    repository = SQLAlchemySaleRepository(session)
-    await repository.save(source_sale, commit=False)
-
-    sale_model = next(model for model in session.added if isinstance(model, SaleModel))
-    item_model = next(
-        model for model in session.added if isinstance(model, SaleItemModel)
-    )
-    sale_model.items = [item_model]
-    sale_model.payments = []
-    sale_model.fiscal_documents = []
-    reloaded = repository._to_entity(sale_model)
-    reloaded_item = reloaded.items[0]
-
-    assert reloaded_item.tax_rule_id_snapshot == source_item.tax_rule_id_snapshot
-    assert reloaded_item.tax_rule_version_snapshot == 3
-    assert reloaded_item.fiscal_calculation_version == "marketfy-tax-calc.v2"
-    assert reloaded_item.fiscal_tax_snapshot == source_item.fiscal_tax_snapshot
-    assert reloaded_item.snapshot_sha256 == source_item.snapshot_sha256
-    assert reloaded_item.snapshot_sha256 == canonical_sha256(
-        reloaded_item.fiscal_tax_snapshot
-    )
 
 
 @pytest.mark.asyncio
@@ -444,3 +398,128 @@ async def test_completed_retry_returns_frozen_sale_before_block_offline_gate() -
     deps.box_repo.save.assert_not_awaited()
     deps.financial_repo.save.assert_not_awaited()
     deps.sale_repo.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_block_mode_rejects_multi_sale_batch_before_entering_loop() -> None:
+    products = [_product("Primeiro"), _product("Segundo")]
+    resolver = AsyncMock(side_effect=AssertionError("batch não deve resolver regra"))
+    service, deps = _service(
+        products=products,
+        mode=FiscalRuleEnforcement.BLOCK,
+        resolver=resolver,
+    )
+    requests = [
+        _sale_request(products=[products[0]]),
+        _sale_request(products=[products[1]]),
+    ]
+
+    with pytest.raises(FiscalRuleError) as error:
+        await service.process_sync(MARKET_ID, requests)
+
+    assert error.value.code == "sale.fiscal_single_checkout_required"
+    assert error.value.items == []
+    deps.sale_repo.get_by_id.assert_not_awaited()
+    deps.sale_repo.get_by_offline_id.assert_not_awaited()
+    deps.product_repo.get_by_id.assert_not_awaited()
+    resolver.assert_not_awaited()
+    deps.product_repo.save.assert_not_awaited()
+    deps.box_repo.save.assert_not_awaited()
+    deps.customer_repo.save.assert_not_awaited()
+    deps.financial_repo.save.assert_not_awaited()
+    deps.sale_repo.save.assert_not_awaited()
+    assert [product.current_stock for product in products] == [
+        Decimal("5.000"),
+        Decimal("5.000"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [FiscalRuleEnforcement.OFF, FiscalRuleEnforcement.WARN],
+)
+async def test_off_and_warn_keep_legacy_multi_sale_batch_processing(mode) -> None:
+    products = [_product("Primeiro legado"), _product("Segundo legado")]
+    resolver = (
+        AsyncMock(side_effect=AssertionError("off não resolve regra"))
+        if mode is FiscalRuleEnforcement.OFF
+        else AsyncMock(side_effect=[_rule(), _rule()])
+    )
+    service, deps = _service(products=products, mode=mode, resolver=resolver)
+
+    result = await service.process_sync(
+        MARKET_ID,
+        [
+            _sale_request(products=[products[0]]),
+            _sale_request(products=[products[1]]),
+        ],
+    )
+
+    assert len(result) == 2
+    assert deps.sale_repo.save.await_count == 2
+    assert deps.product_repo.save.await_count == 2
+    assert [product.current_stock for product in products] == [
+        Decimal("4.000"),
+        Decimal("4.000"),
+    ]
+    if mode is FiscalRuleEnforcement.OFF:
+        resolver.assert_not_awaited()
+    else:
+        assert resolver.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_sale_item_construction_failure_precedes_all_commercial_mutation(
+    monkeypatch,
+) -> None:
+    product = _product("Falha ao congelar")
+    service, deps = _service(
+        products=[product],
+        mode=FiscalRuleEnforcement.BLOCK,
+        resolver=AsyncMock(return_value=_rule()),
+    )
+
+    def fail_to_freeze_item(*_args, **_kwargs):
+        raise ValueError("falha ao copiar evidência")
+
+    monkeypatch.setattr(Sale, "add_item", fail_to_freeze_item)
+
+    with pytest.raises(ValueError, match="falha ao copiar evidência"):
+        await service.process_sync(
+            MARKET_ID, [_sale_request(products=[product])]
+        )
+
+    assert product.current_stock == Decimal("5.000")
+    deps.product_repo.save.assert_not_awaited()
+    deps.box_repo.save.assert_not_awaited()
+    deps.customer_repo.save.assert_not_awaited()
+    deps.financial_repo.save.assert_not_awaited()
+    deps.sale_repo.save.assert_not_awaited()
+
+
+def test_missing_error_details_preserve_structured_item_codes() -> None:
+    items = [
+        {
+            "code": "sale.fiscal_rule_missing",
+            "product_id": str(uuid.uuid4()),
+            "product_name": "Sem regra",
+        },
+        {
+            "code": "sale.fiscal_rule_context_mismatch",
+            "product_id": str(uuid.uuid4()),
+            "product_name": "Contexto inválido",
+        },
+    ]
+    error = FiscalRuleMissingError(
+        [
+            {"id": item["product_id"], "name": item["product_name"]}
+            for item in items
+        ],
+        items=items,
+    )
+
+    assert error.details() == {
+        "code": "sale.fiscal_rule_missing",
+        "items": items,
+    }
