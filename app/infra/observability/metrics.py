@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import hashlib
 from threading import Lock
 from typing import Dict, Tuple
 
@@ -18,6 +19,7 @@ class MetricsRegistry:
         self._sync: Dict[str, int] = defaultdict(int)
         self._billing_webhooks: Dict[str, int] = defaultdict(int)
         self._fiscal_invoices: Dict[str, int] = defaultdict(int)
+        self._fiscal_rule_events: Dict[Tuple[str, str, str], int] = defaultdict(int)
 
     def record_request(self, method: str, route: str, status_code: int, duration_ms: float) -> None:
         method = method.upper()
@@ -51,6 +53,19 @@ class MetricsRegistry:
         with self._lock:
             self._fiscal_invoices[_safe_label(result)] += 1
 
+    def record_fiscal_rule_event(self, *, market_id: str, mode: str, event: str) -> None:
+        allowed_events = {
+            "fiscal_rule_missing",
+            "fiscal_rule_ambiguous",
+            "snapshot_invalid",
+            "contract_rejected",
+            "unsupported_tax_group",
+        }
+        if event not in allowed_events:
+            return
+        with self._lock:
+            self._fiscal_rule_events[(_safe_market_label(market_id), _safe_label(mode), event)] += 1
+
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -62,6 +77,7 @@ class MetricsRegistry:
                 "sales_sync_total": dict(self._sync),
                 "billing_webhooks_total": dict(self._billing_webhooks),
                 "fiscal_invoices_total": dict(self._fiscal_invoices),
+                "fiscal_rule_events_total": dict(self._fiscal_rule_events),
             }
 
     def to_prometheus_text(self) -> str:
@@ -101,6 +117,12 @@ class MetricsRegistry:
             lines.append(f"# TYPE {metric_name} counter")
             for result, count in values.items():
                 lines.append(f'{metric_name}{{result="{result}"}} {count}')
+        lines.append("# TYPE marketfy_fiscal_rule_events_total counter")
+        for (market, mode, event), count in snapshot["fiscal_rule_events_total"].items():
+            lines.append(
+                "marketfy_fiscal_rule_events_total"
+                f'{{market="{market}",mode="{mode}",event="{event}"}} {count}'
+            )
         return "\n".join(lines) + "\n"
 
 
@@ -110,6 +132,10 @@ def _safe_label(value: str | None) -> str:
     for char in value[:64]:
         allowed.append(char if char.isalnum() or char in {"_", "-", "."} else "_")
     return "".join(allowed) or "unknown"
+
+
+def _safe_market_label(market_id: str) -> str:
+    return hashlib.sha256(str(market_id).encode("utf-8")).hexdigest()[:12]
 
 
 def _safe_route(route: str) -> str:
