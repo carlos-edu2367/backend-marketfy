@@ -31,6 +31,7 @@ from domain.support import Ticket, TicketPriority, TicketStatus
 
 from application.dtos import (
     CustomerCreateDTO,
+    CustomerCreditLimitUpdateDTO,
     CustomerResponseDTO,
     DebtPaymentDTO,
     LedgerEntryDTO,
@@ -90,6 +91,20 @@ class FinanceService:
             if term in (c.name or "").lower()
             or (c.cpf and term in c.cpf.value)
         ]
+
+    async def update_customer_credit_limit(
+        self,
+        market_id: uuid.UUID,
+        customer_id: uuid.UUID,
+        dto: CustomerCreditLimitUpdateDTO,
+    ) -> Customer:
+        customer = await self.customer_repo.get_by_id(customer_id)
+        if not customer or customer.market_id != market_id:
+            raise BusinessRuleException("Cliente não encontrado.")
+
+        customer.credit_limit = dto.credit_limit
+        customer.update_timestamp()
+        return await self.customer_repo.save(customer)
 
     async def register_debt_payment(
         self,
