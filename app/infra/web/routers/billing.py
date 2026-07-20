@@ -129,8 +129,36 @@ async def subscribe(
         )
         return result
 
-    # recurring — implementado na Task 12
-    raise HTTPException(status_code=400, detail="Cobrança recorrente em configuração. Use faturas por enquanto.")
+    # recurring
+    if not dto.document:
+        raise HTTPException(status_code=400, detail="Documento (CPF/CNPJ) é obrigatório para cobrança recorrente.")
+    from application.services.recurring_service import RecurringService
+    from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
+    from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository, SQLAlchemyUserRepository
+    rec = RecurringService(
+        subscription_repo=SQLAlchemyBillingSubscriptionRepository(db),
+        plan_repo=SQLAlchemyPlanRepository(db),
+        user_repo=SQLAlchemyUserRepository(db),
+        billing_client=BillingCoreClient(),
+        settings=settings,
+    )
+    try:
+        result = await rec.contract(
+            user=current_user, plan_id=dto.plan_id,
+            subscription_type=dto.subscription_type, document=dto.document, idempotency_key=idem,
+        )
+        await db.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except BillingCoreError as exc:
+        logger.warning(f"[billing] Billing Core indisponível recurring user={current_user.id}: {exc}")
+        raise HTTPException(status_code=503, detail="Serviço de cobrança temporariamente indisponível.")
+    await record_audit_event(
+        audit, request, actor=current_user, action="billing.subscribe.recurring",
+        resource_type="billing_subscription", resource_id=result.get("subscription_id"),
+        result="success", metadata={"plan_id": str(dto.plan_id), "subscription_type": dto.subscription_type},
+    )
+    return result
 
 
 @router.get("/invoices")
