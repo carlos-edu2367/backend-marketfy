@@ -70,6 +70,18 @@ class SQLAlchemyBillingSubscriptionRepository:
         await self._db.flush()
         return sub
 
+    async def list_invoice_subs_expiring_within(self, cutoff: datetime) -> List[BillingSubscriptionModel]:
+        """Assinaturas modo invoice, ativas, com expires_at até o cutoff (janela de faturamento)."""
+        result = await self._db.execute(
+            select(BillingSubscriptionModel).where(
+                BillingSubscriptionModel.billing_mode == "invoice",
+                BillingSubscriptionModel.status == "active",
+                BillingSubscriptionModel.expires_at.isnot(None),
+                BillingSubscriptionModel.expires_at <= cutoff,
+            )
+        )
+        return list(result.scalars().all())
+
 
 class SQLAlchemyBillingEventRepository:
     """CRUD para billing_events."""
