@@ -183,7 +183,9 @@ def _to_tenant_config(m: FiscalTenantConfigModel) -> FiscalTenantConfig:
         environment=FiscalEnvironment(m.environment),
         enabled=m.enabled,
         fiscal_rule_enforcement=FiscalRuleEnforcement(
-            m.fiscal_rule_enforcement or FiscalRuleEnforcement.OFF.value
+            FiscalRuleEnforcement.OFF.value
+            if m.fiscal_rule_enforcement is None
+            else m.fiscal_rule_enforcement
         ),
         legal_name=m.legal_name,
         trade_name=m.trade_name,
