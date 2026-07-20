@@ -91,8 +91,17 @@ async def _run_generate_due_invoices_with_session(ctx: dict) -> dict:
 
 
 def _build_email_gateway(settings):
-    """Placeholder até a Task 14; retorna None (sem e-mail) por ora."""
-    return None
+    """Constrói o gateway Mailgun se configurado; senão None (e-mail desligado)."""
+    if not getattr(settings, "MAILGUN_API_KEY", "") or not getattr(settings, "MAILGUN_DOMAIN", ""):
+        return None
+    from infra.integrations.mailgun import MailgunEmailGateway
+    return MailgunEmailGateway(
+        api_key=settings.MAILGUN_API_KEY,
+        domain=settings.MAILGUN_DOMAIN,
+        from_email=settings.MAILGUN_FROM_EMAIL,
+        from_name=settings.MAILGUN_FROM_NAME,
+        api_base_url=settings.MAILGUN_API_BASE_URL,
+    )
 
 
 async def reconcile_pending_invoices(
