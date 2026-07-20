@@ -28,6 +28,10 @@ from application.jobs.fiscal_jobs import (
     reconcile_nfce_job,
     reset_monthly_fiscal_quotas,
 )
+from application.jobs.billing_jobs import (
+    generate_due_invoices,
+    reconcile_pending_invoices,
+)
 from arq.cron import cron
 from infra.queues.arq_config import get_redis_settings, ALL_QUEUES
 from infra.config.logger import get_logger
@@ -67,6 +71,8 @@ class WorkerSettings:
         notify_quota_job,
         reset_monthly_fiscal_quotas,
         reconcile_pending_bc_payments,
+        generate_due_invoices,
+        reconcile_pending_invoices,
     ]
 
     redis_settings = get_redis_settings()
@@ -91,4 +97,6 @@ class WorkerSettings:
         # Reset mensal de cotas — 1º dia do mês às 00:05 UTC
         cron(reset_monthly_fiscal_quotas, day=1, hour=0, minute=5),
         cron(reconcile_pending_bc_payments, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
+        cron(generate_due_invoices, hour=8, minute=0),               # diário 08:00 UTC
+        cron(reconcile_pending_invoices, minute={2, 12, 22, 32, 42, 52}),
     ]
