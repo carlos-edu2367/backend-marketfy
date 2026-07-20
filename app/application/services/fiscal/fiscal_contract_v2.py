@@ -19,6 +19,17 @@ CONTRACT_VERSION = "marketfy.fiscal-tax-snapshot.v2"
 _MONEY = Decimal("0.01")
 _RATE = Decimal("0.0001")
 _RETAINED_ST = frozenset({"ICMSSN500", "ICMS60"})
+_LEGACY_ICMS_COMPATIBILITY_FIELDS = frozenset(
+    {
+        "reduction_rate",
+        "st_base",
+        "st_mva_rate",
+        "st_rate",
+        "st_amount",
+        "fcp_rate",
+        "fcp_amount",
+    }
+)
 
 
 def canonical_contract_sha256(payload: Mapping[str, Any]) -> str:
@@ -145,6 +156,13 @@ class FiscalContractV2Serializer:
         if getattr(item, "snapshot_sha256", None) != canonical_sha256(snapshot):
             raise BusinessRuleException(f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=snapshot_sha256; reason=mismatch")
         tax = _json_evidence(snapshot)
+        # Sales persist a compatibility view for the v1 sender as well.  The
+        # v2 wire DTO is strict and must carry only v2 current/retained-ST
+        # fields, never the legacy aliases.
+        icms_evidence = tax.get("icms")
+        if isinstance(icms_evidence, dict):
+            for field in _LEGACY_ICMS_COMPATIBILITY_FIELDS:
+                icms_evidence.pop(field, None)
         for field in ("ncm", "origin", "cfop", "icms", "pis", "cofins", "approval_ref"):
             if tax.get(field) is None:
                 raise BusinessRuleException(f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={field}; reason=required")
