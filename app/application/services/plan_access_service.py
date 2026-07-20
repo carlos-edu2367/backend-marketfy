@@ -46,6 +46,8 @@ class SubscriptionStatus:
     RESTRICTED  = {PAST_DUE}               # acesso limitado; sem novos recursos
     BLOCKED     = {CANCELED, EXPIRED, FAILED}  # sem acesso operacional
 
+    GRACE_DAYS = 3  # tolerância após expires_at antes de bloquear (modo invoice)
+
 
 # ---------------------------------------------------------------------------
 # Features controláveis por plano
@@ -83,6 +85,8 @@ class PlanAccessResult:
     limit: Optional[int] = None
     plan_name: Optional[str] = None
     expires_at: Optional[datetime] = None
+    billing_mode: Optional[str] = None
+    locked: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -134,21 +138,48 @@ class PlanAccessService:
     # ------------------------------------------------------------------
 
     async def get_subscription_status(self, owner_id: uuid.UUID) -> PlanAccessResult:
-        """Retorna o status consolidado da assinatura do owner."""
+        """Retorna o status consolidado, recalculando grace/expiração por data."""
         sub = await self._sub_repo.get_active_by_owner(owner_id)
 
         if sub is not None:
             plan = await self._plan_repo.get_by_id(sub.plan_id) if sub.plan_id else None
+            effective, locked = self._effective_status(sub)
             return PlanAccessResult(
-                allowed=sub.status in SubscriptionStatus.OPERATIONAL,
-                reason="Assinatura ativa." if sub.status in SubscriptionStatus.OPERATIONAL else f"Status: {sub.status}",
-                subscription_status=sub.status,
+                allowed=effective in SubscriptionStatus.OPERATIONAL,
+                reason="Assinatura ativa." if effective in SubscriptionStatus.OPERATIONAL else f"Status: {effective}",
+                subscription_status=effective,
                 plan_name=plan.name if plan else None,
                 expires_at=sub.expires_at,
+                billing_mode=getattr(sub, "billing_mode", None),
+                locked=locked,
             )
 
         # Fallback: UserModel ainda é usado como cache temporário
         return await self._fallback_from_user(owner_id)
+
+    def _effective_status(self, sub) -> tuple[str, bool]:
+        """Deriva (status_efetivo, locked) de status persistido + expires_at + grace.
+
+        Regras:
+          - Estados terminais persistidos (canceled/failed) => bloqueado.
+          - Com expires_at no futuro => mantém status persistido.
+          - Passou de expires_at mas dentro do grace (3d) => past_due, não bloqueado.
+          - Passou do grace => expired, bloqueado.
+        """
+        from datetime import timedelta
+        status = sub.status
+        if status in (SubscriptionStatus.CANCELED, SubscriptionStatus.FAILED):
+            return status, True
+        expires_at = getattr(sub, "expires_at", None)
+        if expires_at is None:
+            return status, status in SubscriptionStatus.BLOCKED
+        now = datetime.utcnow()
+        if now <= expires_at:
+            return status, status in SubscriptionStatus.BLOCKED
+        grace_end = expires_at + timedelta(days=SubscriptionStatus.GRACE_DAYS)
+        if now <= grace_end:
+            return SubscriptionStatus.PAST_DUE, False
+        return SubscriptionStatus.EXPIRED, True
 
     async def _fallback_from_user(self, owner_id: uuid.UUID) -> PlanAccessResult:
         """Fallback para UserModel.plan_id quando BillingSubscriptionModel está vazio."""
