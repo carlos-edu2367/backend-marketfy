@@ -34,6 +34,7 @@ from application.services.fiscal.fiscal_rollout_service import (
 )
 from domain.fiscal import FiscalRuleEnforcement, FiscalRuleError
 from infra.config.logger import get_logger
+from infra.observability.metrics import metrics_registry
 
 logger = get_logger("sales_service")
 
@@ -54,6 +55,7 @@ class SalesService:
                  environment: str = "development",
                  fiscal_offline_max_age_minutes: int = 30,
                  fiscal_product_rules_enabled: bool = True,
+                 metrics=None,
                  ): 
         self.sale_repo = sale_repo
         self.box_repo = box_repo
@@ -70,6 +72,7 @@ class SalesService:
         self.environment = environment
         self.fiscal_offline_max_age_minutes = fiscal_offline_max_age_minutes
         self.fiscal_product_rules_enabled = fiscal_product_rules_enabled
+        self.metrics = metrics or metrics_registry
 
     # ==================================================================================
     # TERMINAIS (PDVs)
@@ -443,7 +446,42 @@ class SalesService:
             prepared_items=prepared_items,
         )
         fiscal_errors.extend(resolution_errors)
+        self._record_fiscal_preflight_metrics(
+            market_id=market_id,
+            enforcement=enforcement,
+            fiscal_errors=fiscal_errors,
+        )
         return enforcement, fiscal_errors
+
+    def _record_fiscal_preflight_metrics(
+        self,
+        *,
+        market_id: uuid.UUID,
+        enforcement: FiscalRuleEnforcement,
+        fiscal_errors: list[dict],
+    ) -> None:
+        """Record bounded rollout outcomes without product or tenant labels."""
+        events_by_error_code = {
+            "sale.fiscal_rule_missing": "fiscal_rule_missing",
+            "sale.fiscal_rule_ambiguous": "fiscal_rule_ambiguous",
+            "sale.fiscal_rule_invalid": "snapshot_invalid",
+        }
+        for error in fiscal_errors:
+            result_code = str(error.get("code") or "unknown")
+            self.metrics.record_fiscal_contract(
+                market_id=str(market_id),
+                contract_version="marketfy.fiscal-tax-snapshot.v2",
+                enforcement_mode=enforcement.value,
+                result_code=result_code,
+                path="v2",
+            )
+            event = events_by_error_code.get(result_code)
+            if event is not None:
+                self.metrics.record_fiscal_rule_event(
+                    market_id=str(market_id),
+                    mode=enforcement.value,
+                    event=event,
+                )
 
     async def _collect_fiscal_snapshots(
         self,

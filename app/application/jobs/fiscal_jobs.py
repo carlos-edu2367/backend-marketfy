@@ -128,6 +128,12 @@ def _record_fiscal_contract_metric(
         result_code=result_code,
         path=path,
     )
+    if result_code in {"payload_invalid", "payload_missing"}:
+        metrics_registry.record_fiscal_rule_event(
+            market_id=str(getattr(doc, "market_id", "")),
+            mode=enforcement_mode,
+            event="contract_rejected",
+        )
 
 
 # =============================================================================
