@@ -300,6 +300,78 @@ class SubscriptionService:
             "event_type": event_type,
         }
 
+    async def process_recurring_event(
+        self,
+        event: str,
+        billing_subscription_id: Optional[str],
+        subscription_expires_at: Optional[datetime],
+        payment_date: Optional[datetime],
+        raw_payload: Dict[str, Any],
+    ) -> Dict[str, str]:
+        """Processa o webhook interno de assinatura do billing core.
+
+        Payload real: {event, subscription_id, subscription_expires_at, payment_date}.
+        event_id é sintetizado para idempotência.
+        """
+        from infra.database.models import BillingEventModel
+
+        if self._event_repo is None:
+            raise BusinessRuleException("Repositório de eventos de billing não configurado.")
+
+        pd = payment_date.isoformat() if payment_date else "none"
+        event_id = f"{billing_subscription_id}:{event}:{pd}"
+
+        existing = await self._event_repo.get_by_event_id(event_id)
+        if existing is not None:
+            return {"result": "duplicate", "event_id": event_id}
+
+        local_sub = None
+        if billing_subscription_id:
+            local_sub = await self._sub_repo.get_by_billing_subscription_id(billing_subscription_id)
+
+        event_model = BillingEventModel(
+            event_id=event_id, event_type=event, idempotency_key=event_id,
+            raw_payload=json.dumps(raw_payload, default=str), processing_status="received",
+        )
+        if local_sub is not None:
+            event_model.subscription_id = local_sub.id
+            event_model.owner_id = local_sub.owner_id
+        await self._event_repo.save(event_model)
+
+        status_map = {
+            "PAYMENT_RECEIVED": "active",
+            "PAYMENT_REFUNDED": None,          # não altera acesso automaticamente
+            "SUBSCRIPTION_INACTIVATED": "canceled",
+        }
+        new_status = status_map.get(event, None)
+
+        try:
+            if local_sub is not None and new_status is not None:
+                local_sub.status = new_status
+                local_sub.last_event_at = datetime.utcnow()
+                if subscription_expires_at and new_status == "active":
+                    local_sub.expires_at = subscription_expires_at
+                await self._sub_repo.save(local_sub)
+
+                user = await self.user_repo.get_by_id(local_sub.owner_id)
+                if user is not None:
+                    if local_sub.plan_id:
+                        user.plan_id = local_sub.plan_id
+                    if subscription_expires_at and new_status == "active":
+                        user.plan_expiration = subscription_expires_at
+                        user.is_active = True
+                    await self.user_repo.save(user)
+
+            event_model.processing_status = "processed"
+            event_model.processed_at = datetime.utcnow()
+        except Exception as exc:
+            event_model.processing_status = "failed"
+            event_model.processing_error = str(exc)[:500]
+            logger.error(f"[webhook] Falha recorrente event_id={event_id}: {exc}")
+        await self._event_repo.save(event_model)
+
+        return {"result": event_model.processing_status, "event_id": event_id, "event": event}
+
     async def _apply_event(
         self,
         event_type: str,

@@ -420,53 +420,45 @@ async def receive_billing_webhook(
         logger.warning("[webhook] Assinatura X-Webhook-Signature-256 inválida no webhook do Billing Core.")
         raise HTTPException(status_code=401, detail="Assinatura inválida.")
 
-    try:
-        payload = BillingWebhookEventDTO(**raw_body)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Payload de webhook inválido: {exc}")
+    # 3. Parsear payload real de assinatura do billing:
+    #    {event, subscription_id, subscription_expires_at, payment_date}
+    event = raw_body.get("event")
+    billing_subscription_id = raw_body.get("subscription_id")
+    if not event or not billing_subscription_id:
+        raise HTTPException(status_code=422, detail="Payload de webhook de assinatura inválido.")
 
-    if not payload.event_id:
-        raise HTTPException(status_code=400, detail="event_id obrigatório para idempotência.")
+    def _parse_dt(v):
+        if not v:
+            return None
+        try:
+            return datetime.fromisoformat(str(v).replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            return None
 
     # 4. Processar evento
     try:
-        result = await service.process_webhook_event(
-            event_id=payload.event_id,
-            event_type=payload.event_type,
-            system=payload.system,
-            system_sub_id=payload.system_sub_id,
-            billing_subscription_id=payload.subscription_id,
-            status_from_event=payload.status,
-            expires_at=payload.expires_at,
+        result = await service.process_recurring_event(
+            event=event,
+            billing_subscription_id=str(billing_subscription_id),
+            subscription_expires_at=_parse_dt(raw_body.get("subscription_expires_at")),
+            payment_date=_parse_dt(raw_body.get("payment_date")),
             raw_payload=raw_body,
         )
-        metrics_registry.record_billing_webhook(payload.event_id, result.get("result"))
+        metrics_registry.record_billing_webhook(result.get("event_id"), result.get("result"))
         await record_audit_event(
             audit,
             request,
             actor=None,
             action="billing.webhook.processed",
             resource_type="billing_event",
-            resource_id=payload.event_id,
+            resource_id=result.get("event_id"),
             result=result.get("result", "unknown"),
-            metadata={"event_type": payload.event_type, "system": payload.system},
+            metadata={"event": event},
         )
         return result
     except BusinessRuleException as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        logger.error(f"[webhook] Erro ao processar evento {payload.event_id}: {exc}")
-        metrics_registry.record_billing_webhook(payload.event_id, "failed")
-        await record_audit_event(
-            audit,
-            request,
-            actor=None,
-            action="billing.webhook.processed",
-            resource_type="billing_event",
-            resource_id=payload.event_id,
-            result="failed",
-            metadata={"event_type": payload.event_type, "system": payload.system},
-        )
-        # Retornar 200 para o Billing Core não re-tentar indefinidamente
-        # O evento foi persistido para análise manual
-        return {"result": "error_persisted", "event_id": payload.event_id}
+        logger.error(f"[webhook] Erro ao processar evento recorrente {event}/{billing_subscription_id}: {exc}")
+        metrics_registry.record_billing_webhook(str(billing_subscription_id), "failed")
+        return {"result": "error_persisted"}
