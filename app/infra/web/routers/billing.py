@@ -133,6 +133,55 @@ async def subscribe(
     raise HTTPException(status_code=400, detail="Cobrança recorrente em configuração. Use faturas por enquanto.")
 
 
+@router.get("/invoices")
+async def list_invoices(
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
+    repo = SQLAlchemyBillingInvoiceRepository(db)
+    items = await repo.list_by_owner(current_user.id, limit=50, offset=0)
+    return {
+        "items": [
+            {
+                "invoice_id": str(i.id),
+                "amount": str(i.amount),
+                "status": i.status,
+                "period_start": i.period_start.isoformat() if i.period_start else None,
+                "period_end": i.period_end.isoformat() if i.period_end else None,
+                "due_date": i.due_date.isoformat() if i.due_date else None,
+                "checkout_url": i.checkout_url,
+                "paid_at": i.paid_at.isoformat() if i.paid_at else None,
+                "created_at": i.created_at.isoformat() if i.created_at else None,
+            }
+            for i in items
+        ]
+    }
+
+
+@router.get("/invoices/{invoice_id}")
+async def get_invoice(
+    invoice_id: uuid.UUID,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    invoice_service=Depends(_get_invoice_service),
+):
+    from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
+    repo = SQLAlchemyBillingInvoiceRepository(db)
+    inv = await repo.get_by_id(invoice_id)
+    if inv is None or inv.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+    checkout = await invoice_service.refresh_checkout(invoice_id)
+    await db.commit()
+    return {
+        "invoice_id": str(inv.id),
+        "amount": str(inv.amount),
+        "status": inv.status,
+        "due_date": inv.due_date.isoformat() if inv.due_date else None,
+        "checkout_url": checkout.get("checkout_url") or inv.checkout_url,
+    }
+
+
 # ---------------------------------------------------------------------------
 # GET /billing/subscription
 # ---------------------------------------------------------------------------
