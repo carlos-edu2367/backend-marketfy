@@ -400,6 +400,9 @@ class CustomerCreateDTO(BaseModel):
     phone: Optional[str] = None
     credit_limit: Optional[Decimal] = Decimal("0.00")
 
+class CustomerCreditLimitUpdateDTO(BaseModel):
+    credit_limit: Decimal = Field(..., ge=0)
+
 class CustomerResponseDTO(BaseModel):
     id: UUID
     name: str

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from application.dtos import (
     CustomerCreateDTO,
+    CustomerCreditLimitUpdateDTO,
     CustomerResponseDTO,
     DebtPaymentDTO,
     LedgerEntryDTO,
@@ -91,6 +92,21 @@ async def list_customers(
 ):
     customers = await service.list_customers(market_id, search)
     return [_customer_to_response(c) for c in customers]
+
+
+@router_finance.patch("/{market_id}/customers/{customer_id}", response_model=CustomerResponseDTO)
+async def update_customer_credit_limit(
+    market_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    dto: CustomerCreditLimitUpdateDTO,
+    service: FinanceService = Depends(get_finance_service),
+    market=Depends(require_market_access(MarketPermission.FINANCE_WRITE)),
+):
+    try:
+        customer = await service.update_customer_credit_limit(market_id, customer_id, dto)
+        return _customer_to_response(customer)
+    except BusinessRuleException as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router_finance.get(
