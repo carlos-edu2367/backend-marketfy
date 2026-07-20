@@ -51,7 +51,11 @@ from infra.providers.fiscal.base import EmitResultStatus
 # ---------------------------------------------------------------------------
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    raise RuntimeError("_run só pode ser usado por testes síncronos")
 
 
 def _make_response(status_code: int, json_data: dict = None, content: bytes = None) -> httpx.Response:
@@ -375,10 +379,6 @@ def test_retry_on_503():
     client_obj._base_url = "https://api.neectify.com"
     client_obj._timeout = 30
 
-    # Substituir sleep por no-op para acelerar o teste
-    async def _no_sleep(seconds):
-        pass
-
     client_obj._client = httpx.AsyncClient(
         base_url="https://api.neectify.com",
         headers={"Authorization": "Bearer test-key"},
@@ -386,13 +386,8 @@ def test_retry_on_503():
     )
     provider = NeectifyFiscalProvider(client=client_obj)
 
-    import infra.clients.neectify_fiscal_client as client_module
-    original_sleep = asyncio.sleep
-
     async def _fast_sleep(n):
         pass
-
-    loop = asyncio.get_event_loop()
 
     async def run():
         with patch("asyncio.sleep", _fast_sleep):
@@ -403,7 +398,7 @@ def test_retry_on_503():
                 environment="homologation",
             )
 
-    result = loop.run_until_complete(run())
+    result = _run(run())
     assert call_count[0] == 3
     assert result.provider_status == "queued"
 
@@ -499,7 +494,7 @@ def test_timeout_raises_error():
             with pytest.raises(httpx.TimeoutException):
                 await client_obj.request("GET", "/v1/issuers/1")
 
-    asyncio.get_event_loop().run_until_complete(run())
+    _run(run())
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +590,19 @@ def test_emission_service_payload_uses_neectify_format():
     item.unit_price = 5.50
     item.quantity = 2.0
     item.total = 11.00
+    item.tax_rule_version_snapshot = 1
+    item.fiscal_tax_snapshot = {
+        "rule_id": str(uuid.uuid4()), "rule_version": 1,
+        "ncm": "22021000", "cest": None, "cfop": "5405", "origin": "0",
+        "icms": {
+            "group": "ICMSSN102", "cst": None, "csosn": "102",
+            "own_base": "11.00", "reduction_rate": "0.00", "own_rate": "0.00",
+            "own_amount": "0.00", "st_base": "0.00", "st_rate": "0.00",
+            "st_amount": "0.00", "fcp_rate": "0.00", "fcp_amount": "0.00",
+        },
+        "pis": {"group": "PIS07", "cst": "07", "base": "11.00", "rate": "0.00", "amount": "0.00"},
+        "cofins": {"group": "COFINS07", "cst": "07", "base": "11.00", "rate": "0.00", "amount": "0.00"},
+    }
 
     payment = MagicMock()
     payment.method = MagicMock()

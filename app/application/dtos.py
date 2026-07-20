@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, date
 from uuid import UUID
@@ -219,6 +219,11 @@ class SaleItemDTO(BaseModel):
     unit_price: Decimal
     total: Decimal
     ncm_snapshot: Optional[str] = None
+    fiscal_tax_snapshot: Optional[dict] = None
+    tax_rule_id_snapshot: Optional[UUID] = None
+    tax_rule_version_snapshot: Optional[int] = None
+    snapshot_sha256: Optional[str] = None
+    fiscal_calculation_version: Optional[str] = None
 
 class PaymentDTO(BaseModel):
     method: str
@@ -253,6 +258,7 @@ class SaleResponseDTO(BaseModel):
     created_at: datetime
     synced_at: Optional[datetime]
     customer_cpf: Optional[str]
+    fiscal_rule_pendencies: Optional[List[Dict[str, str]]] = None
     items: List[SaleItemDTO] = []
     payments: List[PaymentDTO] = []
     invoice: Any = None
@@ -539,6 +545,62 @@ class FiscalConfigResponseDTO(BaseModel):
     csc_id: str
     has_certificate: bool
     default_ncm: Optional[str]
+
+
+class ProductTaxRuleDraftDTO(BaseModel):
+    """Accountant-entered fiscal rule. No product data is inferred here."""
+
+    name: str
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
+    ncm: Optional[str] = None
+    cest: Optional[str] = None
+    origin: Optional[str] = None
+    cfop: Optional[str] = None
+    icms_group: Optional[str] = None
+    icms_cst: Optional[str] = None
+    icms_csosn: Optional[str] = None
+    icms_mod_bc: Optional[str] = None
+    icms_rate: Optional[Decimal] = None
+    icms_reduction_rate: Optional[Decimal] = None
+    icms_st_mod_bc: Optional[str] = None
+    icms_st_mva_rate: Optional[Decimal] = None
+    icms_st_rate: Optional[Decimal] = None
+    fcp_rate: Optional[Decimal] = None
+    pis_cst: Optional[str] = None
+    pis_rate: Optional[Decimal] = None
+    cofins_cst: Optional[str] = None
+    cofins_rate: Optional[Decimal] = None
+
+
+class ProductTaxRuleDraftUpdateDTO(ProductTaxRuleDraftDTO):
+    name: Optional[str] = None
+
+
+class ProductTaxRulePublishDTO(BaseModel):
+    """Publication has no client-controlled approval identity or timestamp."""
+
+    model_config = ConfigDict(extra="forbid")
+    homologation_xml_storage_key: str = Field(min_length=1, max_length=2048)
+
+
+class TaxRuleSefazAuthorizationDTO(BaseModel):
+    """Accountant-supplied reference; all authorization metadata is server-derived."""
+
+    model_config = ConfigDict(extra="forbid")
+    source_storage_key: str = Field(min_length=1, max_length=2048)
+
+
+class ProductTaxRuleSuccessorDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    effective_from: date
+
+
+class ProductTaxRuleAssignmentDTO(BaseModel):
+    tax_rule_id: UUID
+    product_ids: List[UUID] = Field(min_length=1)
+    effective_from: date
+    reason: str = Field(min_length=3, max_length=500)
 
 class InvoiceResponseDTO(BaseModel):
     id: UUID

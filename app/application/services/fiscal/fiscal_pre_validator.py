@@ -17,9 +17,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import Any, List, Mapping, Optional
 
 from domain.shared import BusinessRuleException
+from application.services.fiscal.snapshot_integrity import (
+    LEGACY_CALCULATION_VERSION,
+    fiscal_snapshot_sha256,
+)
 
 
 SEFAZ_PAYMENT_CODES = {
@@ -71,6 +76,70 @@ _NCM_RE = re.compile(r"^\d{8}$")
 _CFOP_SAIDA_CONSUMIDOR = re.compile(r"^[56]\d{3}$")  # 5xxx ou 6xxx
 _CPF_RE = re.compile(r"^\d{11}$")
 _CNPJ_RE = re.compile(r"^\d{14}$")
+_HUNDRED = Decimal("100")
+_MONEY = Decimal("0.01")
+_ZERO = Decimal("0.00")
+_TAX_CONTRACT_VERSION = "marketfy.fiscal-tax-snapshot.v1"
+_ZERO_VALUE_ICMS_GROUPS = frozenset({"ICMSSN102", "ICMS40"})
+_ZERO_VALUE_PIS_GROUPS = frozenset({"PIS07"})
+_ZERO_VALUE_COFINS_GROUPS = frozenset({"COFINS07"})
+
+
+def _money(value: Decimal) -> Decimal:
+    return value.quantize(_MONEY, rounding=ROUND_HALF_UP)
+
+
+def _decimal(value: Any, *, sku: str, field: str) -> Decimal:
+    try:
+        decimal = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise BusinessRuleException(
+            f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={field}; reason=decimal_invalid"
+        ) from exc
+    if not decimal.is_finite():
+        raise BusinessRuleException(
+            f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={field}; reason=decimal_invalid"
+        )
+    return _money(decimal)
+
+
+def _rate_decimal(value: Any, *, sku: str, field: str) -> Decimal:
+    """Validate approved rate input without applying currency rounding."""
+    try:
+        decimal = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise BusinessRuleException(
+            f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={field}; reason=decimal_invalid"
+        ) from exc
+    if not decimal.is_finite() or decimal.as_tuple().exponent < -4:
+        raise BusinessRuleException(
+            f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={field}; reason=rate_precision_invalid"
+        )
+    return decimal
+
+
+def _text(value: Any, *, sku: str, field: str, required: bool = True) -> Optional[str]:
+    if value is None:
+        if required:
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={field}; reason=required"
+            )
+        return None
+    value = str(value).strip()
+    if not value and required:
+        raise BusinessRuleException(
+            f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field={field}; reason=required"
+        )
+    return value or None
+
+
+def _canonical_decimal(value: Decimal) -> str:
+    """The only Decimal-to-string boundary for the Fiscal contract."""
+    return f"{_money(value):.2f}"
+
+
+def _canonical_rate(value: Decimal) -> str:
+    return format(value, "f")
 
 
 @dataclass
@@ -89,6 +158,254 @@ class PreValidationResult:
 
 class FiscalPreValidator:
     """Valida dados de venda antes de construir o payload fiscal."""
+
+    fiscal_snapshot_sha256 = staticmethod(fiscal_snapshot_sha256)
+
+    def _verify_snapshot_integrity(self, item, snapshot: Mapping[str, Any], *, sku: str) -> bool:
+        """Reject persisted snapshots altered after sale finalisation.
+
+        The v1 calculation marker is the explicit rollout boundary. Legacy
+        supported emissions keep their prior validation path, while v1 sales
+        are fail-closed for a missing or altered integrity hash.
+        """
+        if (
+            getattr(item, "fiscal_calculation_version", None)
+            != LEGACY_CALCULATION_VERSION
+        ):
+            return False
+        stored_hash = getattr(item, "snapshot_sha256", None)
+        if not isinstance(stored_hash, str) or stored_hash != fiscal_snapshot_sha256(snapshot):
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=snapshot_sha256; reason=mismatch"
+            )
+        return True
+
+    def _normalise_item_tax_snapshot(self, item, fiscal_config) -> dict:
+        """Validate and serialise one immutable sale-item tax snapshot.
+
+        A provider payload is deliberately built only from this persisted
+        snapshot. Product fields and tenant defaults are mutable and therefore
+        cannot safely reconstruct an already completed sale.
+        """
+        sku = str(getattr(item, "product_id", "unknown"))
+        snapshot = getattr(item, "fiscal_tax_snapshot", None)
+        if not isinstance(snapshot, Mapping):
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_missing; sku={sku}; action=assign_published_tax_rule"
+            )
+
+        is_v1_snapshot = self._verify_snapshot_integrity(item, snapshot, sku=sku)
+
+        rule_id = _text(snapshot.get("rule_id"), sku=sku, field="rule_id")
+        rule_version = snapshot.get("rule_version")
+        item_version = getattr(item, "tax_rule_version_snapshot", None)
+        if not isinstance(rule_version, int) or rule_version <= 0:
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=rule_version; reason=invalid"
+            )
+        if item_version != rule_version:
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=rule_version; reason=inconsistent"
+            )
+
+        ncm = re.sub(r"[.\s]", "", _text(snapshot.get("ncm"), sku=sku, field="ncm") or "")
+        cfop = _text(snapshot.get("cfop"), sku=sku, field="cfop")
+        origin = _text(snapshot.get("origin"), sku=sku, field="origin")
+        cest = _text(snapshot.get("cest"), sku=sku, field="cest", required=False)
+        if not _NCM_RE.match(ncm):
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=ncm; reason=must_have_8_digits"
+            )
+        if not _CFOP_SAIDA_CONSUMIDOR.match(cfop or ""):
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=cfop; reason=consumer_output_required"
+            )
+        if origin not in {str(value) for value in range(9)}:
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=origin; reason=invalid"
+            )
+        if cest is not None:
+            cest = re.sub(r"[.\s]", "", cest)
+            if not re.fullmatch(r"\d{7}", cest):
+                raise BusinessRuleException(
+                    f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=cest; reason=must_have_7_digits"
+                )
+
+        icms = snapshot.get("icms")
+        pis = snapshot.get("pis")
+        cofins = snapshot.get("cofins")
+        if not all(isinstance(section, Mapping) for section in (icms, pis, cofins)):
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=tax; reason=sections_required"
+            )
+
+        icms_group = _text(icms.get("group"), sku=sku, field="icms.group")
+        icms_cst = _text(icms.get("cst"), sku=sku, field="icms.cst", required=False)
+        icms_csosn = _text(icms.get("csosn"), sku=sku, field="icms.csosn", required=False)
+        if bool(icms_cst) == bool(icms_csosn):
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=icms.cst_or_csosn; reason=exactly_one_required"
+            )
+        crt = getattr(fiscal_config, "crt", None)
+        if isinstance(crt, str) and crt in {"1", "2"} and not icms_group.startswith("ICMSSN"):
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=icms.group; reason=incompatible_with_crt_{crt}"
+            )
+        if isinstance(crt, str) and crt == "3" and not icms_group.startswith("ICMS"):
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=icms.group; reason=incompatible_with_crt_3"
+            )
+
+        icms_money = {
+            name: _decimal(icms.get(name), sku=sku, field=f"icms.{name}")
+            for name in (
+                "own_base", "own_amount", "st_base", "st_amount", "fcp_amount",
+            )
+        }
+        rate_fields = ("reduction_rate", "own_rate", "st_mva_rate", "st_rate", "fcp_rate")
+        icms_rates = (
+            {name: _rate_decimal(icms.get(name), sku=sku, field=f"icms.{name}") for name in rate_fields}
+            if is_v1_snapshot
+            else {
+                **{
+                    name: _decimal(icms.get(name), sku=sku, field=f"icms.{name}")
+                    for name in rate_fields if name != "st_mva_rate"
+                },
+                "st_mva_rate": Decimal("0.00"),
+            }
+        )
+        is_zero_value_icms_group = is_v1_snapshot and icms_group in _ZERO_VALUE_ICMS_GROUPS
+        expected_own_base = (
+            _ZERO
+            if is_zero_value_icms_group
+            else _money(
+                _decimal(getattr(item, "total", None), sku=sku, field="item.total")
+                * (Decimal("1") - icms_rates["reduction_rate"] / _HUNDRED)
+            )
+        )
+        if icms_money["own_base"] != expected_own_base:
+            raise BusinessRuleException(
+                f"fiscal.snapshot_amount_mismatch; sku={sku}; field=icms.own_base; "
+                f"expected={_canonical_decimal(expected_own_base)}"
+            )
+        expected_item_total = _money(
+            _decimal(getattr(item, "quantity", None), sku=sku, field="item.quantity")
+            * _decimal(getattr(item, "unit_price", None), sku=sku, field="item.unit_price")
+        )
+        if expected_item_total != _decimal(getattr(item, "total", None), sku=sku, field="item.total"):
+            raise BusinessRuleException(
+                f"fiscal.snapshot_amount_mismatch; sku={sku}; field=item.total; "
+                f"expected={_canonical_decimal(expected_item_total)}"
+            )
+        if is_v1_snapshot:
+            expected_own_amount = _money(icms_money["own_base"] * icms_rates["own_rate"] / _HUNDRED)
+            expected_st_base = _money(
+                icms_money["own_base"] * (Decimal("1") + icms_rates["st_mva_rate"] / _HUNDRED)
+            ) if icms_rates["st_rate"] > Decimal("0.00") else Decimal("0.00")
+            expected_st_amount = max(
+                _money(expected_st_base * icms_rates["st_rate"] / _HUNDRED) - expected_own_amount,
+                Decimal("0.00"),
+            ) if icms_rates["st_rate"] > Decimal("0.00") else Decimal("0.00")
+            expected_fcp_base = expected_st_base if icms_rates["st_rate"] > Decimal("0.00") else expected_own_base
+            expected_fcp_amount = _money(expected_fcp_base * icms_rates["fcp_rate"] / _HUNDRED)
+            expected_icms = {
+                "own_amount": expected_own_amount,
+                "st_base": expected_st_base,
+                "st_amount": expected_st_amount,
+                "fcp_amount": expected_fcp_amount,
+            }
+            for field, expected in expected_icms.items():
+                if icms_money[field] != expected:
+                    raise BusinessRuleException(
+                        f"fiscal.snapshot_amount_mismatch; sku={sku}; field=icms.{field}; "
+                        f"expected={_canonical_decimal(expected)}"
+                    )
+        if (icms_money["st_base"] > Decimal("0.00") or icms_money["st_amount"] > Decimal("0.00")) and not cest:
+            raise BusinessRuleException(
+                f"sale.fiscal_tax_snapshot_invalid; sku={sku}; field=cest; reason=required_for_st"
+            )
+
+        def contribution(name: str, section: Mapping[str, Any]) -> dict:
+            group = _text(section.get("group"), sku=sku, field=f"{name}.group")
+            cst = _text(section.get("cst"), sku=sku, field=f"{name}.cst")
+            numbers = {
+                key: _decimal(section.get(key), sku=sku, field=f"{name}.{key}")
+                for key in ("base", "amount")
+            }
+            rate = (
+                _rate_decimal(section.get("rate"), sku=sku, field=f"{name}.rate")
+                if is_v1_snapshot else _decimal(section.get("rate"), sku=sku, field=f"{name}.rate")
+            )
+            zero_value_group = is_v1_snapshot and (
+                group in _ZERO_VALUE_PIS_GROUPS or group in _ZERO_VALUE_COFINS_GROUPS
+            )
+            expected_base = (
+                _ZERO
+                if zero_value_group
+                else _decimal(getattr(item, "total", None), sku=sku, field="item.total")
+            )
+            expected_rate = _ZERO if zero_value_group else rate
+            expected_amount = _money(expected_base * expected_rate / _HUNDRED)
+            if is_v1_snapshot and numbers["base"] != expected_base:
+                raise BusinessRuleException(
+                    f"fiscal.snapshot_amount_mismatch; sku={sku}; field={name}.base; "
+                    f"expected={_canonical_decimal(expected_base)}"
+                )
+            if is_v1_snapshot and rate != expected_rate:
+                raise BusinessRuleException(
+                    f"fiscal.snapshot_amount_mismatch; sku={sku}; field={name}.rate; "
+                    f"expected={_canonical_rate(expected_rate)}"
+                )
+            if is_v1_snapshot and numbers["amount"] != expected_amount:
+                raise BusinessRuleException(
+                    f"fiscal.snapshot_amount_mismatch; sku={sku}; field={name}.amount; "
+                    f"expected={_canonical_decimal(expected_amount)}"
+                )
+            rate_value = _canonical_rate(rate) if is_v1_snapshot else _canonical_decimal(rate)
+            return {"group": group, "cst": cst, **{key: _canonical_decimal(value) for key, value in numbers.items()}, "rate": rate_value}
+
+        return {
+            "rule_id": rule_id,
+            "rule_version": rule_version,
+            "ncm": ncm,
+            "cest": cest,
+            "cfop": cfop,
+            "origin": origin,
+            "icms": {
+                "group": icms_group,
+                "cst": icms_cst,
+                "csosn": icms_csosn,
+                **{name: _canonical_decimal(value) for name, value in icms_money.items()},
+                **{
+                    name: _canonical_rate(value) if is_v1_snapshot else _canonical_decimal(value)
+                    for name, value in icms_rates.items() if is_v1_snapshot or name != "st_mva_rate"
+                },
+            },
+            "pis": contribution("pis", pis),
+            "cofins": contribution("cofins", cofins),
+        }
+
+    def _normalise_sale_tax_snapshots(self, sale, fiscal_config) -> list[dict]:
+        snapshots = [self._normalise_item_tax_snapshot(item, fiscal_config) for item in sale.items]
+        if not all(
+            getattr(item, "fiscal_calculation_version", None)
+            == LEGACY_CALCULATION_VERSION
+            for item in sale.items
+        ):
+            return snapshots
+        products_amount = _money(sum(
+            (_decimal(getattr(item, "total", None), sku=str(getattr(item, "product_id", "unknown")), field="item.total") for item in sale.items),
+            Decimal("0.00"),
+        ))
+        discount = _decimal(getattr(sale, "discount", Decimal("0.00")), sku="sale", field="discount")
+        acrescimo = _decimal(getattr(sale, "acrescimo", Decimal("0.00")), sku="sale", field="acrescimo")
+        expected_sale_total = _money(products_amount - discount + acrescimo)
+        actual_sale_total = _decimal(getattr(sale, "total_amount", expected_sale_total), sku="sale", field="total_amount")
+        if actual_sale_total != expected_sale_total:
+            raise BusinessRuleException(
+                f"fiscal.snapshot_amount_mismatch; field=sale.total_amount; expected={_canonical_decimal(expected_sale_total)}"
+            )
+        return snapshots
 
     def validate(
         self,
@@ -112,14 +429,10 @@ class FiscalPreValidator:
 
         for i, item in enumerate(sale_items, 1):
             item_label = f"Item {i} ({getattr(item, 'product_name', '?')})"
-
-            ncm = getattr(item, "ncm_snapshot", None)
-            if not ncm and fiscal_config:
-                ncm = getattr(fiscal_config, "default_ncm", None)
-            if not ncm:
-                result.add_error(f"{item_label}: NCM não configurado.")
-            elif not _NCM_RE.match(str(ncm).replace(".", "").replace(" ", "")):
-                result.add_error(f"{item_label}: NCM inválido '{ncm}' (deve ter 8 dígitos).")
+            try:
+                self._normalise_item_tax_snapshot(item, fiscal_config)
+            except BusinessRuleException as exc:
+                result.add_error(f"{item_label}: {exc}")
 
             unit_price = getattr(item, "unit_price", 0)
             quantity = getattr(item, "quantity", 0)
@@ -141,7 +454,7 @@ class FiscalPreValidator:
                     )
                 amount = getattr(pay, "amount", 0)
                 if float(amount) <= 0:
-                    result.add_error(f"Pagamento com valor zero ou negativo.")
+                    result.add_error("Pagamento com valor zero ou negativo.")
 
         # CPF do consumidor
         if customer_cpf:
@@ -160,12 +473,7 @@ class FiscalPreValidator:
         fiscal_config,
         provider_ref: str,
     ) -> dict:
-        """
-        Monta o payload fiscal no formato Focus NFe para NFC-e.
-
-        Usa perfil fiscal do item quando disponível,
-        com fallback para defaults da configuração do mercado.
-        """
+        """Build the legacy Focus payload from immutable item snapshots only."""
         payment_forms = []
         for pay in sale.payments:
             method_val = pay.method.value if hasattr(pay.method, "value") else str(pay.method)
@@ -174,32 +482,29 @@ class FiscalPreValidator:
                 "valor_pagamento": float(pay.amount),
             })
 
+        item_taxes = self._normalise_sale_tax_snapshots(sale, fiscal_config)
         items_payload = []
-        for i, item in enumerate(sale.items, 1):
-            ncm = getattr(item, "ncm_snapshot", None) or getattr(fiscal_config, "default_ncm", "")
-            cfop = getattr(fiscal_config, "default_cfop", "5102")
-            csosn = getattr(fiscal_config, "default_csosn", "102")
-            cst = getattr(fiscal_config, "default_cst", None)
-            origin = "0"  # Nacional
+        for i, (item, tax) in enumerate(zip(sale.items, item_taxes), 1):
+            icms = tax["icms"]
 
             items_payload.append({
                 "numero_item": i,
                 "codigo_produto": str(item.product_id),
                 "descricao": item.product_name[:120],  # Limite Focus
-                "codigo_ncm": str(ncm).replace(".", "").replace(" ", ""),
-                "cfop": cfop,
-                "valor_unitario_comercial": float(item.unit_price),
-                "valor_unitario_tributavel": float(item.unit_price),
-                "quantidade_comercial": float(item.quantity),
-                "quantidade_tributavel": float(item.quantity),
-                "valor_bruto": float(item.total),
+                "codigo_ncm": tax["ncm"],
+                "cfop": tax["cfop"],
+                "valor_unitario_comercial": _canonical_decimal(_decimal(item.unit_price, sku=str(item.product_id), field="item.unit_price")),
+                "valor_unitario_tributavel": _canonical_decimal(_decimal(item.unit_price, sku=str(item.product_id), field="item.unit_price")),
+                "quantidade_comercial": f"{Decimal(str(item.quantity)):.4f}",
+                "quantidade_tributavel": f"{Decimal(str(item.quantity)):.4f}",
+                "valor_bruto": _canonical_decimal(_decimal(item.total, sku=str(item.product_id), field="item.total")),
                 "unidade_comercial": "UN",
                 "unidade_tributavel": "UN",
-                "icms_origem": origin,
-                "icms_csosn": csosn,
-                **({"icms_cst": cst} if cst else {}),
-                "pis_cst": "07",
-                "cofins_cst": "07",
+                "icms_origem": tax["origin"],
+                **({"icms_csosn": icms["csosn"]} if icms["csosn"] else {}),
+                **({"icms_cst": icms["cst"]} if icms["cst"] else {}),
+                "pis_cst": tax["pis"]["cst"],
+                "cofins_cst": tax["cofins"]["cst"],
                 "inclui_no_total": "1",
             })
 
@@ -231,12 +536,9 @@ class FiscalPreValidator:
         sale,
         fiscal_config,
         issuer_id: str,
+        provider_ref: Optional[str] = None,
     ) -> dict:
-        """
-        Monta o payload no formato Neectify Fiscal (POST /v1/nfce).
-
-        Referência: INTEGRATION.md §D.
-        """
+        """Build the versioned item-tax contract for ``POST /v1/nfce``."""
         environment = getattr(fiscal_config, "environment", None)
         env_value = environment.value if hasattr(environment, "value") else str(environment or "homologacao")
         neectify_env = "production" if env_value in ("producao", "production") else "homologation"
@@ -247,7 +549,7 @@ class FiscalPreValidator:
             neectify_method = self.map_neectify_payment_method(method_val)
             entry: dict = {
                 "method": neectify_method,
-                "amount": f"{float(pay.amount):.2f}",
+                "amount": _canonical_decimal(_decimal(pay.amount, sku="payment", field="amount")),
             }
             # tPag=99 (Outros) exige descrição (xPag) ou a SEFAZ rejeita (cStat 441).
             if neectify_method == "other":
@@ -256,33 +558,67 @@ class FiscalPreValidator:
                 )
             payments_payload.append(entry)
 
+        item_taxes = self._normalise_sale_tax_snapshots(sale, fiscal_config)
         items_payload = []
-        for item in sale.items:
-            ncm = getattr(item, "ncm_snapshot", None) or getattr(fiscal_config, "default_ncm", "")
-            cfop = getattr(fiscal_config, "default_cfop", "5102")
+        for item, tax in zip(sale.items, item_taxes):
             product_name = getattr(item, "product_name_snapshot", None) or getattr(item, "product_name", None) or str(item.product_id)
             items_payload.append({
                 "sku": str(item.product_id),
                 "description": product_name[:120],
-                "quantity": f"{float(item.quantity):.4f}",
+                "quantity": f"{Decimal(str(item.quantity)):.4f}",
                 "unit": "UN",
-                "unit_amount": f"{float(item.unit_price):.2f}",
-                "total_amount": f"{float(item.total):.2f}",
-                "cfop": cfop,
-                "ncm": str(ncm).replace(".", "").replace(" ", ""),
+                "unit_amount": _canonical_decimal(_decimal(item.unit_price, sku=str(item.product_id), field="item.unit_price")),
+                "total_amount": _canonical_decimal(_decimal(item.total, sku=str(item.product_id), field="item.total")),
+                "cfop": tax["cfop"],
+                "ncm": tax["ncm"],
+                "cest": tax["cest"],
+                "origin": tax["origin"],
+                "tax": tax,
             })
 
+        def total(field: str) -> str:
+            return _canonical_decimal(sum(
+                (Decimal(item["tax"]["icms"][field]) for item in items_payload),
+                Decimal("0.00"),
+            ))
+
+        occurred_at = sale.created_at.isoformat()
+        if occurred_at.endswith("+00:00"):
+            occurred_at = f"{occurred_at[:-6]}Z"
+        elif "T" in occurred_at and "+" not in occurred_at[10:] and not occurred_at.endswith("Z"):
+            occurred_at = f"{occurred_at}Z"
+
         payload: dict = {
+            "contract_version": _TAX_CONTRACT_VERSION,
             "issuer_id": issuer_id,
             "environment": neectify_env,
             "external_id": str(sale.id),
+            "correlation": {
+                "sale_id": str(sale.id),
+                "market_id": str(getattr(sale, "market_id", "")),
+                "provider_ref": provider_ref or str(sale.id),
+            },
             "sale": {
-                "occurred_at": sale.created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "occurred_at": occurred_at,
             },
             "items": items_payload,
             "payments": payments_payload,
-            "fiscal_options": {},
-            "metadata": {},
+            "totals": {
+                "products_amount": _canonical_decimal(sum(
+                    (Decimal(item["total_amount"]) for item in items_payload), Decimal("0.00")
+                )),
+                "icms_base": total("own_base"),
+                "icms_amount": total("own_amount"),
+                "icms_st_base": total("st_base"),
+                "icms_st_amount": total("st_amount"),
+                "fcp_amount": total("fcp_amount"),
+                "pis_amount": _canonical_decimal(sum(
+                    (Decimal(item["tax"]["pis"]["amount"]) for item in items_payload), Decimal("0.00")
+                )),
+                "cofins_amount": _canonical_decimal(sum(
+                    (Decimal(item["tax"]["cofins"]["amount"]) for item in items_payload), Decimal("0.00")
+                )),
+            },
         }
 
         if hasattr(sale, "customer_cpf") and sale.customer_cpf:
@@ -290,4 +626,23 @@ class FiscalPreValidator:
             if len(cpf_digits) == 11:
                 payload["consumer"] = {"document": cpf_digits}
 
+        return payload
+
+    def build_legacy_neectify_payload(
+        self,
+        sale,
+        fiscal_config,
+        issuer_id: str,
+        provider_ref: Optional[str] = None,
+    ) -> dict:
+        """Explicit compatibility builder for off/warn retries only.
+
+        Keep ``build_neectify_payload`` intact as the v1 serializer.  New
+        block-mode requests cannot reach this method; their v2 evidence is
+        persisted before the worker is queued.
+        """
+        payload = self.build_neectify_payload(
+            sale, fiscal_config, issuer_id, provider_ref
+        )
+        payload.pop("contract_version", None)
         return payload

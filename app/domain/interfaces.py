@@ -1,13 +1,13 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple, Dict, Any
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from domain.identity import User, Market, Plan
 from domain.inventory import Product
 from domain.sales import Sale, Box, Terminal
 from domain.finance import Customer, FinancialTransaction, CustomerLedger
 from domain.support import Ticket, TicketStatus
-from domain.fiscal import FiscalConfig, Invoice
+from domain.fiscal import FiscalConfig, Invoice, ProductTaxRule
 
 # --- IDENTITY & ACCESS ---
 
@@ -160,6 +160,18 @@ class FiscalRepositoryInterface(ABC):
     async def get_invoice_by_sale(self, sale_id: uuid.UUID) -> Optional[Invoice]: pass
     @abstractmethod
     async def save_invoice(self, invoice: Invoice, commit: bool = True) -> Invoice: pass
+
+
+class ProductTaxRuleRepositoryInterface(ABC):
+    @abstractmethod
+    async def get_effective_published_rule(
+        self,
+        *,
+        market_id: uuid.UUID,
+        product_id: uuid.UUID,
+        on_date: date,
+    ) -> Optional[ProductTaxRule]:
+        pass
 
 class FiscalProviderInterface(ABC):
     """Contrato legado para provedores de emissão."""

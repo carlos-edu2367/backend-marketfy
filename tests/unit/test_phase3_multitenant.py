@@ -148,8 +148,8 @@ def test_owner_has_all_permissions():
         assert role_has_permission(UserRole.OWNER, perm) is True
 
 
-def test_manager_has_no_fiscal_write():
-    assert role_has_permission(UserRole.MANAGER, MarketPermission.FISCAL_WRITE) is False
+def test_manager_has_fiscal_write():
+    assert role_has_permission(UserRole.MANAGER, MarketPermission.FISCAL_WRITE) is True
 
 
 def test_manager_has_fiscal_read():
@@ -177,7 +177,7 @@ def test_admin_has_no_market_permissions():
     "role,perm,expected",
     [
         (UserRole.OWNER, MarketPermission.FISCAL_WRITE, True),
-        (UserRole.MANAGER, MarketPermission.FISCAL_WRITE, False),
+        (UserRole.MANAGER, MarketPermission.FISCAL_WRITE, True),
         (UserRole.MANAGER, MarketPermission.ANALYTICS_READ, True),
         (UserRole.CASHIER, MarketPermission.SALES_READ, True),
         (UserRole.CASHIER, MarketPermission.REPORTS_READ, False),
@@ -329,8 +329,8 @@ async def test_owner_only_passes_for_actual_owner():
 
 
 @pytest.mark.asyncio
-async def test_manager_denied_fiscal_write():
-    """Manager não pode emitir NFC-e (fiscal.write restrito ao owner)."""
+async def test_active_manager_has_fiscal_write():
+    """Manager ativo recebe fiscal.write no seu vínculo de mercado."""
     manager = make_user(UserRole.MANAGER)
     market = FakeMarket(id=uuid.uuid4(), owner_id=uuid.uuid4())
     member = FakeMember(
@@ -341,8 +341,10 @@ async def test_manager_denied_fiscal_write():
         is_active=True,
     )
 
-    with pytest.raises(MarketAccessDenied):
-        await _resolve(market, manager, member=member, permission=MarketPermission.FISCAL_WRITE)
+    result = await _resolve(
+        market, manager, member=member, permission=MarketPermission.FISCAL_WRITE
+    )
+    assert result is market
 
 
 @pytest.mark.asyncio
@@ -351,7 +353,7 @@ async def test_manager_denied_fiscal_write():
     [
         (UserRole.MANAGER, MarketPermission.INVENTORY_WRITE, True),
         (UserRole.MANAGER, MarketPermission.FINANCE_WRITE, True),
-        (UserRole.MANAGER, MarketPermission.FISCAL_WRITE, False),
+        (UserRole.MANAGER, MarketPermission.FISCAL_WRITE, True),
         (UserRole.CASHIER, MarketPermission.MARKET_READ, True),
         (UserRole.CASHIER, MarketPermission.INVENTORY_READ, True),
         (UserRole.CASHIER, MarketPermission.INVENTORY_WRITE, False),
@@ -418,11 +420,11 @@ def test_admin_has_empty_permissions_in_map():
     assert admin_perms == set()
 
 
-def test_manager_missing_only_fiscal_write():
+def test_manager_has_all_market_permissions():
     manager_perms = ROLE_PERMISSIONS[UserRole.MANAGER]
     all_perms = set(MarketPermission)
     missing = all_perms - manager_perms
-    assert missing == {MarketPermission.FISCAL_WRITE}
+    assert missing == set()
 
 
 def test_cashier_permissions_minimal():

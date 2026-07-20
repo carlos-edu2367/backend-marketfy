@@ -1,10 +1,34 @@
+import hashlib
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from copy import deepcopy
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, List
-from datetime import datetime
+from types import MappingProxyType
+from typing import Any, ClassVar, FrozenSet, Optional, List
+from datetime import date, datetime
 from decimal import Decimal
 from domain.shared import Entity, BusinessRuleException
+
+
+def _deep_freeze_json(value: Any) -> Any:
+    """Detach and recursively freeze a JSON-compatible value."""
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _deep_freeze_json(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze_json(item) for item in value)
+    return deepcopy(value)
+
+
+def _deep_mutable_json(value: Any) -> Any:
+    """Create an independent mutable JSON-compatible value."""
+    if isinstance(value, Mapping):
+        return {key: _deep_mutable_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_deep_mutable_json(item) for item in value]
+    return deepcopy(value)
 
 # =============================================================================
 # ENUMS
@@ -13,6 +37,22 @@ from domain.shared import Entity, BusinessRuleException
 class FiscalEnvironment(Enum):
     HOMOLOGATION = "homologacao"
     PRODUCTION = "producao"
+
+
+class FiscalRuleEnforcement(str, Enum):
+    """Per-market rollout gate for accountant-approved product tax rules."""
+
+    OFF = "off"
+    WARN = "warn"
+    BLOCK = "block"
+
+
+EnforcementMode = FiscalRuleEnforcement
+
+
+class IcmsMode(str, Enum):
+    NON_TAXED = "non_taxed"
+    RETAINED_ST = "retained_st"
 
 
 class FiscalDocumentStatus(Enum):
@@ -65,6 +105,80 @@ class TaxRegime(Enum):
     LUCRO_PRESUMIDO = "lucro_presumido"
     LUCRO_REAL = "lucro_real"
     MEI = "mei"
+
+
+class ProductTaxRuleStatus(str, Enum):
+    """Lifecycle of an accountant-reviewed product tax rule."""
+
+    DRAFT = "draft"
+    HOMOLOGATED = "homologated"
+    PUBLISHED = "published"
+    RETIRED = "retired"
+
+
+TaxRuleStatus = ProductTaxRuleStatus
+
+
+class FiscalRuleError(BusinessRuleException):
+    """Structured, transport-neutral fiscal rule validation error."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        items: list[dict[str, str]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.items = items or []
+
+    def details(self) -> dict[str, Any]:
+        return {"code": self.code, "items": self.items}
+
+
+@dataclass(frozen=True)
+class TaxRuleApproval:
+    """Immutable accountant evidence attached to one published tax rule."""
+
+    rule_id: uuid.UUID
+    accountant_user_id: uuid.UUID
+    homologation_xml_storage_key: str
+    homologation_xml_sha256: str
+    approved_at: datetime
+
+    @classmethod
+    def from_verified_artifact(
+        cls,
+        *,
+        rule_id: uuid.UUID,
+        accountant_user_id: uuid.UUID,
+        homologation_xml_storage_key: str,
+        canonical_xml: bytes,
+    ) -> "TaxRuleApproval":
+        storage_key = homologation_xml_storage_key.strip()
+        if not storage_key or not canonical_xml:
+            raise BusinessRuleException("O artefato XML homologado é obrigatório.")
+        return cls(
+            rule_id=rule_id,
+            accountant_user_id=accountant_user_id,
+            homologation_xml_storage_key=storage_key,
+            homologation_xml_sha256=hashlib.sha256(canonical_xml).hexdigest(),
+            approved_at=datetime.utcnow(),
+        )
+
+
+@dataclass(frozen=True)
+class TaxRuleSefazAuthorization:
+    """Immutable proof that SEFAZ authorized a homologation XML for one rule."""
+
+    rule_id: uuid.UUID
+    accountant_user_id: uuid.UUID
+    authorized_xml_storage_key: str
+    xml_sha256: str
+    access_key: str
+    protocol: str
+    authorized_at: datetime
+    recorded_at: datetime
 
 
 class NumberingMode(Enum):
@@ -183,6 +297,7 @@ class FiscalTenantConfig(Entity):
     provider: str = "focus_nfe"
     environment: FiscalEnvironment = FiscalEnvironment.HOMOLOGATION
     enabled: bool = False
+    fiscal_rule_enforcement: FiscalRuleEnforcement = FiscalRuleEnforcement.OFF
 
     # Dados fiscais do estabelecimento
     legal_name: Optional[str] = None
@@ -320,6 +435,211 @@ class ProductTaxProfile(Entity):
 
 
 @dataclass
+class ProductTaxRule(Entity):
+    """Versioned fiscal classification approved for a Marketfy product.
+
+    This entity deliberately does not derive any classification from product
+    text, barcode or NCM. A published version is audit evidence and therefore
+    cannot be changed in place.
+    """
+
+    market_id: uuid.UUID
+    name: str
+    status: ProductTaxRuleStatus = ProductTaxRuleStatus.DRAFT
+    rule_family_id: Optional[uuid.UUID] = None
+    supersedes_rule_id: Optional[uuid.UUID] = None
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
+
+    issuer_regime: Optional[TaxRegime] = None
+    destination_uf: Optional[str] = None
+    document_model: Optional[str] = None
+
+    ncm: Optional[str] = None
+    cest: Optional[str] = None
+    origin: Optional[str] = None
+    cfop: Optional[str] = None
+    cbenef: Optional[str] = None
+
+    icms_group: Optional[str] = None
+    icms_cst: Optional[str] = None
+    icms_csosn: Optional[str] = None
+    icms_mod_bc: Optional[str] = None
+    icms_rate: Optional[Decimal] = None
+    icms_reduction_rate: Optional[Decimal] = None
+    icms_st_mod_bc: Optional[str] = None
+    icms_st_mva_rate: Optional[Decimal] = None
+    icms_st_rate: Optional[Decimal] = None
+    fcp_rate: Optional[Decimal] = None
+
+    pis_cst: Optional[str] = None
+    pis_rate: Optional[Decimal] = None
+    cofins_cst: Optional[str] = None
+    cofins_rate: Optional[Decimal] = None
+
+    tax_parameters: Optional[Mapping[str, Any]] = None
+    approval: Optional[Mapping[str, Any]] = None
+
+    approved_by: Optional[uuid.UUID] = None
+    approved_at: Optional[datetime] = None
+
+    _IMMUTABLE_BUSINESS_FIELDS: ClassVar[FrozenSet[str]] = frozenset({
+        "market_id",
+        "name",
+        "status",
+        "rule_family_id",
+        "supersedes_rule_id",
+        "version",
+        "effective_from",
+        "effective_to",
+        "issuer_regime",
+        "destination_uf",
+        "document_model",
+        "ncm",
+        "cest",
+        "origin",
+        "cfop",
+        "cbenef",
+        "icms_group",
+        "icms_cst",
+        "icms_csosn",
+        "icms_mod_bc",
+        "icms_rate",
+        "icms_reduction_rate",
+        "icms_st_mod_bc",
+        "icms_st_mva_rate",
+        "icms_st_rate",
+        "fcp_rate",
+        "pis_cst",
+        "pis_rate",
+        "cofins_cst",
+        "cofins_rate",
+        "tax_parameters",
+        "approval",
+        "approved_by",
+        "approved_at",
+    })
+    _DEEPLY_IMMUTABLE_FIELDS: ClassVar[FrozenSet[str]] = frozenset({
+        "tax_parameters",
+        "approval",
+    })
+
+    def __setattr__(self, name: str, value) -> None:
+        published = self.__dict__.get("_published_version", False)
+        if (
+            published
+            and name in self._IMMUTABLE_BUSINESS_FIELDS
+            and name in self.__dict__
+            and value != self.__dict__[name]
+        ):
+            raise BusinessRuleException(
+                "Uma regra fiscal publicada é imutável; crie uma nova versão para corrigi-la."
+            )
+
+        if published and name in self._DEEPLY_IMMUTABLE_FIELDS:
+            value = _deep_freeze_json(value)
+
+        object.__setattr__(self, name, value)
+        if name == "status" and self._is_published_status(value):
+            for field_name in self._DEEPLY_IMMUTABLE_FIELDS:
+                if field_name in self.__dict__:
+                    object.__setattr__(
+                        self,
+                        field_name,
+                        _deep_freeze_json(self.__dict__[field_name]),
+                    )
+            object.__setattr__(self, "_published_version", True)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.status, str):
+            object.__setattr__(self, "status", ProductTaxRuleStatus(self.status))
+        if isinstance(self.issuer_regime, str):
+            object.__setattr__(self, "issuer_regime", TaxRegime(self.issuer_regime))
+        if self.version < 1:
+            raise BusinessRuleException("A versão da regra fiscal deve ser positiva.")
+        if self.rule_family_id is None:
+            object.__setattr__(self, "rule_family_id", self.id)
+        if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
+            raise BusinessRuleException("O fim da vigência não pode anteceder o início.")
+
+    def rename(self, name: str) -> None:
+        self.assert_mutable()
+        self.name = name
+        self.update_timestamp()
+
+    def create_successor(self, *, effective_from: date) -> "ProductTaxRule":
+        """Create an editable next version without modifying approved evidence."""
+        if self.status is not ProductTaxRuleStatus.PUBLISHED:
+            raise BusinessRuleException("Somente uma regra publicada pode gerar sucessora.")
+        return ProductTaxRule(
+            market_id=self.market_id,
+            name=self.name,
+            status=ProductTaxRuleStatus.DRAFT,
+            rule_family_id=self.rule_family_id,
+            supersedes_rule_id=self.id,
+            version=self.version + 1,
+            effective_from=effective_from,
+            effective_to=self.effective_to,
+            issuer_regime=self.issuer_regime,
+            destination_uf=self.destination_uf,
+            document_model=self.document_model,
+            ncm=self.ncm,
+            cest=self.cest,
+            origin=self.origin,
+            cfop=self.cfop,
+            cbenef=self.cbenef,
+            icms_group=self.icms_group,
+            icms_cst=self.icms_cst,
+            icms_csosn=self.icms_csosn,
+            icms_mod_bc=self.icms_mod_bc,
+            icms_rate=self.icms_rate,
+            icms_reduction_rate=self.icms_reduction_rate,
+            icms_st_mod_bc=self.icms_st_mod_bc,
+            icms_st_mva_rate=self.icms_st_mva_rate,
+            icms_st_rate=self.icms_st_rate,
+            fcp_rate=self.fcp_rate,
+            pis_cst=self.pis_cst,
+            pis_rate=self.pis_rate,
+            cofins_cst=self.cofins_cst,
+            cofins_rate=self.cofins_rate,
+            tax_parameters=_deep_mutable_json(self.tax_parameters),
+            approval=_deep_mutable_json(self.approval),
+        )
+
+    def is_effective_on(self, when: date) -> bool:
+        """Return whether a dated rule is valid on ``when``, inclusively."""
+        if self.effective_from is None or when < self.effective_from:
+            return False
+        return self.effective_to is None or when <= self.effective_to
+
+    def matches_context(self, *, destination_uf: str, document_model: str) -> bool:
+        """Match only a fully explicit v2 context; nullable legacy rows fail closed."""
+        if (
+            self.issuer_regime is None
+            or self.destination_uf is None
+            or self.document_model is None
+        ):
+            return False
+        return (
+            self.destination_uf.upper() == destination_uf.upper()
+            and self.document_model == document_model
+        )
+
+    def assert_mutable(self) -> None:
+        if self.__dict__.get("_published_version", False):
+            raise BusinessRuleException(
+                "Uma regra fiscal publicada é imutável; crie uma nova versão para corrigi-la."
+            )
+
+    def _ensure_mutable(self) -> None:
+        self.assert_mutable()
+
+    @staticmethod
+    def _is_published_status(status) -> bool:
+        return status is ProductTaxRuleStatus.PUBLISHED or status == ProductTaxRuleStatus.PUBLISHED.value
+
+
+@dataclass
 class FiscalDocument(Entity):
     """Documento fiscal de uma venda — o 'estado fiscal' de um sale_id."""
     market_id: uuid.UUID
@@ -353,6 +673,12 @@ class FiscalDocument(Entity):
 
     # Rastreio
     last_attempt_id: Optional[uuid.UUID] = None
+
+    # Evidência imutável do pedido enviada ao provider. É criada antes da fila
+    # para que retries nunca reconstruam tributação a partir de dados mutáveis.
+    request_contract_version: Optional[str] = None
+    request_payload_json: Optional[dict] = None
+    request_payload_sha256: Optional[str] = None
 
     def set_authorized(self, access_key: str, protocol: str, number: int,
                        series: int, sefaz_code: str, sefaz_msg: str):

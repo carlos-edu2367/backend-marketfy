@@ -24,6 +24,118 @@ from infra.queues.arq_config import QUEUE_FISCAL_RECONCILE
 logger = get_logger("fiscal_jobs")
 
 
+async def _select_persisted_payload_for_emission(
+    doc, fiscal_config, doc_repo, *, fiscal_product_rules_enabled: bool = True
+):
+    """Return immutable request evidence or the explicit legacy fallback marker."""
+    from application.services.fiscal.fiscal_contract_v2 import (
+        CONTRACT_VERSION,
+        canonical_contract_sha256,
+    )
+
+    from application.services.fiscal.fiscal_rollout_service import (
+        effective_fiscal_rule_enforcement,
+    )
+    from domain.fiscal import FiscalRuleEnforcement
+
+    configured_mode = getattr(fiscal_config, "fiscal_rule_enforcement", "off")
+    try:
+        configured_mode = (
+            configured_mode
+            if isinstance(configured_mode, FiscalRuleEnforcement)
+            else FiscalRuleEnforcement(configured_mode)
+        )
+    except (TypeError, ValueError):
+        configured_mode = FiscalRuleEnforcement.OFF
+    effective_mode = effective_fiscal_rule_enforcement(
+        configured_mode,
+        product_rules_enabled=fiscal_product_rules_enabled,
+    )
+    is_block_mode = effective_mode is FiscalRuleEnforcement.BLOCK
+
+    payload = getattr(doc, "request_payload_json", None)
+    if payload is not None:
+        if not isinstance(payload, dict):
+            doc.set_manual_action_required("Payload fiscal persistido possui formato inválido.")
+            await doc_repo.save(doc)
+            _record_fiscal_contract_metric(
+                doc, effective_mode.value, "unknown", "payload_invalid", "unknown"
+            )
+            return {"status": "payload_invalid"}
+        stored_hash = getattr(doc, "request_payload_sha256", None)
+        calculated_hash = canonical_contract_sha256(payload)
+        if (
+            stored_hash != calculated_hash
+            or payload.get("snapshot_sha256") != stored_hash
+            or getattr(doc, "request_contract_version", None) != payload.get("contract_version")
+            or (
+                is_block_mode
+                and (
+                    getattr(doc, "request_contract_version", None) != CONTRACT_VERSION
+                    or payload.get("contract_version") != CONTRACT_VERSION
+                )
+            )
+        ):
+            doc.set_manual_action_required("Hash do payload fiscal persistido é inválido.")
+            await doc_repo.save(doc)
+            _record_fiscal_contract_metric(
+                doc,
+                effective_mode.value,
+                str(getattr(doc, "request_contract_version", None) or "unknown"),
+                "payload_invalid",
+                "v2" if payload.get("contract_version") == CONTRACT_VERSION else "legacy",
+            )
+            return {"status": "payload_invalid"}
+        contract_version = str(payload.get("contract_version") or "legacy")
+        _record_fiscal_contract_metric(
+            doc,
+            effective_mode.value,
+            contract_version,
+            "success",
+            "v2" if contract_version == CONTRACT_VERSION else "legacy",
+        )
+        return payload
+
+    if is_block_mode:
+        doc.set_manual_action_required("Payload fiscal persistido ausente em modo block.")
+        await doc_repo.save(doc)
+        _record_fiscal_contract_metric(
+            doc,
+            effective_mode.value,
+            "marketfy.fiscal-tax-snapshot.v2",
+            "payload_missing",
+            "v2",
+        )
+        return {"status": "payload_missing"}
+
+    logger.info(
+        "legacy_payload_rebuilt",
+        extra={"extra_data": {"doc_id": str(doc.id), "metric_tag": "legacy_payload_rebuilt"}},
+    )
+    _record_fiscal_contract_metric(doc, effective_mode.value, "legacy", "success", "legacy")
+    return None
+
+
+def _record_fiscal_contract_metric(
+    doc, enforcement_mode: str, contract_version: str, result_code: str, path: str
+) -> None:
+    from infra.observability.metrics import metrics_registry
+
+    metrics_registry.record_fiscal_contract(
+        market_id=str(getattr(doc, "market_id", "")),
+        contract_version=contract_version,
+        enforcement_mode=enforcement_mode,
+        result_code=result_code,
+        path=path,
+    )
+    if result_code in {"payload_invalid", "payload_missing"}:
+        metrics_registry.record_fiscal_rule_event(
+            market_id=str(getattr(doc, "market_id", "")),
+            mode=enforcement_mode,
+            event="contract_rejected",
+        )
+
+
 # =============================================================================
 # EMIT JOB
 # =============================================================================
@@ -60,6 +172,7 @@ async def emit_nfce_job(
         FiscalAttempt, FiscalAttemptOperation, FiscalAttemptStatus,
         FiscalDocumentStatus, FiscalEvent, FiscalEventSource,
     )
+    from domain.shared import BusinessRuleException
     from infra.providers.fiscal.base import EmitResultStatus
 
     doc_uuid = uuid.UUID(doc_id)
@@ -98,32 +211,68 @@ async def emit_nfce_job(
         # Mantemos a variável para compatibilidade com a interface do provider
         api_token = settings.NEECTIFY_API_KEY or ""
 
-        # Obter venda para montar payload
-        from infra.repositories.sqlalchemy_repos import SQLAlchemySaleRepository
-        sale_repo = SQLAlchemySaleRepository(session)
-        sale = await sale_repo.get_by_id(doc.sale_id)
-        if not sale:
-            doc.set_manual_action_required("Venda não encontrada.")
-            await doc_repo.save(doc)
-            return {"status": "sale_not_found"}
-
-        # Montar payload fiscal no formato Neectify
-        validator = FiscalPreValidator()
         provider_name = settings.FISCAL_PROVIDER
+        quota_service = FiscalQuotaService(usage_repo)
+        emit_period = period or datetime.utcnow().strftime("%Y%m")
 
-        if provider_name == "neectify_fiscal":
-            issuer_id = getattr(cfg_raw, "neectify_issuer_id", None) or ""
-            payload = validator.build_neectify_payload(
-                sale=sale,
-                fiscal_config=cfg_raw,
-                issuer_id=issuer_id,
+        payload = await _select_persisted_payload_for_emission(
+            doc,
+            cfg_raw,
+            doc_repo,
+            fiscal_product_rules_enabled=settings.FISCAL_PRODUCT_RULES_ENABLED,
+        )
+        if isinstance(payload, dict) and "status" in payload:
+            return payload
+
+        async def block_invalid_tax_snapshot(exc: BusinessRuleException) -> dict:
+            """Reject and audit a mutated/invalid snapshot before provider I/O."""
+            doc.set_rejected(
+                sefaz_code="sale.fiscal_tax_snapshot_invalid",
+                sefaz_msg=str(exc),
             )
-        else:
-            payload = validator.build_fiscal_payload(
-                sale=sale,
-                fiscal_config=cfg_raw,
-                provider_ref=doc.provider_ref,
+            await doc_repo.save(doc)
+            await quota_service.release(
+                owner_id=owner_uuid,
+                period=emit_period,
+                market_id=market_uuid,
+                reason="fiscal_tax_snapshot_invalid",
             )
+            await _append_event(
+                event_repo,
+                doc,
+                "fiscal_tax_snapshot_blocked",
+                str(exc),
+                FiscalEventSource.MARKETFY,
+            )
+            logger.warning(
+                "emit_nfce_blocked_invalid_tax_snapshot",
+                extra={"extra_data": {"doc_id": doc_id, "sale_id": str(doc.sale_id), "error": str(exc)}},
+            )
+            return {"status": "blocked", "error_code": "sale.fiscal_tax_snapshot_invalid"}
+
+        if payload is None:
+            # Legacy documents predate immutable request evidence. This branch
+            # is deliberately unavailable to new block-mode documents.
+            from infra.repositories.sqlalchemy_repos import SQLAlchemySaleRepository
+            sale = await SQLAlchemySaleRepository(session).get_by_id(doc.sale_id)
+            if not sale:
+                doc.set_manual_action_required("Venda não encontrada.")
+                await doc_repo.save(doc)
+                return {"status": "sale_not_found"}
+            validator = FiscalPreValidator()
+            try:
+                if provider_name == "neectify_fiscal":
+                    payload = validator.build_legacy_neectify_payload(
+                        sale=sale, fiscal_config=cfg_raw,
+                        issuer_id=getattr(cfg_raw, "neectify_issuer_id", None) or "",
+                        provider_ref=doc.provider_ref,
+                    )
+                else:
+                    payload = validator.build_fiscal_payload(
+                        sale=sale, fiscal_config=cfg_raw, provider_ref=doc.provider_ref,
+                    )
+            except BusinessRuleException as exc:
+                return await block_invalid_tax_snapshot(exc)
 
         # Registrar tentativa
         attempt_count = await attempt_repo.count_attempts(doc_uuid, "emit")
@@ -158,9 +307,6 @@ async def emit_nfce_job(
         )
         await attempt_repo.save(attempt)
         doc.last_attempt_id = attempt.id
-
-        quota_service = FiscalQuotaService(usage_repo)
-        emit_period = period or datetime.utcnow().strftime("%Y%m")
 
         if result.is_authorized:
             doc.set_authorized(

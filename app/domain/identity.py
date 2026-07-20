@@ -19,6 +19,7 @@ class UserRole(Enum):
     ADMIN = "admin"
     OWNER = "owner"
     MANAGER = "manager"
+    ACCOUNTANT = "accountant"
     CASHIER = "cashier"
 
 class PlanDuration(Enum):

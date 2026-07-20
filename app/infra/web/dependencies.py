@@ -38,6 +38,12 @@ from application.services.analytics_service import AnalyticsService
 from application.services.finance_report_service import FinanceReportService # NOVO
 from application.services.audit_service import AuditService
 from infra.repositories.audit_repo import SQLAlchemyAuditLogRepository
+from infra.repositories.fiscal_repo import (
+    SQLAlchemyFiscalTenantConfigRepository,
+    SQLAlchemyProductTaxRuleRepository,
+)
+from application.services.fiscal.tax_rule_service import TaxRuleService
+from application.services.fiscal.tax_rule_calculator import TaxRuleCalculator
 
 from infra.providers.focus_nfe_provider import FocusNFeProvider
 
@@ -98,7 +104,13 @@ def get_sales_service(db: AsyncSession = Depends(get_db)):
         terminal_repo=SQLAlchemyTerminalRepository(db),
         plan_repo=SQLAlchemyPlanRepository(db),
         customer_repo=SQLAlchemyCustomerRepository(db),
-        financial_repo=SQLAlchemyFinancialTransactionRepository(db)
+        financial_repo=SQLAlchemyFinancialTransactionRepository(db),
+        fiscal_config_repo=SQLAlchemyFiscalTenantConfigRepository(db),
+        tax_rule_service=TaxRuleService(SQLAlchemyProductTaxRuleRepository(db)),
+        tax_rule_calculator=TaxRuleCalculator(),
+        environment=settings.ENVIRONMENT,
+        fiscal_offline_max_age_minutes=settings.FISCAL_OFFLINE_MAX_AGE_MINUTES,
+        fiscal_product_rules_enabled=settings.FISCAL_PRODUCT_RULES_ENABLED,
     )
 
 def get_finance_service(db: AsyncSession = Depends(get_db)):
@@ -189,6 +201,7 @@ def require_admin(current_user = Depends(get_current_user)):
 def _build_market_dependency(
     permission: Optional[MarketPermission],
     owner_only: bool,
+    return_access: bool = False,
 ) -> Callable:
     async def _dep(
         market_id: uuid.UUID,
@@ -202,6 +215,7 @@ def _build_market_dependency(
                 db=db,
                 permission=permission,
                 owner_only=owner_only,
+                return_access=return_access,
             )
         except MarketNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
@@ -217,6 +231,17 @@ def require_market_access(permission: Optional[MarketPermission] = None) -> Call
     Owner sempre passa. Membros (PR 10) passam se o role tem a permissão.
     """
     return _build_market_dependency(permission=permission, owner_only=False)
+
+
+def require_market_access_context(
+    permission: Optional[MarketPermission] = None,
+) -> Callable:
+    """Return the market plus the active tenant member checked for permission."""
+    return _build_market_dependency(
+        permission=permission,
+        owner_only=False,
+        return_access=True,
+    )
 
 
 def require_market_owner() -> Callable:

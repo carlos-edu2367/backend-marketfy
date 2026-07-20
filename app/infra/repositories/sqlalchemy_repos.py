@@ -1,10 +1,11 @@
+import json
 import uuid
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, cast, Date, extract
 from sqlalchemy.orm import selectinload
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Domain Interfaces & Entities
 from domain.interfaces import (
@@ -230,6 +231,7 @@ class SQLAlchemyProductRepository(ProductRepositoryInterface):
         model.current_stock = product.current_stock
         model.active = product.active
         model.ncm = product.ncm
+        model.tax_rule_id = product.tax_rule_id
         model.updated_at = datetime.utcnow()
         if product.deleted_at:
              model.deleted_at = product.deleted_at
@@ -330,7 +332,9 @@ class SQLAlchemyProductRepository(ProductRepositoryInterface):
             cost_price=m.cost_price,
             current_stock=m.current_stock,
             active=m.active,
-            ncm=m.ncm
+            ncm=m.ncm,
+            origin=m.origin,
+            tax_rule_id=m.tax_rule_id,
         )
         p.id = m.id
         p.created_at = m.created_at
@@ -515,6 +519,7 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
         model.customer_cpf = sale.customer_cpf 
         
         model.offline_id = sale.offline_id
+        model.fiscal_rule_pendencies_json = sale.fiscal_rule_pendencies
         
         # --- FIX: Correção para AsyncPG (Naive vs Aware Datetime) ---
         # Removemos o tzinfo explicitamente para garantir compatibilidade 
@@ -523,6 +528,14 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
             model.synced_at = sale.synced_at.replace(tzinfo=None)
         else:
             model.synced_at = sale.synced_at
+        if sale.received_at:
+            # All persisted receipt times are an instant in UTC. The migration
+            # interprets preexisting naive values with the same UTC convention.
+            model.received_at = (
+                sale.received_at.replace(tzinfo=timezone.utc)
+                if sale.received_at.tzinfo is None
+                else sale.received_at.astimezone(timezone.utc)
+            )
             
         if sale.created_at and sale.created_at.tzinfo:
             model.created_at = sale.created_at.replace(tzinfo=None)
@@ -542,7 +555,12 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                     unit_price=item.unit_price,
                     total=item.total,
                     ncm_snapshot=item.ncm_snapshot,
-                    origin_snapshot=item.origin_snapshot
+                    origin_snapshot=item.origin_snapshot,
+                    fiscal_tax_snapshot_json=_serialize_fiscal_tax_snapshot(item.fiscal_tax_snapshot),
+                    tax_rule_id_snapshot=item.tax_rule_id_snapshot,
+                    tax_rule_version_snapshot=item.tax_rule_version_snapshot,
+                    snapshot_sha256=item.snapshot_sha256,
+                    fiscal_calculation_version=item.fiscal_calculation_version,
                 )
                 self.session.add(i_model)
             
@@ -615,7 +633,13 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
             acrescimo=m.acrescimo,
             customer_cpf=m.customer_cpf,
             offline_id=m.offline_id,
-            synced_at=m.synced_at
+            synced_at=m.synced_at,
+            received_at=(
+                m.received_at.replace(tzinfo=timezone.utc)
+                if m.received_at and m.received_at.tzinfo is None
+                else m.received_at.astimezone(timezone.utc) if m.received_at else None
+            ),
+            fiscal_rule_pendencies=m.fiscal_rule_pendencies_json,
         )
         s.id = m.id
         s.created_at = m.created_at
@@ -631,7 +655,12 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                     unit_price=i.unit_price,
                     total=i.total,
                     ncm_snapshot=i.ncm_snapshot,
-                    origin_snapshot=i.origin_snapshot
+                    origin_snapshot=i.origin_snapshot,
+                    fiscal_tax_snapshot=_deserialize_fiscal_tax_snapshot(i.fiscal_tax_snapshot_json),
+                    tax_rule_id_snapshot=i.tax_rule_id_snapshot,
+                    tax_rule_version_snapshot=i.tax_rule_version_snapshot,
+                    snapshot_sha256=i.snapshot_sha256,
+                    fiscal_calculation_version=i.fiscal_calculation_version,
                 ))
         
         # Reconstrói pagamentos
@@ -677,6 +706,23 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                 "emitted_at": doc.authorized_at or doc.issued_at
             }
         return s
+
+
+def _serialize_fiscal_tax_snapshot(
+    snapshot: Optional[dict | list],
+) -> Optional[dict | list]:
+    return snapshot
+
+def _deserialize_fiscal_tax_snapshot(
+    snapshot: Optional[dict | list | str],
+) -> Optional[dict | list]:
+    if snapshot is None:
+        return None
+    if isinstance(snapshot, str):
+        if not snapshot.strip():
+            return None
+        return json.loads(snapshot)
+    return snapshot
 # ==================================================================================
 # CUSTOMER REPOSITORY
 # ==================================================================================

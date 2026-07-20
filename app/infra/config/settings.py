@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     FISCAL_WORKER_CONCURRENCY: int = 5
     FISCAL_JOB_TIMEOUT: int = 30
     FISCAL_STORAGE_ROOT: str = "storage/fiscal"
+    # Comma-separated ICMS XML groups approved in the accountant catalog and
+    # homologated by Fiscal. Empty is deliberately fail-closed.
+    FISCAL_APPROVED_ICMS_GROUPS: str = ""
+    FISCAL_OFFLINE_MAX_AGE_MINUTES: int = 30
+    # Global rollout kill switch. It never changes persisted market mode; when
+    # false every market behaves as fiscal-rule enforcement ``off``.
+    FISCAL_PRODUCT_RULES_ENABLED: bool = False
 
     # Neectify Fiscal
     NEECTIFY_API_KEY: str = ""
@@ -188,6 +195,8 @@ class Settings(BaseSettings):
             raise ValueError("ACCESS_TOKEN_EXPIRE_MINUTES deve ser no maximo 30 em producao.")
         if not self.FISCAL_SECRET_KEY or len(self.FISCAL_SECRET_KEY) < 32:
             raise ValueError("FISCAL_SECRET_KEY e obrigatoria em producao.")
+        if self.FISCAL_OFFLINE_MAX_AGE_MINUTES <= 0:
+            raise ValueError("FISCAL_OFFLINE_MAX_AGE_MINUTES deve ser maior que zero.")
         if self.FISCAL_PROVIDER == "neectify_fiscal":
             if not self.NEECTIFY_API_KEY:
                 raise ValueError("NEECTIFY_API_KEY e obrigatoria em producao com FISCAL_PROVIDER=neectify_fiscal.")

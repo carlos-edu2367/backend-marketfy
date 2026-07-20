@@ -34,7 +34,11 @@ def _ref() -> str:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    raise RuntimeError("_run só pode ser usado por testes síncronos")
 
 
 TOKEN = "fake-token"

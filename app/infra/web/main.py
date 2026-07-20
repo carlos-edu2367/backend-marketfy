@@ -31,6 +31,7 @@ from infra.web.routers import (
     finance_report,
     finance_support,
     fiscal,
+    fiscal_tax_rules,
     fiscal_credits,
     fiscal_webhooks,
     identity,
@@ -192,7 +193,12 @@ async def business_rule_exception_handler(request: Request, exc: BusinessRuleExc
     )
     return JSONResponse(
         status_code=400,
-        content=error_response("business_rule", str(exc), get_request_id()),
+        content=error_response(
+            getattr(exc, "code", "business_rule"),
+            str(exc),
+            get_request_id(),
+            exc.details() if hasattr(exc, "details") else None,
+        ),
         headers={"X-Request-ID": get_request_id() or ""},
     )
 
@@ -333,6 +339,7 @@ app.include_router(admin_fiscal.router, prefix="/api/v1/admin", tags=["Admin Fis
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["Analytics"])
 app.include_router(fiscal_credits.router, prefix="/api/v1/fiscal", tags=["Fiscal Credits"])
 app.include_router(fiscal.router, prefix="/api/v1/fiscal", tags=["Fiscal"])
+app.include_router(fiscal_tax_rules.router, prefix="/api/v1/fiscal", tags=["Fiscal"])
 app.include_router(fiscal_webhooks.router, prefix="/api/v1/fiscal/webhooks", tags=["Fiscal Webhooks"])
 app.include_router(billing_core_webhooks.router, prefix="/api/v1/webhooks", tags=["Billing Core Webhooks"])
 app.include_router(billing_invoice_webhooks.router, prefix="/api/v1/webhooks", tags=["Billing Invoice Webhooks"])

@@ -189,6 +189,29 @@ async def test_resolve_market_access_active_member_with_permission(patch_repos):
 
 
 @pytest.mark.asyncio
+async def test_resolve_market_access_context_preserves_checked_tenant_member(patch_repos):
+    owner_id = uuid.uuid4()
+    member_id = uuid.uuid4()
+    market_id = uuid.uuid4()
+    patch_repos(
+        [FakeMarket(id=market_id, owner_id=owner_id)],
+        [FakeMember(market_id=market_id, user_id=member_id, role=UserRole.MANAGER)],
+    )
+
+    access = await resolve_market_access(
+        market_id,
+        FakeUser(id=member_id, role=UserRole.CASHIER),
+        FakeSession(),
+        permission=MarketPermission.FISCAL_WRITE,
+        return_access=True,
+    )
+
+    assert access.market.id == market_id
+    assert access.member is not None
+    assert access.member.role is UserRole.MANAGER
+
+
+@pytest.mark.asyncio
 async def test_resolve_market_access_cashier_lacks_finance_write(patch_repos):
     owner_id = uuid.uuid4()
     member_id = uuid.uuid4()
@@ -277,9 +300,9 @@ def test_role_permissions_cashier_cannot_write_finance_or_fiscal():
     assert MarketPermission.SALES_WRITE in cashier_set
 
 
-def test_role_permissions_manager_cannot_write_fiscal():
+def test_role_permissions_manager_can_write_fiscal():
     manager_set = ROLE_PERMISSIONS[UserRole.MANAGER]
-    assert MarketPermission.FISCAL_WRITE not in manager_set
+    assert MarketPermission.FISCAL_WRITE in manager_set
     assert MarketPermission.FINANCE_WRITE in manager_set
     assert MarketPermission.ANALYTICS_READ in manager_set
 
