@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     BILLING_CORE_WEBHOOK_SECRET: str = ""
     BILLING_CORE_WEBHOOK_CALLBACK_URL: str = ""  # URL do marketfy que o BC vai chamar
     BILLING_CORE_WEBHOOK_INVOICE_URL: str = ""  # webhook_link dedicado das faturas de assinatura
+
+    # E-mail (Mailgun) — mesmas credenciais do Neectify Food
+    MAILGUN_API_KEY: str = ""
+    MAILGUN_DOMAIN: str = ""
+    MAILGUN_FROM_EMAIL: str = "noreply@neectify.com"
+    MAILGUN_FROM_NAME: str = "Marketfy"
+    MAILGUN_API_BASE_URL: str = "https://api.mailgun.net"
     BILLING_CORE_CHECKOUT_EXPIRATION_MINUTES: int = 30
     BILLING_CORE_WEBHOOK_HOST: Optional[str] = None
     BILLING_CORE_TIMEOUT_SECONDS: int = 10
