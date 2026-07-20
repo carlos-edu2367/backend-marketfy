@@ -146,6 +146,15 @@ class InitiateSubscriptionRequestDTO(BaseModel):
     idempotency_key: Optional[str] = None        # Opcional; gerado no backend se ausente
 
 
+class SubscribeRequestDTO(BaseModel):
+    """Contratação self-service (novo fluxo)."""
+    plan_id: UUID
+    subscription_type: str            # monthly | semiannual | annual
+    billing_mode: str                 # recurring | invoice
+    document: Optional[str] = None    # CPF/CNPJ (obrigatório no recorrente)
+    idempotency_key: Optional[str] = None
+
+
 class BillingJobStatusResponseDTO(BaseModel):
     """Resposta de polling de job do Billing Core.
 

@@ -29,6 +29,7 @@ from application.dtos import (
     BillingWebhookEventDTO,
     InitiateSubscriptionRequestDTO,
     BillingJobStatusResponseDTO,
+    SubscribeRequestDTO,
 )
 from application.services.subscription_service import SubscriptionService
 from application.services.audit_service import AuditService
@@ -74,6 +75,62 @@ def _get_plan_access_service(db: AsyncSession = Depends(get_db)) -> PlanAccessSe
         plan_repo=SQLAlchemyPlanRepository(db),
         subscription_repo=SQLAlchemyBillingSubscriptionRepository(db),
     )
+
+
+def _get_invoice_service(db: AsyncSession = Depends(get_db)):
+    from application.services.invoice_service import InvoiceService
+    from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
+    from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
+    from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository
+
+    return InvoiceService(
+        invoice_repo=SQLAlchemyBillingInvoiceRepository(db),
+        subscription_repo=SQLAlchemyBillingSubscriptionRepository(db),
+        plan_repo=SQLAlchemyPlanRepository(db),
+        billing_client=BillingCoreClient(),
+        settings=settings,
+    )
+
+
+@router.post("/subscribe", status_code=status.HTTP_202_ACCEPTED)
+async def subscribe(
+    request: Request,
+    dto: SubscribeRequestDTO,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    invoice_service=Depends(_get_invoice_service),
+    audit: AuditService = Depends(get_audit_service),
+):
+    if dto.subscription_type not in ("monthly", "semiannual", "annual"):
+        raise HTTPException(status_code=400, detail="subscription_type inválido.")
+    if dto.billing_mode not in ("invoice", "recurring"):
+        raise HTTPException(status_code=400, detail="billing_mode inválido.")
+
+    idem = dto.idempotency_key or f"sub-{current_user.id}-{dto.plan_id}-{dto.subscription_type}-{dto.billing_mode}"
+
+    if dto.billing_mode == "invoice":
+        try:
+            result = await invoice_service.contract(
+                owner_id=current_user.id, plan_id=dto.plan_id,
+                subscription_type=dto.subscription_type, idempotency_key=idem,
+            )
+            await db.commit()
+        except BusinessRuleException as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except BillingCoreError as exc:
+            logger.warning(f"[billing] Billing Core indisponível subscribe user={current_user.id}: {exc}")
+            raise HTTPException(status_code=503, detail="Serviço de cobrança temporariamente indisponível.")
+        await record_audit_event(
+            audit, request, actor=current_user, action="billing.subscribe.invoice",
+            resource_type="billing_subscription", resource_id=result.get("subscription_id"),
+            result="success", metadata={"plan_id": str(dto.plan_id), "subscription_type": dto.subscription_type},
+        )
+        return result
+
+    # recurring — implementado na Task 12
+    raise HTTPException(status_code=400, detail="Cobrança recorrente em configuração. Use faturas por enquanto.")
 
 
 # ---------------------------------------------------------------------------

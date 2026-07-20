@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     BILLING_CORE_SYSTEM: str = "marketfy"
     BILLING_CORE_WEBHOOK_SECRET: str = ""
     BILLING_CORE_WEBHOOK_CALLBACK_URL: str = ""  # URL do marketfy que o BC vai chamar
+    BILLING_CORE_WEBHOOK_INVOICE_URL: str = ""  # webhook_link dedicado das faturas de assinatura
     BILLING_CORE_CHECKOUT_EXPIRATION_MINUTES: int = 30
     BILLING_CORE_WEBHOOK_HOST: Optional[str] = None
     BILLING_CORE_TIMEOUT_SECONDS: int = 10
