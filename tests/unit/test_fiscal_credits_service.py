@@ -26,7 +26,7 @@ class FakeSettings:
     PUBLIC_API_BASE_URL: str = "https://api.marketfy.test/api/v1"
     PUBLIC_FRONTEND_URL: str = "https://app.marketfy.test"
     BILLING_CORE_SYSTEM: str = "marketfy"
-    BILLING_CORE_PAYMENT_DUE_DAYS: int = 3
+    BILLING_CORE_CHECKOUT_EXPIRATION_MINUTES: int = 30
     BILLING_CORE_WEBHOOK_CALLBACK_URL: str = "https://api.marketfy.test/webhooks/billing-core"
 
 
@@ -82,7 +82,7 @@ def _service(repo=None, mp_client=None, quota_service=None, settings=None, bc_cl
 
     if bc_client is None:
         bc_client = AsyncMock()
-        bc_client.create_payment_link.return_value = {
+        bc_client.create_payment.return_value = {
             "job_id": "job-123",
             "message": "created",
         }
@@ -118,9 +118,9 @@ def test_pack_500_price_gross():
 
 
 @pytest.mark.asyncio
-async def test_initiate_purchase_creates_preference():
+async def test_initiate_purchase_creates_checkout():
     bc = AsyncMock()
-    bc.create_payment_link.return_value = {
+    bc.create_payment.return_value = {
         "job_id": "job-123",
         "message": "created",
     }
@@ -131,8 +131,7 @@ async def test_initiate_purchase_creates_preference():
 
     assert result.package.slug == "pack_100"
     assert result.job_id == "job-123"
-    bc.create_payment_link.assert_called_once()
-    bc.create_payment.assert_not_called()
+    bc.create_payment.assert_called_once()
     bc.create_customer.assert_not_called()
     repo.update_package_job_id.assert_called_once()
 
@@ -140,37 +139,39 @@ async def test_initiate_purchase_creates_preference():
 @pytest.mark.asyncio
 async def test_initiate_purchase_external_reference_is_package_id():
     bc = AsyncMock()
-    bc.create_payment_link.return_value = {"job_id": "job-1", "message": "created"}
+    bc.create_payment.return_value = {"job_id": "job-1", "message": "created"}
     svc = _service(bc_client=bc)
 
     result = await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-2")
 
-    payload = bc.create_payment_link.call_args.kwargs
+    payload = bc.create_payment.call_args.kwargs
     assert payload["system_payment_id"] == str(result.package_id)
 
 
 @pytest.mark.asyncio
 async def test_initiate_purchase_notification_url_correct():
     bc = AsyncMock()
-    bc.create_payment_link.return_value = {"job_id": "job-1", "message": "created"}
+    bc.create_payment.return_value = {"job_id": "job-1", "message": "created"}
     svc = _service(bc_client=bc)
 
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-3")
 
-    payload = bc.create_payment_link.call_args.kwargs
+    payload = bc.create_payment.call_args.kwargs
     assert payload["webhook_link"] == "https://api.marketfy.test/webhooks/billing-core"
 
 
 @pytest.mark.asyncio
 async def test_initiate_purchase_back_urls_from_settings():
     bc = AsyncMock()
-    bc.create_payment_link.return_value = {"job_id": "job-1", "message": "created"}
+    bc.create_payment.return_value = {"job_id": "job-1", "message": "created"}
     svc = _service(bc_client=bc)
 
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_250", "idem-4")
 
-    payload = bc.create_payment_link.call_args.kwargs
-    assert payload["system"] == "marketfy"
+    payload = bc.create_payment.call_args.kwargs
+    assert payload["success_url"] == "https://app.marketfy.test/billing/success"
+    assert payload["cancel_url"] == "https://app.marketfy.test/billing/cancel"
+    assert payload["expired_url"] == "https://app.marketfy.test/billing/expired"
 
 
 @pytest.mark.asyncio
@@ -191,20 +192,20 @@ async def test_initiate_purchase_idempotent_same_key():
 
     assert result.package_id == existing.id
     assert result.job_id == "job-existing"
-    bc.create_payment_link.assert_not_called()
+    bc.create_payment.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_initiate_purchase_different_key_new_preference():
     bc = AsyncMock()
-    bc.create_payment_link.return_value = {"job_id": "job-new", "message": "created"}
+    bc.create_payment.return_value = {"job_id": "job-new", "message": "created"}
     repo = _repo()
     svc = _service(repo=repo, bc_client=bc)
 
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-a")
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-b")
 
-    assert bc.create_payment_link.call_count == 2
+    assert bc.create_payment.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -215,27 +216,27 @@ async def test_invalid_package_slug_raises_error():
 
 
 @pytest.mark.asyncio
-async def test_due_date_limit_days_from_settings():
+async def test_checkout_expiration_minutes_from_settings():
     bc = AsyncMock()
-    bc.create_payment_link.return_value = {"job_id": "job-1", "message": "created"}
+    bc.create_payment.return_value = {"job_id": "job-1", "message": "created"}
     svc = _service(bc_client=bc)
 
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_100", "idem-due-date")
 
-    payload = bc.create_payment_link.call_args.kwargs
-    assert payload["due_date_limit_days"] == 3
+    payload = bc.create_payment.call_args.kwargs
+    assert payload["minutes_to_expire"] == 30
     assert "due_date" not in payload
 
 
 @pytest.mark.asyncio
 async def test_payment_value_mapping():
     bc = AsyncMock()
-    bc.create_payment_link.return_value = {"job_id": "job-val", "message": "created"}
+    bc.create_payment.return_value = {"job_id": "job-val", "message": "created"}
     svc = _service(bc_client=bc)
 
     await svc.initiate_purchase(uuid.uuid4(), uuid.uuid4(), "pack_500", "idem-val")
 
-    payload = bc.create_payment_link.call_args.kwargs
+    payload = bc.create_payment.call_args.kwargs
     assert payload["value"] == "126.20"
 
 
@@ -296,13 +297,12 @@ async def test_initiate_purchase_does_not_create_or_reuse_customer():
     await svc.initiate_purchase(user.id, uuid.uuid4(), "pack_100", "idem-ensure")
 
     bc.create_customer.assert_not_called()
-    bc.create_payment.assert_not_called()
-    payload = bc.create_payment_link.call_args.kwargs
+    payload = bc.create_payment.call_args.kwargs
     assert "customer_provider_id" not in payload
 
 
 @pytest.mark.asyncio
-async def test_missing_document_does_not_block_payment_link_checkout():
+async def test_missing_document_does_not_block_checkout():
     user_repo = AsyncMock()
     from domain.shared import Email
     from domain.identity import User, UserRole
@@ -317,18 +317,18 @@ async def test_missing_document_does_not_block_payment_link_checkout():
 
     user_repo.get_by_id.return_value = user
     bc = AsyncMock()
-    bc.create_payment_link.return_value = {"job_id": "job-nodoc", "message": "created"}
+    bc.create_payment.return_value = {"job_id": "job-nodoc", "message": "created"}
     svc = _service(user_repo=user_repo, bc_client=bc)
 
     result = await svc.initiate_purchase(user.id, uuid.uuid4(), "pack_100", "idem-nodoc")
 
     assert result.job_id == "job-nodoc"
     bc.create_customer.assert_not_called()
-    bc.create_payment_link.assert_called_once()
+    bc.create_payment.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_initiate_custom_purchase_uses_payment_link_without_customer():
+async def test_initiate_custom_purchase_uses_checkout_without_customer():
     user_repo = AsyncMock()
     from domain.shared import Email
     from domain.identity import User, UserRole
@@ -342,7 +342,7 @@ async def test_initiate_custom_purchase_uses_payment_link_without_customer():
     )
     user_repo.get_by_id.return_value = user
     bc = AsyncMock()
-    bc.create_payment_link.return_value = {"job_id": "job-custom", "message": "created"}
+    bc.create_payment.return_value = {"job_id": "job-custom", "message": "created"}
     svc = _service(user_repo=user_repo, bc_client=bc)
 
     result = await svc.initiate_custom_purchase(
@@ -354,12 +354,11 @@ async def test_initiate_custom_purchase_uses_payment_link_without_customer():
     )
 
     assert result.job_id == "job-custom"
-    payload = bc.create_payment_link.call_args.kwargs
+    payload = bc.create_payment.call_args.kwargs
     assert payload["value"] == "30.24"
     assert payload["description"] == "Creditos NF-e - custom_42"
-    assert payload["due_date_limit_days"] == 3
+    assert payload["minutes_to_expire"] == 30
     assert "customer_provider_id" not in payload
     bc.create_customer.assert_not_called()
-    bc.create_payment.assert_not_called()
 
 

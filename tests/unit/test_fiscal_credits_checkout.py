@@ -26,8 +26,9 @@ from infra.web.main import app
 class FakeSettings:
     BILLING_CORE_ENABLED: bool = True
     BILLING_CORE_SYSTEM: str = "marketfy"
-    BILLING_CORE_PAYMENT_DUE_DAYS: int = 3
+    BILLING_CORE_CHECKOUT_EXPIRATION_MINUTES: int = 30
     BILLING_CORE_WEBHOOK_CALLBACK_URL: str = "https://api.marketfy.test/webhooks/billing-core"
+    PUBLIC_FRONTEND_URL: str = "https://app.marketfy.test"
 
 
 def FakeUser(**kwargs) -> User:
@@ -147,13 +148,13 @@ async def test_ensure_customer_provider_id_raises_value_error_if_no_doc():
 
 
 @pytest.mark.asyncio
-async def test_initiate_purchase_calls_create_payment_link():
+async def test_initiate_purchase_calls_create_payment():
     user = FakeUser(asaas_customer_id="cus_123")
     user_repo = AsyncMock()
     user_repo.get_by_id.return_value = user
 
     bc_client = AsyncMock()
-    bc_client.create_payment_link.return_value = {"job_id": "job_123", "message": "created"}
+    bc_client.create_payment.return_value = {"job_id": "job_123", "message": "created"}
 
     repo = _repo()
     svc = _service(repo=repo, bc_client=bc_client, user_repo=user_repo)
@@ -161,10 +162,17 @@ async def test_initiate_purchase_calls_create_payment_link():
     res = await svc.initiate_purchase(user.id, uuid.uuid4(), "pack_100", "idem-1")
 
     assert res.job_id == "job_123"
-    bc_client.create_payment_link.assert_called_once()
-    bc_client.create_payment.assert_not_called()
+    bc_client.create_payment.assert_called_once()
     bc_client.create_customer.assert_not_called()
-    assert "customer_provider_id" not in bc_client.create_payment_link.call_args.kwargs
+    payload = bc_client.create_payment.call_args.kwargs
+    assert "customer_provider_id" not in payload
+    assert payload["items"] == [{
+        "external_reference": str(res.package_id),
+        "name": "100 créditos NF-e",
+        "description": "Créditos para emissão fiscal",
+        "quantity": 1,
+        "value": "41.99",
+    }]
     repo.update_package_job_id.assert_called_once_with(res.package_id, job_id="job_123")
 
 
@@ -182,7 +190,7 @@ async def test_initiate_purchase_idempotent_same_key():
     res = await svc.initiate_purchase(user.id, uuid.uuid4(), "pack_100", "idem-same")
 
     assert res.job_id == "job_existing"
-    bc_client.create_payment_link.assert_not_called()
+    bc_client.create_payment.assert_not_called()
 
 
 @pytest.mark.asyncio

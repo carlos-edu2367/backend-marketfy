@@ -81,15 +81,24 @@ class FiscalCreditsService:
             bc_idempotency_key=idempotency_key,
         )
 
-        result = await self.bc_client.create_payment_link(
-            value=str(package.price_gross),
-            billing_type="UNDEFINED",
+        result = await self.bc_client.create_payment(
+            value=f"{package.price_gross:.2f}",
             description=f"Creditos NF-e - {package.slug}",
             system=self.settings.BILLING_CORE_SYSTEM,
             system_payment_id=str(db_package.id),
             webhook_link=self.settings.BILLING_CORE_WEBHOOK_CALLBACK_URL,
             idempotency_key=str(db_package.id),
-            due_date_limit_days=self.settings.BILLING_CORE_PAYMENT_DUE_DAYS,
+            minutes_to_expire=self.settings.BILLING_CORE_CHECKOUT_EXPIRATION_MINUTES,
+            items=[{
+                "external_reference": str(db_package.id),
+                "name": f"{package.emission_count} créditos NF-e",
+                "description": "Créditos para emissão fiscal",
+                "quantity": 1,
+                "value": f"{package.price_gross:.2f}",
+            }],
+            success_url=f"{self.settings.PUBLIC_FRONTEND_URL.rstrip('/')}/billing/success",
+            cancel_url=f"{self.settings.PUBLIC_FRONTEND_URL.rstrip('/')}/billing/cancel",
+            expired_url=f"{self.settings.PUBLIC_FRONTEND_URL.rstrip('/')}/billing/expired",
         )
 
         await self.credits_repo.update_package_job_id(
@@ -247,15 +256,24 @@ class FiscalCreditsService:
             bc_idempotency_key=idempotency_key,
         )
 
-        result = await self.bc_client.create_payment_link(
-            value=str(price_gross),
-            billing_type="UNDEFINED",
+        result = await self.bc_client.create_payment(
+            value=f"{price_gross:.2f}",
             description=f"Creditos NF-e - {package_slug}",
             system=self.settings.BILLING_CORE_SYSTEM,
             system_payment_id=str(db_package.id),
             webhook_link=self.settings.BILLING_CORE_WEBHOOK_CALLBACK_URL,
             idempotency_key=str(db_package.id),
-            due_date_limit_days=self.settings.BILLING_CORE_PAYMENT_DUE_DAYS,
+            minutes_to_expire=self.settings.BILLING_CORE_CHECKOUT_EXPIRATION_MINUTES,
+            items=[{
+                "external_reference": str(db_package.id),
+                "name": f"{quantity} créditos NF-e",
+                "description": "Créditos para emissão fiscal",
+                "quantity": 1,
+                "value": f"{price_gross:.2f}",
+            }],
+            success_url=f"{self.settings.PUBLIC_FRONTEND_URL.rstrip('/')}/billing/success",
+            cancel_url=f"{self.settings.PUBLIC_FRONTEND_URL.rstrip('/')}/billing/cancel",
+            expired_url=f"{self.settings.PUBLIC_FRONTEND_URL.rstrip('/')}/billing/expired",
         )
 
         await self.credits_repo.update_package_job_id(

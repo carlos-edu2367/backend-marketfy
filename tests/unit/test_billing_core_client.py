@@ -99,21 +99,29 @@ async def test_create_customer_requires_cpf_or_cnpj_exclusively():
 
 
 @pytest.mark.asyncio
-async def test_create_payment_headers_and_idempotency():
+async def test_create_payment_posts_checkout_payload_with_idempotency():
     client = BillingCoreClient()
     mock_response = httpx.Response(202, json={"job_id": "job-abc-123", "message": "created"})
 
     with patch("httpx.AsyncClient.request", return_value=mock_response) as mock_request:
         res = await client.create_payment(
-            customer_provider_id="cus_12345",
-            value="41.99",
-            billing_type="UNDEFINED",
-            due_date="2026-05-29",
+            value="72.00",
             description="Créditos NF-e",
             system="marketfy",
-            system_payment_id="pkg_100_abc",
+            system_payment_id="pack-100",
             webhook_link="https://marketfy/callback",
             idempotency_key="my-idempotency-key",
+            minutes_to_expire=30,
+            items=[{
+                "external_reference": "pack-100",
+                "name": "100 créditos NF-e",
+                "description": "Créditos para emissão fiscal",
+                "quantity": 1,
+                "value": "72.00",
+            }],
+            success_url="https://app.marketfy.test/billing/success",
+            cancel_url="https://app.marketfy.test/billing/cancel",
+            expired_url="https://app.marketfy.test/billing/expired",
         )
         assert res["job_id"] == "job-abc-123"
         mock_request.assert_called_once()
@@ -122,60 +130,49 @@ async def test_create_payment_headers_and_idempotency():
         assert headers["X-System"] == "marketfy"
         assert headers["X-API-Key"] == "mock-api-key"
         assert headers["Idempotency-Key"] == "my-idempotency-key"
-
-
-@pytest.mark.asyncio
-async def test_create_payment_link_posts_without_customer_and_with_idempotency():
-    client = BillingCoreClient()
-    mock_response = httpx.Response(202, json={"job_id": "job-link-123", "message": "created"})
-
-    with patch("httpx.AsyncClient.request", return_value=mock_response) as mock_request:
-        res = await client.create_payment_link(
-            value="41.99",
-            billing_type="UNDEFINED",
-            description="Creditos NF-e - pack_100",
-            system="marketfy",
-            system_payment_id="pkg_100_abc",
-            webhook_link="https://marketfy/callback",
-            idempotency_key="pkg_100_abc",
-            due_date_limit_days=3,
-        )
-
-        assert res["job_id"] == "job-link-123"
-        mock_request.assert_called_once()
-        args, kwargs = mock_request.call_args
         assert args[0] == "POST"
-        assert args[1].endswith("/v1/payment-links")
-        assert kwargs["headers"]["Idempotency-Key"] == "pkg_100_abc"
-        assert "customer_provider_id" not in kwargs["json"]
+        assert args[1].endswith("/v1/payments")
         assert kwargs["json"] == {
-            "value": "41.99",
-            "billing_type": "UNDEFINED",
-            "description": "Creditos NF-e - pack_100",
+            "value": "72.00",
+            "description": "Créditos NF-e",
             "system": "marketfy",
-            "system_payment_id": "pkg_100_abc",
+            "system_payment_id": "pack-100",
             "webhook_link": "https://marketfy/callback",
-            "due_date_limit_days": 3,
+            "minutes_to_expire": 30,
+            "items": [{
+                "external_reference": "pack-100",
+                "name": "100 créditos NF-e",
+                "description": "Créditos para emissão fiscal",
+                "quantity": 1,
+                "value": "72.00",
+            }],
+            "success_url": "https://app.marketfy.test/billing/success",
+            "cancel_url": "https://app.marketfy.test/billing/cancel",
+            "expired_url": "https://app.marketfy.test/billing/expired",
         }
 
 
 @pytest.mark.asyncio
-async def test_create_payment_link_mock_when_billing_core_disabled():
+async def test_create_payment_mock_when_billing_core_disabled():
     with patch.object(settings, "BILLING_CORE_ENABLED", False):
         client = BillingCoreClient()
 
-    res = await client.create_payment_link(
+    res = await client.create_payment(
         value="41.99",
-        billing_type="UNDEFINED",
         description="Creditos NF-e - pack_100",
         system="marketfy",
         system_payment_id="pkg_100_abc",
         webhook_link="https://marketfy/callback",
         idempotency_key="pkg_100_abc",
+        minutes_to_expire=30,
+        items=[],
+        success_url="https://app.marketfy.test/billing/success",
+        cancel_url="https://app.marketfy.test/billing/cancel",
+        expired_url="https://app.marketfy.test/billing/expired",
     )
 
     assert res["job_id"].startswith("job_mock_")
-    assert "Payment link creation accepted" in res["message"]
+    assert "Checkout creation accepted" in res["message"]
 
 
 @pytest.mark.asyncio

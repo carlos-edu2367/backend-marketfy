@@ -35,7 +35,7 @@ class FakeSettings:
     PUBLIC_API_BASE_URL: str = "https://api.marketfy.test/api/v1"
     PUBLIC_FRONTEND_URL: str = "https://app.marketfy.test"
     BILLING_CORE_SYSTEM: str = "marketfy"
-    BILLING_CORE_PAYMENT_DUE_DAYS: int = 3
+    BILLING_CORE_CHECKOUT_EXPIRATION_MINUTES: int = 30
     BILLING_CORE_WEBHOOK_CALLBACK_URL: str = "https://api.marketfy.test/webhooks/billing-core"
 
 
@@ -200,7 +200,7 @@ def test_quota_status_addon_total_defaults_zero():
 async def test_custom_checkout_price_calculated_server_side():
     """O preço não vem do cliente: é calculado internamente via settings."""
     bc = AsyncMock()
-    bc.create_payment_link.return_value = {"job_id": "job-custom", "message": "created"}
+    bc.create_payment.return_value = {"job_id": "job-custom", "message": "created"}
     user_repo = AsyncMock()
     from domain.shared import Email, CPF
     from domain.identity import User, UserRole
@@ -234,9 +234,15 @@ async def test_custom_checkout_price_calculated_server_side():
     call_kwargs = repo.create_package.call_args.kwargs
     assert call_kwargs["package_slug"] == "custom_250"
     assert call_kwargs["quantity"] == 250
-    bc.create_payment_link.assert_called_once()
-    bc.create_payment.assert_not_called()
-    assert "customer_provider_id" not in bc.create_payment_link.call_args.kwargs
+    bc.create_payment.assert_called_once()
+    assert "customer_provider_id" not in bc.create_payment.call_args.kwargs
+    assert bc.create_payment.call_args.kwargs["items"] == [{
+        "external_reference": str(result.package_id),
+        "name": "250 créditos NF-e",
+        "description": "Créditos para emissão fiscal",
+        "quantity": 1,
+        "value": "105.00",
+    }]
 
 
 @pytest.mark.asyncio
