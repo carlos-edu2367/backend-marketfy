@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # homologated by Fiscal. Empty is deliberately fail-closed.
     FISCAL_APPROVED_ICMS_GROUPS: str = ""
     FISCAL_OFFLINE_MAX_AGE_MINUTES: int = 30
+    # Global rollout kill switch. It never changes persisted market mode; when
+    # false every market behaves as fiscal-rule enforcement ``off``.
+    FISCAL_PRODUCT_RULES_ENABLED: bool = False
 
     # Neectify Fiscal
     NEECTIFY_API_KEY: str = ""

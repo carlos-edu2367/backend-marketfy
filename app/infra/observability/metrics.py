@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-import hashlib
 from threading import Lock
 from typing import Dict, Tuple
 
@@ -19,7 +18,8 @@ class MetricsRegistry:
         self._sync: Dict[str, int] = defaultdict(int)
         self._billing_webhooks: Dict[str, int] = defaultdict(int)
         self._fiscal_invoices: Dict[str, int] = defaultdict(int)
-        self._fiscal_rule_events: Dict[Tuple[str, str, str], int] = defaultdict(int)
+        self._fiscal_rule_events: Dict[Tuple[str, str], int] = defaultdict(int)
+        self._fiscal_contracts: Dict[Tuple[str, str, str, str], int] = defaultdict(int)
 
     def record_request(self, method: str, route: str, status_code: int, duration_ms: float) -> None:
         method = method.upper()
@@ -64,7 +64,30 @@ class MetricsRegistry:
         if event not in allowed_events:
             return
         with self._lock:
-            self._fiscal_rule_events[(_safe_market_label(market_id), _safe_label(mode), event)] += 1
+            # market_id remains available to structured logs/audit only. A hash is
+            # still an identifier and must not become a Prometheus label.
+            self._fiscal_rule_events[(_bounded_mode(mode), event)] += 1
+
+    def record_fiscal_contract(
+        self,
+        *,
+        market_id: str,
+        contract_version: str,
+        enforcement_mode: str,
+        result_code: str,
+        path: str,
+    ) -> None:
+        """Record v2 rollout outcomes with a small, tenant-free label set."""
+        del market_id  # Deliberately not retained in metrics; use structured audit logs.
+        with self._lock:
+            self._fiscal_contracts[
+                (
+                    _bounded_contract_version(contract_version),
+                    _bounded_mode(enforcement_mode),
+                    _bounded_fiscal_result(result_code),
+                    _bounded_path(path),
+                )
+            ] += 1
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -78,6 +101,7 @@ class MetricsRegistry:
                 "billing_webhooks_total": dict(self._billing_webhooks),
                 "fiscal_invoices_total": dict(self._fiscal_invoices),
                 "fiscal_rule_events_total": dict(self._fiscal_rule_events),
+                "fiscal_contract_total": dict(self._fiscal_contracts),
             }
 
     def to_prometheus_text(self) -> str:
@@ -118,10 +142,19 @@ class MetricsRegistry:
             for result, count in values.items():
                 lines.append(f'{metric_name}{{result="{result}"}} {count}')
         lines.append("# TYPE marketfy_fiscal_rule_events_total counter")
-        for (market, mode, event), count in snapshot["fiscal_rule_events_total"].items():
+        for (mode, event), count in snapshot["fiscal_rule_events_total"].items():
             lines.append(
                 "marketfy_fiscal_rule_events_total"
-                f'{{market="{market}",mode="{mode}",event="{event}"}} {count}'
+                f'{{mode="{mode}",event="{event}"}} {count}'
+            )
+        lines.append("# TYPE marketfy_fiscal_contract_total counter")
+        for (contract_version, enforcement_mode, result_code, path), count in snapshot[
+            "fiscal_contract_total"
+        ].items():
+            lines.append(
+                "marketfy_fiscal_contract_total"
+                f'{{contract_version="{contract_version}",enforcement_mode="{enforcement_mode}",'
+                f'result_code="{result_code}",path="{path}"}} {count}'
             )
         return "\n".join(lines) + "\n"
 
@@ -134,8 +167,38 @@ def _safe_label(value: str | None) -> str:
     return "".join(allowed) or "unknown"
 
 
-def _safe_market_label(market_id: str) -> str:
-    return hashlib.sha256(str(market_id).encode("utf-8")).hexdigest()[:12]
+def _bounded_mode(value: str | None) -> str:
+    return value if value in {"off", "warn", "block"} else "unknown"
+
+
+def _bounded_contract_version(value: str | None) -> str:
+    return (
+        value
+        if value
+        in {
+            "legacy",
+            "marketfy.fiscal-tax-snapshot.v1",
+            "marketfy.fiscal-tax-snapshot.v2",
+        }
+        else "unknown"
+    )
+
+
+def _bounded_fiscal_result(value: str | None) -> str:
+    allowed = {
+        "success",
+        "queued",
+        "payload_invalid",
+        "payload_missing",
+        "sale.fiscal_rule_missing",
+        "sale.fiscal_rule_invalid",
+        "sale.fiscal_connection_required",
+    }
+    return value if value in allowed else "other"
+
+
+def _bounded_path(value: str | None) -> str:
+    return value if value in {"legacy", "v2"} else "unknown"
 
 
 def _safe_route(route: str) -> str:

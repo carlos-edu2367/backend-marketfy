@@ -90,6 +90,7 @@ def _get_config_service(db=None):
 
 
 def _get_emission_service(db, arq_pool=None):
+    from infra.config.settings import get_settings
     from infra.repositories.fiscal_repo import (
         SQLAlchemyFiscalDocumentRepository,
         SQLAlchemyFiscalEventRepository,
@@ -126,6 +127,7 @@ def _get_emission_service(db, arq_pool=None):
         market_repo=SQLAlchemyMarketRepository(db),
         arq_pool=arq_pool,
         plan_access_service=plan_access,
+        fiscal_product_rules_enabled=get_settings().FISCAL_PRODUCT_RULES_ENABLED,
     )
 
 

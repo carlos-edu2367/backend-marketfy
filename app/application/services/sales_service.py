@@ -29,6 +29,9 @@ from application.services.fiscal.tax_rule_service import (
     TaxRuleNotFoundError,
     TaxRuleService,
 )
+from application.services.fiscal.fiscal_rollout_service import (
+    effective_fiscal_rule_enforcement,
+)
 from domain.fiscal import FiscalRuleEnforcement, FiscalRuleError
 from infra.config.logger import get_logger
 
@@ -50,6 +53,7 @@ class SalesService:
                  tax_rule_calculator: TaxRuleCalculator = None,
                  environment: str = "development",
                  fiscal_offline_max_age_minutes: int = 30,
+                 fiscal_product_rules_enabled: bool = True,
                  ): 
         self.sale_repo = sale_repo
         self.box_repo = box_repo
@@ -65,6 +69,7 @@ class SalesService:
         self.tax_rule_calculator = tax_rule_calculator or TaxRuleCalculator()
         self.environment = environment
         self.fiscal_offline_max_age_minutes = fiscal_offline_max_age_minutes
+        self.fiscal_product_rules_enabled = fiscal_product_rules_enabled
 
     # ==================================================================================
     # TERMINAIS (PDVs)
@@ -556,9 +561,14 @@ class SalesService:
             return FiscalRuleEnforcement.OFF
         mode = getattr(config, "fiscal_rule_enforcement", FiscalRuleEnforcement.OFF)
         if isinstance(mode, FiscalRuleEnforcement):
-            return mode
+            return effective_fiscal_rule_enforcement(
+                mode, product_rules_enabled=self.fiscal_product_rules_enabled
+            )
         try:
-            return FiscalRuleEnforcement(mode)
+            return effective_fiscal_rule_enforcement(
+                FiscalRuleEnforcement(mode),
+                product_rules_enabled=self.fiscal_product_rules_enabled,
+            )
         except (TypeError, ValueError):
             return FiscalRuleEnforcement.OFF
 

@@ -110,6 +110,7 @@ def get_sales_service(db: AsyncSession = Depends(get_db)):
         tax_rule_calculator=TaxRuleCalculator(),
         environment=settings.ENVIRONMENT,
         fiscal_offline_max_age_minutes=settings.FISCAL_OFFLINE_MAX_AGE_MINUTES,
+        fiscal_product_rules_enabled=settings.FISCAL_PRODUCT_RULES_ENABLED,
     )
 
 def get_finance_service(db: AsyncSession = Depends(get_db)):

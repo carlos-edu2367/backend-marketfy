@@ -6,6 +6,13 @@ import inspect
 from domain.fiscal import FiscalRuleEnforcement
 
 
+def effective_fiscal_rule_enforcement(
+    configured: FiscalRuleEnforcement, *, product_rules_enabled: bool
+) -> FiscalRuleEnforcement:
+    """Apply the global kill switch without mutating the market configuration."""
+    return configured if product_rules_enabled else FiscalRuleEnforcement.OFF
+
+
 class FiscalRolloutTransitionError(Exception):
     code = "fiscal.rule_enforcement_transition_invalid"
 

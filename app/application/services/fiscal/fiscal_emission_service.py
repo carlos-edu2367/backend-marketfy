@@ -27,11 +27,15 @@ from domain.fiscal import (
     FiscalEvent,
     FiscalEventSource,
     FiscalQuotaExceededError,
+    FiscalRuleEnforcement,
 )
 from domain.shared import BusinessRuleException
 from application.services.fiscal.fiscal_contract_v2 import (
     FiscalContractV2Serializer,
     canonical_contract_sha256,
+)
+from application.services.fiscal.fiscal_rollout_service import (
+    effective_fiscal_rule_enforcement,
 )
 from infra.config.logger import get_logger
 from infra.repositories.fiscal_repo import (
@@ -56,6 +60,7 @@ class FiscalEmissionService:
         arq_pool=None,          # ARQ pool (opcional — None em testes)
         plan_access_service=None,  # PlanAccessService (opcional — None em testes)
         contract_serializer=None,
+        fiscal_product_rules_enabled: bool = True,
     ):
         self.config_repo = config_repo
         self.doc_repo = doc_repo
@@ -67,11 +72,25 @@ class FiscalEmissionService:
         self.arq_pool = arq_pool
         self.plan_access_service = plan_access_service
         self.contract_serializer = contract_serializer or FiscalContractV2Serializer()
+        self.fiscal_product_rules_enabled = fiscal_product_rules_enabled
 
-    @staticmethod
-    def _is_block_mode(cfg) -> bool:
+    def _is_block_mode(self, cfg) -> bool:
         mode = getattr(cfg, "fiscal_rule_enforcement", "off")
-        return (mode.value if hasattr(mode, "value") else str(mode)).lower() == "block"
+        try:
+            configured = (
+                mode
+                if isinstance(mode, FiscalRuleEnforcement)
+                else FiscalRuleEnforcement(mode)
+            )
+        except (TypeError, ValueError):
+            configured = FiscalRuleEnforcement.OFF
+        return (
+            effective_fiscal_rule_enforcement(
+                configured,
+                product_rules_enabled=self.fiscal_product_rules_enabled,
+            )
+            is FiscalRuleEnforcement.BLOCK
+        )
 
     async def request_emission(
         self,
