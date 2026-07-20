@@ -125,6 +125,10 @@ class BillingSubscriptionResponseDTO(BaseModel):
     billing_pending: bool = False
     features: Optional[Dict[str, Any]] = None
     limits: Optional[Dict[str, Any]] = None
+    billing_mode: Optional[str] = None
+    locked: bool = False
+    invoice_pending: bool = False
+    pending_invoice: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True

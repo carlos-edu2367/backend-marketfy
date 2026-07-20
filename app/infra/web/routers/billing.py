@@ -83,6 +83,7 @@ def _get_plan_access_service(db: AsyncSession = Depends(get_db)) -> PlanAccessSe
 @router.get("/subscription", response_model=BillingSubscriptionResponseDTO)
 async def get_subscription_status(
     current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
     service: PlanAccessService = Depends(_get_plan_access_service),
 ):
     """Retorna status consolidado da assinatura do usuário autenticado.
@@ -91,17 +92,37 @@ async def get_subscription_status(
     e informar o usuário sobre o estado da sua assinatura.
     Nunca expõe API key ou dados internos do Billing Core.
     """
+    from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
     try:
         features_dict = await service.get_plan_features(current_user.id)
 
         sub_result = await service.get_subscription_status(current_user.id)
         is_pending = sub_result.subscription_status == SubscriptionStatus.PENDING
 
+        pending_invoice = None
+        invoice_pending = False
+        if sub_result.billing_mode == "invoice":
+            inv_repo = SQLAlchemyBillingInvoiceRepository(db)
+            inv = await inv_repo.get_latest_pending_by_owner(current_user.id)
+            if inv is not None:
+                invoice_pending = True
+                pending_invoice = {
+                    "invoice_id": str(inv.id),
+                    "amount": str(inv.amount),
+                    "due_date": inv.due_date.isoformat() if inv.due_date else None,
+                    "checkout_url": inv.checkout_url,
+                    "status": inv.status,
+                }
+
         return BillingSubscriptionResponseDTO(
             status=sub_result.subscription_status,
             plan_name=sub_result.plan_name,
             expires_at=sub_result.expires_at,
             billing_pending=is_pending,
+            billing_mode=sub_result.billing_mode,
+            locked=sub_result.locked,
+            invoice_pending=invoice_pending,
+            pending_invoice=pending_invoice,
             features=features_dict.get("features"),
             limits=features_dict.get("limits"),
         )
