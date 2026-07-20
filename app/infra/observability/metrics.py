@@ -168,7 +168,7 @@ def _safe_label(value: str | None) -> str:
 
 
 def _bounded_mode(value: str | None) -> str:
-    return value if value in {"off", "warn", "block"} else "unknown"
+    return value if value in {"off", "warn", "block"} else "other"
 
 
 def _bounded_contract_version(value: str | None) -> str:
@@ -180,7 +180,7 @@ def _bounded_contract_version(value: str | None) -> str:
             "marketfy.fiscal-tax-snapshot.v1",
             "marketfy.fiscal-tax-snapshot.v2",
         }
-        else "unknown"
+        else "other"
     )
 
 
@@ -198,7 +198,7 @@ def _bounded_fiscal_result(value: str | None) -> str:
 
 
 def _bounded_path(value: str | None) -> str:
-    return value if value in {"legacy", "v2"} else "unknown"
+    return value if value in {"legacy", "v2"} else "other"
 
 
 def _safe_route(route: str) -> str:

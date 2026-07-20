@@ -57,6 +57,33 @@ def test_tax_contract_metrics_have_only_bounded_non_tenant_labels():
     assert "market=" not in output
 
 
+def test_tax_contract_metrics_bucket_unrecognized_rollout_labels_as_other():
+    from infra.observability.metrics import MetricsRegistry
+
+    registry = MetricsRegistry()
+    registry.record_fiscal_contract(
+        market_id=str(uuid.uuid4()),
+        contract_version="caller-controlled-contract",
+        enforcement_mode="caller-controlled-mode",
+        result_code="caller-controlled-result",
+        path="caller-controlled-path",
+    )
+    registry.record_fiscal_rule_event(
+        market_id=str(uuid.uuid4()),
+        mode="caller-controlled-mode",
+        event="contract_rejected",
+    )
+
+    output = registry.to_prometheus_text()
+
+    assert 'contract_version="other"' in output
+    assert 'enforcement_mode="other"' in output
+    assert 'result_code="other"' in output
+    assert 'path="other"' in output
+    assert 'mode="other"' in output
+    assert "caller-controlled" not in output
+
+
 def test_preflight_records_bounded_rule_and_contract_metrics() -> None:
     from application.services.fiscal.tax_rule_service import TaxRuleNotFoundError
     from application.services.sales_service import SalesService
