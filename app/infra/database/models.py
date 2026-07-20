@@ -409,6 +409,7 @@ class BillingSubscriptionModel(Base):
     status = Column(String, default="pending", nullable=False)
 
     subscription_type = Column(String, nullable=True)   # trial | monthly | semiannual | annual
+    billing_mode = Column(String, default="recurring", nullable=False)  # recurring | invoice
     value = Column(Numeric(10, 2), default=0, nullable=False)
     expires_at = Column(DateTime, nullable=True)
     last_event_at = Column(DateTime, nullable=True)
@@ -463,6 +464,46 @@ class BillingEventModel(Base):
 
     # Relacionamento
     subscription = relationship("BillingSubscriptionModel", back_populates="events")
+
+
+class BillingInvoiceModel(Base):
+    """Fatura de assinatura no modo 'por pagamento' (invoice).
+
+    Cada fatura cobre um período de acesso. Paga via checkout /payments do
+    billing core. Ativação idempotente por bc_payment_id.
+    """
+
+    __tablename__ = "billing_invoices"
+    __table_args__ = (
+        Index("ix_billing_invoice_owner", "owner_id"),
+        Index("ix_billing_invoice_sub", "subscription_id"),
+        Index("ix_billing_invoice_sub_status", "subscription_id", "status"),
+        Index("ix_billing_invoice_status_due", "status", "due_date"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    subscription_id = Column(UUID(as_uuid=True), ForeignKey("billing_subscriptions.id", ondelete="CASCADE"), nullable=False)
+    plan_id = Column(UUID(as_uuid=True), ForeignKey("plans.id"), nullable=True)
+
+    period_start = Column(DateTime, nullable=False)
+    period_end = Column(DateTime, nullable=False)
+    due_date = Column(DateTime, nullable=False)
+    amount = Column(Numeric(10, 2), default=0, nullable=False)
+
+    # pending | paid | overdue | canceled
+    status = Column(String, default="pending", nullable=False)
+
+    bc_job_id = Column(String, nullable=True)
+    bc_payment_id = Column(String, nullable=True)
+    checkout_url = Column(String, nullable=True)
+    idempotency_key = Column(String, nullable=True, unique=True)
+
+    paid_at = Column(DateTime, nullable=True)
+    notified_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
 # =============================================================================
