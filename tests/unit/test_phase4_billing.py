@@ -549,7 +549,7 @@ class TestWebhookIdempotency:
             assert existing.event_id == event_id
 
         import asyncio
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     @pytest.mark.asyncio
     async def test_distinct_event_ids_stored_separately(self):

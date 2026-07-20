@@ -51,7 +51,11 @@ from infra.providers.fiscal.base import EmitResultStatus
 # ---------------------------------------------------------------------------
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    raise RuntimeError("_run só pode ser usado por testes síncronos")
 
 
 def _make_response(status_code: int, json_data: dict = None, content: bytes = None) -> httpx.Response:
@@ -375,10 +379,6 @@ def test_retry_on_503():
     client_obj._base_url = "https://api.neectify.com"
     client_obj._timeout = 30
 
-    # Substituir sleep por no-op para acelerar o teste
-    async def _no_sleep(seconds):
-        pass
-
     client_obj._client = httpx.AsyncClient(
         base_url="https://api.neectify.com",
         headers={"Authorization": "Bearer test-key"},
@@ -386,13 +386,8 @@ def test_retry_on_503():
     )
     provider = NeectifyFiscalProvider(client=client_obj)
 
-    import infra.clients.neectify_fiscal_client as client_module
-    original_sleep = asyncio.sleep
-
     async def _fast_sleep(n):
         pass
-
-    loop = asyncio.get_event_loop()
 
     async def run():
         with patch("asyncio.sleep", _fast_sleep):
@@ -403,7 +398,7 @@ def test_retry_on_503():
                 environment="homologation",
             )
 
-    result = loop.run_until_complete(run())
+    result = _run(run())
     assert call_count[0] == 3
     assert result.provider_status == "queued"
 
@@ -499,7 +494,7 @@ def test_timeout_raises_error():
             with pytest.raises(httpx.TimeoutException):
                 await client_obj.request("GET", "/v1/issuers/1")
 
-    asyncio.get_event_loop().run_until_complete(run())
+    _run(run())
 
 
 # ---------------------------------------------------------------------------

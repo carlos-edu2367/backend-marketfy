@@ -81,7 +81,11 @@ def _rule(*, version: int = 2, tax_parameters=None) -> ProductTaxRule:
         pis_cst="07",
         cofins_cst="07",
         tax_parameters=tax_parameters,
-        approval={"reference": "CRC-GO-2026-0001"},
+        approval={
+            "reference": "CRC-GO-2026-0001",
+            "catalog_version": "go-nfce-v2.1",
+            "checksum": "a" * 64,
+        },
     )
 
 

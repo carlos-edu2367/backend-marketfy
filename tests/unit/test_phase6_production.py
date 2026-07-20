@@ -118,7 +118,15 @@ async def test_readiness_checks_redis_when_rate_limit_backend_requires_it(monkey
 
 
 def test_frontend_app_uses_lazy_route_code_splitting():
-    app_path = os.path.join(repo_root, "frontend", "src", "App.jsx")
+    frontend_root = os.environ.get(
+        "MARKETFY_FRONTEND_ROOT", os.path.join(repo_root, "frontend")
+    )
+    app_path = os.path.join(frontend_root, "src", "App.jsx")
+    if not os.path.isfile(app_path):
+        pytest.skip(
+            "Frontend cross-repo artifact não montado; defina MARKETFY_FRONTEND_ROOT "
+            "para validar o source de App.jsx."
+        )
     source = open(app_path, encoding="utf-8").read()
 
     assert "React.lazy" in source

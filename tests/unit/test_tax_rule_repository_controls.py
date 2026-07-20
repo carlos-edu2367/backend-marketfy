@@ -61,7 +61,11 @@ def published_st_rule(*, csosn: str = "500"):
                 "rate": "0.0000", "amount": "0.00",
             },
         },
-        approval={"reference": "Decreto GO 10.734/2025", "checksum": "a" * 64},
+        approval={
+            "reference": "Decreto GO 10.734/2025",
+            "catalog_version": "go-nfce-v2.1",
+            "checksum": "a" * 64,
+        },
         approved_by=ACTOR_ID,
         approved_at=datetime.utcnow(),
     )
@@ -97,7 +101,11 @@ def publication_rule(*, group, regime, cst, csosn, mode, cest):
                 "rate": "0.0000", "amount": "0.00",
             },
         },
-        approval={"reference": "Decreto GO 10.734/2025", "checksum": "a" * 64},
+        approval={
+            "reference": "Decreto GO 10.734/2025",
+            "catalog_version": "go-nfce-v2.1",
+            "checksum": "a" * 64,
+        },
     )
 
 
