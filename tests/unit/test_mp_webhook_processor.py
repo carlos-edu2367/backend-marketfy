@@ -13,7 +13,7 @@ if app_dir not in sys.path:
 
 
 class FakeWebhookRepo:
-    def __init__(self): self.events = {}
+    def __init__(self): self.events = {}; self.mark_failed_calls = []
     async def get_event(self, provider, event_id): return self.events.get(event_id)
     async def create_event(self, **kw):
         class E: pass
@@ -22,7 +22,7 @@ class FakeWebhookRepo:
     async def mark_processed(self, eid):
         for e in self.events.values():
             if e.id == eid: e.processing_status = "processed"
-    async def mark_failed(self, eid): pass
+    async def mark_failed(self, eid): self.mark_failed_calls.append(eid)
 
 
 class Attempt:
@@ -51,6 +51,14 @@ class FakeService:
         self.verified = (market_id, attempt_id, source)
         class A: status = "approved"
         return A()
+
+
+class FakeAttemptRepoRaises:
+    """Raises once the webhook event already exists, to exercise the
+    processor's exception-handling path (must still return 200 and attempt
+    mark_failed rather than propagate)."""
+    async def get_by_order_id(self, oid):
+        raise RuntimeError("boom")
 
 
 @pytest.mark.asyncio
@@ -124,3 +132,121 @@ async def test_process_data_id_case_insensitive_dedup_and_lookup(monkeypatch):
     status2 = await proc.process(payload2, b"{}", {"x-request-id": "r2"})
     assert status2 == 200
     assert svc.verified is None
+
+
+@pytest.mark.asyncio
+async def test_process_attempt_not_found_marks_processed_without_verify(monkeypatch):
+    monkeypatch.setenv("MP_WEBHOOK_SECRET", "s")
+    from infra.config import settings as sm; sm.get_settings.cache_clear()
+    from application.services.pix.webhook_processor import MercadoPagoWebhookProcessor
+    market_id = uuid.uuid4()
+    # attempt repo holds an attempt for a different order, so lookup returns None
+    attempt = Attempt(market_id, "some-other-order")
+    repo = FakeWebhookRepo()
+    svc = FakeService()
+    proc = MercadoPagoWebhookProcessor(repo, FakeAttemptRepo(attempt), FakeConnRepo(), svc)
+    payload = {"type": "order", "action": "order.processed",
+               "data": {"id": "ORD1"}, "user_id": "42"}
+    status = await proc.process(payload, b"{}", {"x-request-id": "r1"})
+    assert status == 200
+    assert svc.verified is None
+    event = repo.events["ord1:order.processed"]
+    assert event.processing_status == "processed"
+
+
+@pytest.mark.asyncio
+async def test_process_tenant_mismatch_different_user_id_skips_verify(monkeypatch):
+    monkeypatch.setenv("MP_WEBHOOK_SECRET", "s")
+    from infra.config import settings as sm; sm.get_settings.cache_clear()
+    from application.services.pix.webhook_processor import MercadoPagoWebhookProcessor
+    market_id = uuid.uuid4()
+    attempt = Attempt(market_id, "ord1")
+    repo = FakeWebhookRepo()
+    svc = FakeService()
+    proc = MercadoPagoWebhookProcessor(repo, FakeAttemptRepo(attempt), FakeConnRepo(), svc)
+    # payload user_id ("99") differs from the connection's mp_user_id ("42")
+    payload = {"type": "order", "action": "order.processed",
+               "data": {"id": "ORD1"}, "user_id": "99"}
+    status = await proc.process(payload, b"{}", {"x-request-id": "r1"})
+    assert status == 200
+    assert svc.verified is None
+    event = repo.events["ord1:order.processed"]
+    assert event.processing_status == "processed"
+
+
+@pytest.mark.asyncio
+async def test_process_tenant_mismatch_missing_user_id_fails_closed(monkeypatch):
+    """Directly proves Fix 1: a webhook payload that omits user_id entirely
+    must be treated as a tenant-anchor failure (fail closed), not skipped.
+    Under the pre-fix `payload_user and ...` short-circuit, this payload
+    would have sailed past the anchor check and called verify()."""
+    monkeypatch.setenv("MP_WEBHOOK_SECRET", "s")
+    from infra.config import settings as sm; sm.get_settings.cache_clear()
+    from application.services.pix.webhook_processor import MercadoPagoWebhookProcessor
+    market_id = uuid.uuid4()
+    attempt = Attempt(market_id, "ord1")
+    repo = FakeWebhookRepo()
+    svc = FakeService()
+    proc = MercadoPagoWebhookProcessor(repo, FakeAttemptRepo(attempt), FakeConnRepo(), svc)
+    # no "user_id" key at all in the payload
+    payload = {"type": "order", "action": "order.processed", "data": {"id": "ORD1"}}
+    status = await proc.process(payload, b"{}", {"x-request-id": "r1"})
+    assert status == 200
+    assert svc.verified is None
+    event = repo.events["ord1:order.processed"]
+    assert event.processing_status == "processed"
+
+
+@pytest.mark.asyncio
+async def test_process_missing_data_id_returns_200_without_event(monkeypatch):
+    monkeypatch.setenv("MP_WEBHOOK_SECRET", "s")
+    from infra.config import settings as sm; sm.get_settings.cache_clear()
+    from application.services.pix.webhook_processor import MercadoPagoWebhookProcessor
+    market_id = uuid.uuid4()
+    attempt = Attempt(market_id, "ord1")
+    repo = FakeWebhookRepo()
+    svc = FakeService()
+    proc = MercadoPagoWebhookProcessor(repo, FakeAttemptRepo(attempt), FakeConnRepo(), svc)
+    payload = {"type": "order", "action": "order.processed", "data": {}}  # no data.id
+    status = await proc.process(payload, b"{}", {})
+    assert status == 200
+    assert svc.verified is None
+    assert repo.events == {}
+
+
+@pytest.mark.asyncio
+async def test_process_missing_action_returns_200_without_event(monkeypatch):
+    monkeypatch.setenv("MP_WEBHOOK_SECRET", "s")
+    from infra.config import settings as sm; sm.get_settings.cache_clear()
+    from application.services.pix.webhook_processor import MercadoPagoWebhookProcessor
+    market_id = uuid.uuid4()
+    attempt = Attempt(market_id, "ord1")
+    repo = FakeWebhookRepo()
+    svc = FakeService()
+    proc = MercadoPagoWebhookProcessor(repo, FakeAttemptRepo(attempt), FakeConnRepo(), svc)
+    payload = {"type": "order", "data": {"id": "ORD1"}}  # no action
+    status = await proc.process(payload, b"{}", {})
+    assert status == 200
+    assert svc.verified is None
+    assert repo.events == {}
+
+
+@pytest.mark.asyncio
+async def test_process_exception_is_caught_marks_failed_and_returns_200(monkeypatch):
+    monkeypatch.setenv("MP_WEBHOOK_SECRET", "s")
+    from infra.config import settings as sm; sm.get_settings.cache_clear()
+    from application.services.pix.webhook_processor import MercadoPagoWebhookProcessor
+    market_id = uuid.uuid4()
+    attempt = Attempt(market_id, "ord1")
+    repo = FakeWebhookRepo()
+    svc = FakeService()
+    proc = MercadoPagoWebhookProcessor(repo, FakeAttemptRepoRaises(), FakeConnRepo(), svc)
+    payload = {"type": "order", "action": "order.processed",
+               "data": {"id": "ORD1"}, "user_id": "42"}
+    status = await proc.process(payload, b"{}", {"x-request-id": "r1"})
+    assert status == 200
+    assert svc.verified is None
+    # the event was created before the raise, so mark_failed must have been
+    # attempted for it
+    event = repo.events["ord1:order.processed"]
+    assert event.id in repo.mark_failed_calls

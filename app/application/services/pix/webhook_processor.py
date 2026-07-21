@@ -51,10 +51,18 @@ class MercadoPagoWebhookProcessor:
                 await self.webhook_repo.mark_processed(event.id)
                 return 200
 
-            # tripla âncora de tenant
+            # tripla âncora de tenant: só prossegue quando payload_user e
+            # conn.mp_user_id estão AMBOS presentes e são iguais. Qualquer
+            # outra combinação (conn ausente, payload_user ausente/vazio —
+            # a MP não garante que todo webhook traga user_id —,
+            # conn.mp_user_id ausente, ou valores divergentes) é tratada
+            # como falha de âncora (fail closed), nunca como "pular a
+            # checagem".
             conn = await self.connection_repo.get_by_market(attempt.market_id)
             payload_user = str(payload.get("user_id") or "")
-            if conn is None or (payload_user and conn.mp_user_id and payload_user != conn.mp_user_id):
+            tenant_ok = bool(conn and payload_user and conn.mp_user_id
+                              and payload_user == conn.mp_user_id)
+            if not tenant_ok:
                 logger.warning("mp_webhook_tenant_mismatch")
                 await self.webhook_repo.mark_processed(event.id)
                 return 200
