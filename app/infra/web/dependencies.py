@@ -273,7 +273,7 @@ def get_pix_payment_service(db: AsyncSession = Depends(get_db)):
     completer = SaleCompleter(
         sale_repo=SQLAlchemySaleRepository(db), product_repo=SQLAlchemyProductRepository(db),
         box_repo=SQLAlchemyBoxRepository(db), financial_repo=SQLAlchemyFinancialTransactionRepository(db),
-        payment_repo=SQLAlchemySaleRepository(db))  # TODO: helper dedicado de pagamento Pix
+        payment_repo=SQLAlchemySaleRepository(db))  # add_pix_payment implementado em SQLAlchemySaleRepository
     return PixPaymentService(
         attempt_repo=PixPaymentAttemptRepository(db), sale_repo=SQLAlchemySaleRepository(db),
         box_repo=SQLAlchemyBoxRepository(db), product_repo=SQLAlchemyProductRepository(db),
