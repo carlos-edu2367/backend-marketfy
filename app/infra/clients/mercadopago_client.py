@@ -185,3 +185,18 @@ class MercadoPagoClient:
         data = await self._request_order("POST", f"/v1/orders/{order_id}/cancel",
                                          access_token=access_token, idempotency_key=idempotency_key)
         return self._parse_order(data)
+
+    async def create_store(self, *, access_token: str, user_id: str, name: str,
+                           external_id: str, location: dict) -> dict:
+        return await self._request_order(
+            "POST", f"/users/{user_id}/stores", access_token=access_token,
+            json_body={"name": name, "external_id": external_id, "location": location},
+        )
+
+    async def create_pos(self, *, access_token: str, name: str, store_id,
+                         external_store_id: str, external_id: str) -> dict:
+        return await self._request_order(
+            "POST", "/pos", access_token=access_token,
+            json_body={"name": name, "fixed_amount": True, "store_id": store_id,
+                      "external_store_id": external_store_id, "external_id": external_id},
+        )
