@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.database.models import (
@@ -32,6 +32,19 @@ class MercadoPagoConnectionRepository:
         else:
             await self.db.flush()
         return model
+
+    async def list_expiring(self, before: datetime, limit: int = 100):
+        """Conexões ativas cujo access token vence antes de `before` (ou nunca teve expiração registrada)."""
+        res = await self.db.execute(
+            select(MercadoPagoConnectionModel).where(
+                MercadoPagoConnectionModel.status.in_(("connected", "refresh_required")),
+                or_(
+                    MercadoPagoConnectionModel.access_token_expires_at < before,
+                    MercadoPagoConnectionModel.access_token_expires_at.is_(None),
+                ),
+            ).limit(limit)
+        )
+        return res.scalars().all()
 
 
 class MercadoPagoOAuthStateRepository:
@@ -117,6 +130,30 @@ class PixPaymentAttemptRepository:
         else:
             await self.db.flush()
         return model
+
+    async def list_active_stale(self, older_than: datetime, limit: int = 50):
+        """Tentativas ativas cuja última consulta de status está velha (ou nunca ocorreu)."""
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(
+                PixPaymentAttemptModel.status.in_(_ACTIVE),
+                or_(
+                    PixPaymentAttemptModel.last_status_query_at < older_than,
+                    PixPaymentAttemptModel.last_status_query_at.is_(None),
+                ),
+            ).order_by(PixPaymentAttemptModel.created_at.asc()).limit(limit)
+        )
+        return res.scalars().all()
+
+    async def list_active_expired(self, before: datetime, limit: int = 50):
+        """Tentativas ativas cujo QR já venceu (expires_at < before)."""
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(
+                PixPaymentAttemptModel.status.in_(_ACTIVE),
+                PixPaymentAttemptModel.expires_at.isnot(None),
+                PixPaymentAttemptModel.expires_at < before,
+            ).order_by(PixPaymentAttemptModel.expires_at.asc()).limit(limit)
+        )
+        return res.scalars().all()
 
     async def record_query(self, *, attempt_id, market_id, source, received_status=None,
                            latency_ms=None, http_status=None, error_code=None):
