@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 
 from infra.config.logger import get_logger
+from infra.observability.metrics import metrics_registry
 
 logger = get_logger("pix_jobs")
 
@@ -41,6 +42,42 @@ class PixReconciler:
             except Exception:
                 logger.warning("pix_reconcile_attempt_failed", extra={"extra_data": {"attempt": str(a.id)[:6]}})
         return {"processed": processed, "scanned": len(attempts)}
+
+
+class PixAnomalyDetector:
+    """Detecta os dois cenários críticos que a arquitetura Pix nunca deveria
+    deixar acontecer: pagamento aprovado sem venda concluída, e venda concluída
+    sem confirmação externa. Grava as gauges e loga em erro quando > 0 — a
+    resposta operacional concreta fica no runbook (Plano 6, Tarefa 7)."""
+
+    def __init__(self, attempt_repo):
+        self.attempt_repo = attempt_repo
+
+    async def scan(self) -> dict:
+        paid_not_completed = await self.attempt_repo.count_paid_not_completed()
+        completed_not_confirmed = await self.attempt_repo.count_completed_not_confirmed()
+        metrics_registry.set_pix_anomaly(kind="paid_not_completed", value=paid_not_completed)
+        metrics_registry.set_pix_anomaly(kind="completed_not_confirmed", value=completed_not_confirmed)
+        if paid_not_completed or completed_not_confirmed:
+            logger.error("pix_anomaly_detected", extra={"extra_data": {
+                "paid_not_completed": paid_not_completed,
+                "completed_not_confirmed": completed_not_confirmed}})
+        return {"paid_not_completed": paid_not_completed,
+                "completed_not_confirmed": completed_not_confirmed}
+
+
+async def scan_pix_anomalies(ctx) -> dict:
+    """Job periódico: varre os dois cenários de anomalia crítica."""
+    from infra.database.setup import async_session_factory
+    from infra.repositories.pix_repo import PixPaymentAttemptRepository
+
+    async with async_session_factory() as session:
+        attempt_repo = PixPaymentAttemptRepository(session)
+        detector = PixAnomalyDetector(attempt_repo)
+        result = await detector.scan()
+
+    logger.info("pix_anomaly_scan_done", extra={"extra_data": result})
+    return result
 
 
 # =============================================================================

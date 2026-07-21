@@ -36,6 +36,7 @@ from application.jobs.pix_jobs import (
     reconcile_pending_attempts,
     expire_overdue_attempts,
     refresh_expiring_tokens,
+    scan_pix_anomalies,
 )
 from arq.cron import cron
 from infra.queues.arq_config import get_redis_settings, ALL_QUEUES
@@ -81,6 +82,7 @@ class WorkerSettings:
         reconcile_pending_attempts,
         expire_overdue_attempts,
         refresh_expiring_tokens,
+        scan_pix_anomalies,
     ]
 
     redis_settings = get_redis_settings()
@@ -113,4 +115,6 @@ class WorkerSettings:
         cron(expire_overdue_attempts, minute=set(range(1, 60, 2))),
         # Pix: renovação proativa de tokens OAuth perto de vencer — diário 03:00 UTC
         cron(refresh_expiring_tokens, hour=3, minute=0),
+        # Pix: detector de anomalias críticas (pago-sem-venda / venda-sem-confirmação) — a cada ~5 min
+        cron(scan_pix_anomalies, minute=set(range(0, 60, 5))),
     ]

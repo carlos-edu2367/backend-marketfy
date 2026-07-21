@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, update, or_
+from sqlalchemy import select, update, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.database.models import (
@@ -175,6 +175,41 @@ class PixPaymentAttemptRepository:
         self.db.add(q)
         await self.db.flush()
         return q
+
+    async def count_paid_not_completed(self) -> int:
+        from infra.database.models import SaleModel
+        res = await self.db.execute(
+            select(func.count()).select_from(PixPaymentAttemptModel)
+            .join(SaleModel, SaleModel.id == PixPaymentAttemptModel.sale_id)
+            .where(PixPaymentAttemptModel.status == "approved",
+                   SaleModel.status != "concluida")
+        )
+        return int(res.scalar() or 0)
+
+    async def count_completed_not_confirmed(self) -> int:
+        from infra.database.models import SaleModel, PaymentModel
+        res = await self.db.execute(
+            select(func.count()).select_from(PaymentModel)
+            .join(SaleModel, SaleModel.id == PaymentModel.sale_id)
+            .join(PixPaymentAttemptModel, PixPaymentAttemptModel.id == PaymentModel.pix_attempt_id)
+            .where(PaymentModel.modality == "qr_dynamic",
+                   SaleModel.status == "concluida",
+                   PixPaymentAttemptModel.status != "approved")
+        )
+        return int(res.scalar() or 0)
+
+    async def count_by_status(self, status: str) -> int:
+        res = await self.db.execute(
+            select(func.count()).select_from(PixPaymentAttemptModel)
+            .where(PixPaymentAttemptModel.status == status)
+        )
+        return int(res.scalar() or 0)
+
+    async def get_by_id_any_market(self, attempt_id):
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(PixPaymentAttemptModel.id == attempt_id)
+        )
+        return res.scalar_one_or_none()
 
 
 class MercadoPagoPosRegistrationRepository:
