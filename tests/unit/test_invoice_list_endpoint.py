@@ -15,3 +15,4 @@ def test_invoice_endpoints_registered():
     paths = {r.path for r in billing_router.router.routes}
     assert "/invoices" in paths
     assert "/invoices/{invoice_id}" in paths
+    assert "/invoices/{invoice_id}/checkout" in paths

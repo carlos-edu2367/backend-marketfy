@@ -187,26 +187,54 @@ async def list_invoices(
     }
 
 
+@router.post("/invoices/{invoice_id}/checkout", status_code=status.HTTP_202_ACCEPTED)
+async def ensure_invoice_checkout(
+    invoice_id: uuid.UUID,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    invoice_service=Depends(_get_invoice_service),
+):
+    """Solicita o checkout da fatura sob demanda, sem criar outra fatura."""
+    from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
+
+    repo = SQLAlchemyBillingInvoiceRepository(db)
+    inv = await repo.get_by_id(invoice_id)
+    if inv is None or inv.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+
+    try:
+        checkout = await invoice_service.ensure_checkout(invoice_id)
+        await db.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except BillingCoreError as exc:
+        logger.warning(f"[billing] Billing Core indisponível ao preparar fatura={invoice_id}: {exc}")
+        raise HTTPException(status_code=503, detail="Serviço de cobrança temporariamente indisponível.")
+
+    return {
+        "invoice_id": str(inv.id),
+        "status": checkout.get("status"),
+        "checkout_url": checkout.get("checkout_url"),
+    }
+
+
 @router.get("/invoices/{invoice_id}")
 async def get_invoice(
     invoice_id: uuid.UUID,
     current_user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    invoice_service=Depends(_get_invoice_service),
 ):
     from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
     repo = SQLAlchemyBillingInvoiceRepository(db)
     inv = await repo.get_by_id(invoice_id)
     if inv is None or inv.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail="Fatura não encontrada.")
-    checkout = await invoice_service.refresh_checkout(invoice_id)
-    await db.commit()
     return {
         "invoice_id": str(inv.id),
         "amount": str(inv.amount),
         "status": inv.status,
         "due_date": inv.due_date.isoformat() if inv.due_date else None,
-        "checkout_url": checkout.get("checkout_url") or inv.checkout_url,
+        "checkout_url": inv.checkout_url,
     }
 
 

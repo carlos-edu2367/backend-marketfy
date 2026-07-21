@@ -76,11 +76,14 @@ class SQLAlchemyBillingInvoiceRepository:
         return list(r.scalars().all())
 
     async def update_checkout(self, invoice_id: uuid.UUID, *, bc_job_id: str | None = None,
-                              checkout_url: str | None = None, bc_payment_id: str | None = None) -> None:
+                              checkout_url: str | None = None, bc_payment_id: str | None = None,
+                              clear_checkout: bool = False) -> None:
         values = {}
         if bc_job_id is not None:
             values["bc_job_id"] = bc_job_id
-        if checkout_url is not None:
+        if clear_checkout:
+            values["checkout_url"] = None
+        elif checkout_url is not None:
             values["checkout_url"] = checkout_url
         if bc_payment_id is not None:
             values["bc_payment_id"] = bc_payment_id

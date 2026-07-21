@@ -27,11 +27,11 @@ async def test_paid_status_activates_invoice():
 
 
 @pytest.mark.asyncio
-async def test_overdue_status_marks_failed():
+async def test_expired_checkout_keeps_invoice_pending_for_a_later_payment_attempt():
     invoice_service = AsyncMock()
     invoice_id = uuid.uuid4()
     proc = InvoiceWebhookProcessor(invoice_service)
-    payload = {"payment_id": "pay_2", "system_payment_id": str(invoice_id), "payment_status": "OVERDUE"}
+    payload = {"payment_id": "pay_2", "system_payment_id": str(invoice_id), "payment_status": "EXPIRED"}
     code = await proc.process(payload)
     assert code == 200
-    invoice_service.mark_invoice_failed.assert_awaited_once()
+    invoice_service.mark_invoice_failed.assert_not_awaited()

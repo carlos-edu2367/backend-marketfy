@@ -132,22 +132,41 @@ def test_price_for_period_maps_correctly():
 
 
 @pytest.mark.asyncio
-async def test_contract_creates_subscription_invoice_and_checkout():
+async def test_contract_creates_subscription_and_invoice_without_checkout():
     owner = uuid.uuid4()
     plan = StubPlan()
     inv_repo = InvoiceRepo()
     sub_repo = SubRepo(None)
     plan_repo = PlanRepo(plan)
     bc = AsyncMock()
-    bc.create_payment.return_value = {"job_id": "job_1"}
-    bc.get_job.return_value = {"status": "done", "result": {"checkout_url": "https://pay/x", "payment_id": "pay_1"}}
-
     svc = InvoiceService(inv_repo, sub_repo, plan_repo, bc, StubSettings())
     result = await svc.contract(owner, plan.id, "monthly", idempotency_key="idem-1")
 
-    assert result["checkout_url"] == "https://pay/x"
+    assert result["checkout_url"] is None
+    assert result["job_id"] is None
     assert result["invoice_id"] is not None
+    bc.create_payment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_checkout_creates_the_first_checkout_only_after_payment_click():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    inv_repo = InvoiceRepo()
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job_1"}
+    bc.get_job.return_value = {
+        "status": "completed",
+        "result": {"checkout_url": "https://pay/x", "payment_id": "pay_1"},
+    }
+    svc = InvoiceService(inv_repo, SubRepo(None), PlanRepo(plan), bc, StubSettings())
+    contracted = await svc.contract(owner, plan.id, "monthly", idempotency_key="idem-1")
+
+    checkout = await svc.ensure_checkout(uuid.UUID(contracted["invoice_id"]))
+
+    assert checkout == {"status": "completed", "checkout_url": "https://pay/x"}
     bc.create_payment.assert_awaited_once()
+    assert inv_repo.items[uuid.UUID(contracted["invoice_id"])].bc_payment_id == "pay_1"
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,8 @@ logger = get_logger("billing_invoice_webhooks")
 router = APIRouter()
 
 _PAID = ("PAID", "CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH")
-_FAILED = ("OVERDUE", "REFUNDED", "REFUND_IN_PROGRESS", "CHARGEBACK_REQUESTED", "CANCELED", "EXPIRED")
+_RETRYABLE_CHECKOUT_STATUS = ("OVERDUE", "CANCELED", "EXPIRED")
+_FAILED = ("REFUNDED", "REFUND_IN_PROGRESS", "CHARGEBACK_REQUESTED")
 
 
 class InvoiceWebhookProcessor:
@@ -37,6 +38,11 @@ class InvoiceWebhookProcessor:
             return 200
         if payment_status in _PAID:
             await self._svc.activate_invoice(invoice_id, payment_id, payload)
+        elif payment_status in _RETRYABLE_CHECKOUT_STATUS:
+            logger.info(
+                "invoice_checkout_needs_new_attempt",
+                extra={"extra_data": {"invoice_id": str(invoice_id), "payment_status": payment_status}},
+            )
         elif payment_status in _FAILED:
             await self._svc.mark_invoice_failed(invoice_id, reason=f"Status: {payment_status}")
         return 200
