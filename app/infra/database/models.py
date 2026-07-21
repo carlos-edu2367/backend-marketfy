@@ -1150,3 +1150,17 @@ class PixStatusQueryModel(Base):
     http_status = Column(Integer, nullable=True)
     error_code = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class MercadoPagoPosRegistrationModel(Base):
+    __tablename__ = "mercado_pago_pos_registrations"
+    __table_args__ = (
+        UniqueConstraint("market_id", "terminal_id", name="uq_mp_pos_market_terminal"),
+        Index("ix_mp_pos_market", "market_id"),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"), nullable=False)
+    terminal_id = Column(UUID(as_uuid=True), ForeignKey("terminals.id", ondelete="CASCADE"), nullable=False)
+    mp_store_id = Column(String, nullable=False)
+    mp_pos_external_id = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
