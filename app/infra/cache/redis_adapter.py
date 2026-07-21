@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Optional, Any
 from redis.asyncio import Redis, from_url
@@ -7,8 +8,27 @@ settings = get_settings()
 
 class RedisAdapter:
     def __init__(self):
-        self.redis: Redis = from_url(settings.REDIS_URL, decode_responses=True)
+        self._redis: Optional[Redis] = None
+        self._redis_loop: Optional[asyncio.AbstractEventLoop] = None
         self.default_ttl = 3600 # 1 hora
+
+    @property
+    def redis(self) -> Redis:
+        """Cria (ou recria) o client sob demanda, amarrado ao event loop atual.
+
+        `redis.asyncio.Redis` liga suas conexões pooladas ao loop em que a
+        primeira operação rodou. Um singleton criado uma única vez no import
+        (antes de qualquer loop existir) quebra ao ser reusado por um loop
+        diferente — cenário raro em produção (um único loop pela vida do
+        processo), mas real em runners de teste com um loop novo por teste
+        (pytest-asyncio, modo function-scoped): a conexão presa ao loop
+        anterior, já fechado, falha com 'Event loop is closed'.
+        """
+        loop = asyncio.get_event_loop()
+        if self._redis is None or self._redis_loop is not loop:
+            self._redis = from_url(settings.REDIS_URL, decode_responses=True)
+            self._redis_loop = loop
+        return self._redis
 
     async def close(self):
         await self.redis.close()

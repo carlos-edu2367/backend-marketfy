@@ -7,6 +7,9 @@ from domain.pix import PixItem, PixAttemptStatus
 from domain.sales import Sale, SaleStatus, BoxStatus
 from infra.database.models import PixPaymentAttemptModel
 from infra.config.settings import get_settings
+from infra.config.logger import get_logger
+
+logger = get_logger("pix_payment_service")
 
 
 class PixNotConnectedError(Exception): ...
@@ -66,11 +69,23 @@ class PixPaymentService:
         if not self.event_bus:
             return
         event = self._STATUS_EVENT.get(attempt.status, "payment.pending")
-        await self.event_bus.publish(str(attempt.id), event, {
+        await self._publish_best_effort(attempt.id, event, {
             "attempt_id": str(attempt.id), "status": attempt.status,
             "sale_id": str(attempt.sale_id) if attempt.sale_id else None,
             "sale_completed": attempt.status == "approved",
         })
+
+    async def _publish_best_effort(self, attempt_id, event: str, data: dict) -> None:
+        """Publica no event bus sem nunca deixar uma falha (Redis fora do ar,
+        problema de rede) propagar e derrubar o fluxo de pagamento — o SSE é só
+        um reflexo em tempo real do estado já persistido, nunca fonte de verdade,
+        então uma falha aqui vira log, não uma venda/verificação/cancelamento
+        que falhou por um motivo que nada tem a ver com o pagamento em si."""
+        try:
+            await self.event_bus.publish(str(attempt_id), event, data)
+        except Exception:
+            logger.warning("pix_event_bus_publish_failed",
+                           extra={"extra_data": {"attempt_id": str(attempt_id)[:8], "event": event}})
 
     async def create_qr(self, *, market_id, terminal_id, box_id, operator_id, items):
         box = await self.box_repo.get_by_id(box_id)
@@ -144,7 +159,7 @@ class PixPaymentService:
             attempt.expires_at = datetime.now(timezone.utc) + _iso_expiration_to_delta(expiration)
             await self.attempt_repo.save(attempt, commit=True)
             if self.event_bus:
-                await self.event_bus.publish(str(attempt.id), "payment.created", {
+                await self._publish_best_effort(attempt.id, "payment.created", {
                     "attempt_id": str(attempt.id), "status": attempt.status,
                     "sale_id": str(attempt.sale_id) if attempt.sale_id else None,
                     "sale_completed": False,

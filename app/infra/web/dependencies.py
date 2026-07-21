@@ -265,6 +265,7 @@ def get_pix_payment_service(db: AsyncSession = Depends(get_db)):
     from infra.providers.pix.location import UnconfiguredPosLocationProvider
     from infra.clients.mercadopago_client import MercadoPagoClient
     from infra.cache.redis_lock import RedisLock
+    from infra.cache.pix_event_bus import PixEventBus
 
     conn_service = MercadoPagoConnectionService(
         MercadoPagoConnectionRepository(db), MercadoPagoClient(), RedisLock(),
@@ -280,4 +281,4 @@ def get_pix_payment_service(db: AsyncSession = Depends(get_db)):
         connection_service=conn_service, provider=MercadoPagoPixProvider(), lock=RedisLock(),
         market_repo=SQLAlchemyMarketRepository(db),
         pos_location_provider=UnconfiguredPosLocationProvider(),
-        completer=completer)
+        completer=completer, event_bus=PixEventBus())

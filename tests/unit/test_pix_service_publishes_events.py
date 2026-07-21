@@ -102,6 +102,28 @@ async def test_verify_publishes_expired(monkeypatch):
     assert (str(a.id), "payment.expired") in [(str(i), e) for i, e, _ in bus.events]
 
 
+class FailingBus:
+    async def publish(self, attempt_id, event, data):
+        raise ConnectionError("redis unreachable")
+
+
+@pytest.mark.asyncio
+async def test_verify_survives_event_bus_publish_failure(monkeypatch):
+    """Publicar é best-effort: uma falha no Redis nunca pode derrubar a
+    confirmação de pagamento (que já persistiu com sucesso antes de publicar)."""
+    from infra.config import settings as sm
+    sm.get_settings.cache_clear()
+    from application.services.pix.payment_service import PixPaymentService
+
+    m = uuid.uuid4()
+    a = _make_attempt(m)
+    svc = PixPaymentService(attempt_repo=FakeAttemptRepo(a), sale_repo=None, box_repo=None,
+        product_repo=None, connection_service=FakeConnSvc(), provider=ProviderProcessed(),
+        lock=None, completer=Completer(), event_bus=FailingBus())
+    result = await svc.verify(market_id=m, attempt_id=a.id)
+    assert result.status == "approved"  # não propagou a exceção do bus
+
+
 @pytest.mark.asyncio
 async def test_verify_without_event_bus_does_not_crash(monkeypatch):
     from infra.config import settings as sm
