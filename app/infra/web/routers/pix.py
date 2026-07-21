@@ -110,7 +110,50 @@ async def oauth_status(
         "access_token_expires_at": conn.access_token_expires_at,
         "last_validated_at": conn.last_validated_at,
         "last_error": conn.last_error,
+        # O PDV deriva a disponibilidade do QR destes campos (ver
+        # pages/pdv/pixAvailability.js). Sem eles o operador habilita no
+        # painel e o botão de QR nunca aparece no caixa.
+        "enabled_in_pdv": conn.enabled_in_pdv,
+        "fees_acknowledged": conn.fees_acknowledged_at is not None,
+        "allowed_terminal_ids": conn.allowed_terminal_ids,
     }
+
+
+@router.post("/{market_id}/oauth/test")
+async def oauth_test(
+    market_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    market=Depends(require_market_access(MarketPermission.PAYMENTS_WRITE)),
+):
+    """Valida a conexão com uma chamada leve autenticada e grava o resultado."""
+    from datetime import datetime, timezone
+    from application.services.pix.connection_service import (
+        MercadoPagoConnectionService, ConnectionNotReadyError, ReauthorizationRequiredError,
+    )
+    from infra.cache.redis_lock import RedisLock
+
+    repo = MercadoPagoConnectionRepository(db)
+    conn = await repo.get_by_market(market_id)
+    if conn is None:
+        raise HTTPException(status_code=404, detail={"code": "pix.not_connected"})
+
+    service = MercadoPagoConnectionService(repo, MercadoPagoClient(), RedisLock())
+    try:
+        access_token = await service.get_valid_access_token(market_id)
+        await MercadoPagoClient().get_user_me(access_token=access_token)
+    except (ConnectionNotReadyError, ReauthorizationRequiredError) as exc:
+        logger.warning("pix_oauth_test_needs_reauth")
+        return {"ok": False, "status": "reauthorization_required", "detail": str(exc)}
+    except MercadoPagoError:
+        # Nunca ecoar o corpo do provider: pode conter dados da conta.
+        logger.warning("pix_oauth_test_provider_error")
+        return {"ok": False, "status": conn.status, "detail": "Falha ao validar a conexão."}
+
+    now = datetime.now(timezone.utc)
+    conn.last_validated_at = now
+    conn.last_error = None
+    await repo.save(conn)
+    return {"ok": True, "status": conn.status, "checked_at": now.isoformat()}
 
 
 @router.delete("/{market_id}/oauth")
