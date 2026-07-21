@@ -409,6 +409,27 @@ async def test_pre_validation_failure_creates_rejected_doc():
     assert saved_docs[-1].status == FiscalDocumentStatus.REJECTED
 
 
+@pytest.mark.asyncio
+async def test_off_rollout_uses_legacy_validation_without_tax_snapshot():
+    """Existing markets in off keep emitting from legacy item/config data."""
+    market_id = uuid.uuid4()
+    sale = FakeSale(market_id=market_id)
+    sale.items[0].fiscal_tax_snapshot = None
+    sale.items[0].tax_rule_version_snapshot = None
+    cfg = _make_config(enabled=True)
+    cfg.default_ncm = "22021000"
+    cfg.default_cfop = "5102"
+    cfg.default_csosn = "102"
+
+    arq_pool = AsyncMock()
+    svc = _make_service(cfg=cfg, sale=sale, arq_pool=arq_pool)
+
+    result = await svc.request_emission(market_id, sale.id, uuid.uuid4())
+
+    assert result["status"] == FiscalDocumentStatus.QUEUED.value
+    arq_pool.enqueue_job.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Cota esgotada
 # ---------------------------------------------------------------------------

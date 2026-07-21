@@ -95,7 +95,7 @@ def make_sale():
     def factory(*, ncm: str) -> LegacySale:
         item = LegacyItem(
             ncm_snapshot=ncm,
-            fiscal_tax_snapshot=_legacy_snapshot(ncm=ncm, cfop="5102"),
+            fiscal_tax_snapshot=None,
         )
         return LegacySale(items=[item])
 

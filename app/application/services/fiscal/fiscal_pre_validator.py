@@ -414,6 +414,8 @@ class FiscalPreValidator:
         customer_cpf: Optional[str],
         sale_status: Optional[str],
         fiscal_config,
+        *,
+        require_tax_snapshot: bool = True,
     ) -> PreValidationResult:
         result = PreValidationResult(is_valid=True)
 
@@ -429,10 +431,21 @@ class FiscalPreValidator:
 
         for i, item in enumerate(sale_items, 1):
             item_label = f"Item {i} ({getattr(item, 'product_name', '?')})"
-            try:
-                self._normalise_item_tax_snapshot(item, fiscal_config)
-            except BusinessRuleException as exc:
-                result.add_error(f"{item_label}: {exc}")
+            if require_tax_snapshot:
+                try:
+                    self._normalise_item_tax_snapshot(item, fiscal_config)
+                except BusinessRuleException as exc:
+                    result.add_error(f"{item_label}: {exc}")
+            else:
+                ncm = getattr(item, "ncm_snapshot", None) or getattr(
+                    fiscal_config, "default_ncm", None
+                )
+                if not ncm:
+                    result.add_error(f"{item_label}: NCM não configurado.")
+                elif not _NCM_RE.match(str(ncm).replace(".", "").replace(" ", "")):
+                    result.add_error(
+                        f"{item_label}: NCM inválido '{ncm}' (deve ter 8 dígitos)."
+                    )
 
             unit_price = getattr(item, "unit_price", 0)
             quantity = getattr(item, "quantity", 0)
@@ -635,14 +648,48 @@ class FiscalPreValidator:
         issuer_id: str,
         provider_ref: Optional[str] = None,
     ) -> dict:
-        """Explicit compatibility builder for off/warn retries only.
+        """Build the pre-rollout contract without requiring item-tax snapshots."""
+        environment = getattr(fiscal_config, "environment", None)
+        env_value = environment.value if hasattr(environment, "value") else str(environment or "homologacao")
+        neectify_env = "production" if env_value in ("producao", "production") else "homologation"
+        payments = []
+        for pay in sale.payments:
+            method = pay.method.value if hasattr(pay.method, "value") else str(pay.method)
+            entry = {"method": self.map_neectify_payment_method(method), "amount": f"{float(pay.amount):.2f}"}
+            if entry["method"] == "other":
+                entry["description"] = NEECTIFY_OTHER_PAYMENT_LABELS.get(method.lower(), "Outros")
+            payments.append(entry)
 
-        Keep ``build_neectify_payload`` intact as the v1 serializer.  New
-        block-mode requests cannot reach this method; their v2 evidence is
-        persisted before the worker is queued.
-        """
-        payload = self.build_neectify_payload(
-            sale, fiscal_config, issuer_id, provider_ref
-        )
-        payload.pop("contract_version", None)
+        items = []
+        for item in sale.items:
+            ncm = getattr(item, "ncm_snapshot", None) or getattr(fiscal_config, "default_ncm", "")
+            items.append({
+                "sku": str(item.product_id),
+                "description": (getattr(item, "product_name_snapshot", None) or item.product_name)[:120],
+                "quantity": f"{float(item.quantity):.4f}",
+                "unit": "UN",
+                "unit_amount": f"{float(item.unit_price):.2f}",
+                "total_amount": f"{float(item.total):.2f}",
+                "cfop": getattr(fiscal_config, "default_cfop", "5102"),
+                "ncm": str(ncm).replace(".", "").replace(" ", ""),
+            })
+
+        occurred_at = sale.created_at.isoformat().replace("+00:00", "Z")
+        if "T" in occurred_at and not occurred_at.endswith("Z") and "+" not in occurred_at[10:]:
+            occurred_at = f"{occurred_at}Z"
+        payload = {
+            "issuer_id": issuer_id,
+            "environment": neectify_env,
+            "external_id": str(sale.id),
+            "correlation": {"sale_id": str(sale.id), "market_id": str(getattr(sale, "market_id", "")), "provider_ref": provider_ref or str(sale.id)},
+            "sale": {"occurred_at": occurred_at},
+            "items": items,
+            "payments": payments,
+            "fiscal_options": {},
+            "metadata": {},
+        }
+        if getattr(sale, "customer_cpf", None):
+            cpf_digits = re.sub(r"\D", "", sale.customer_cpf)
+            if len(cpf_digits) == 11:
+                payload["consumer"] = {"document": cpf_digits}
         return payload

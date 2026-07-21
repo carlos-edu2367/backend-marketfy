@@ -92,6 +92,16 @@ class FiscalEmissionService:
             is FiscalRuleEnforcement.BLOCK
         )
 
+    def _is_legacy_mode(self, cfg) -> bool:
+        mode = getattr(cfg, "fiscal_rule_enforcement", "off")
+        try:
+            configured = mode if isinstance(mode, FiscalRuleEnforcement) else FiscalRuleEnforcement(mode)
+        except (TypeError, ValueError):
+            configured = FiscalRuleEnforcement.OFF
+        return effective_fiscal_rule_enforcement(
+            configured, product_rules_enabled=self.fiscal_product_rules_enabled
+        ) is FiscalRuleEnforcement.OFF
+
     async def request_emission(
         self,
         market_id: uuid.UUID,
@@ -184,6 +194,7 @@ class FiscalEmissionService:
                 sale_items=sale.items, payments=sale.payments,
                 customer_cpf=getattr(sale, "customer_cpf", None),
                 sale_status=getattr(sale, "status", None), fiscal_config=cfg,
+                require_tax_snapshot=not self._is_legacy_mode(cfg),
             )
 
             if validation is not None and not validation.is_valid:
@@ -286,6 +297,7 @@ class FiscalEmissionService:
                 sale_items=sale.items, payments=sale.payments,
                 customer_cpf=getattr(sale, "customer_cpf", None),
                 sale_status=getattr(sale, "status", None), fiscal_config=cfg,
+                require_tax_snapshot=not self._is_legacy_mode(cfg),
             )
 
         # 5. Criar FiscalDocument
