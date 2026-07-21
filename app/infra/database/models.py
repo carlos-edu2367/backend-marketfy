@@ -1037,3 +1037,56 @@ class FiscalInutilizacaoModel(Base):
     idempotency_key = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+# =============================================================================
+# MERCADO PAGO PIX (QR dinâmico presencial)
+# =============================================================================
+
+class MercadoPagoConnectionModel(Base):
+    """Conexão OAuth entre um tenant (market) e sua conta Mercado Pago."""
+    __tablename__ = "mercado_pago_connections"
+    __table_args__ = (
+        UniqueConstraint("market_id", name="uq_mp_conn_market"),
+        Index("ix_mp_conn_status", "status"),
+        Index("ix_mp_conn_mp_user_id", "mp_user_id"),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"), nullable=False)
+    provider = Column(String, default="mercado_pago", nullable=False)
+    status = Column(String, default="not_connected", nullable=False)
+
+    mp_user_id = Column(String, nullable=True)
+    mp_nickname = Column(String, nullable=True)
+    mp_email_masked = Column(String, nullable=True)
+    scopes = Column(String, nullable=True)
+    pix_enabled = Column(Boolean, nullable=True)
+
+    access_token_ciphertext = Column(Text, nullable=True)
+    refresh_token_ciphertext = Column(Text, nullable=True)
+    access_token_expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    connected_at = Column(DateTime(timezone=True), nullable=True)
+    last_refreshed_at = Column(DateTime(timezone=True), nullable=True)
+    last_validated_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class MercadoPagoOAuthStateModel(Base):
+    """State OAuth de uso único, vinculando tenant/usuário à autorização iniciada."""
+    __tablename__ = "mercado_pago_oauth_states"
+    __table_args__ = (
+        UniqueConstraint("state", name="uq_mp_oauth_state"),
+        Index("ix_mp_oauth_state_expires", "expires_at"),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    state = Column(String, nullable=False)
+    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"), nullable=False)
+    initiated_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    code_verifier_ciphertext = Column(Text, nullable=True)
+    redirect_uri = Column(String, nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
