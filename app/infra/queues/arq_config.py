@@ -23,12 +23,16 @@ QUEUE_FISCAL_RECONCILE = "fiscal:high"  # Remapeado para a fila única fiscal:hi
 QUEUE_FISCAL_NOTIFICATIONS = "fiscal:high"  # Remapeado para a fila única fiscal:high para que o único worker processe
 QUEUE_FISCAL_MAINTENANCE = "fiscal:high"  # Remapeado para a fila única fiscal:high para que o único worker processe
 
+QUEUE_PIX_HIGH = "pix:high"
+QUEUE_PIX_RECONCILE = "pix:high"  # Remapeado para a fila única pix:high
+
 ALL_QUEUES = [
     QUEUE_FISCAL_HIGH,
     QUEUE_FISCAL_RETRY,
     QUEUE_FISCAL_RECONCILE,
     QUEUE_FISCAL_NOTIFICATIONS,
     QUEUE_FISCAL_MAINTENANCE,
+    QUEUE_PIX_HIGH,
 ]
 
 

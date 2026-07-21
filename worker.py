@@ -32,6 +32,11 @@ from application.jobs.billing_jobs import (
     generate_due_invoices,
     reconcile_pending_invoices,
 )
+from application.jobs.pix_jobs import (
+    reconcile_pending_attempts,
+    expire_overdue_attempts,
+    refresh_expiring_tokens,
+)
 from arq.cron import cron
 from infra.queues.arq_config import get_redis_settings, ALL_QUEUES
 from infra.config.logger import get_logger
@@ -73,6 +78,9 @@ class WorkerSettings:
         reconcile_pending_bc_payments,
         generate_due_invoices,
         reconcile_pending_invoices,
+        reconcile_pending_attempts,
+        expire_overdue_attempts,
+        refresh_expiring_tokens,
     ]
 
     redis_settings = get_redis_settings()
@@ -99,4 +107,10 @@ class WorkerSettings:
         cron(reconcile_pending_bc_payments, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
         cron(generate_due_invoices, hour=8, minute=0),               # diário 08:00 UTC
         cron(reconcile_pending_invoices, minute={2, 12, 22, 32, 42, 52}),
+        # Pix: reverifica tentativas com consulta de status velha — a cada ~2 min
+        cron(reconcile_pending_attempts, minute=set(range(0, 60, 2))),
+        # Pix: reverifica tentativas cujo QR já venceu — a cada ~2 min (mesmo ritmo da reconciliação)
+        cron(expire_overdue_attempts, minute=set(range(1, 60, 2))),
+        # Pix: renovação proativa de tokens OAuth perto de vencer — diário 03:00 UTC
+        cron(refresh_expiring_tokens, hour=3, minute=0),
     ]
