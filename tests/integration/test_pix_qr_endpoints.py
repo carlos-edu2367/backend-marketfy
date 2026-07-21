@@ -136,8 +136,9 @@ async def test_qr_creates_attempt_and_returns_qr(app_client, monkeypatch):
     respx.post("https://api.mercadopago.com/pos").mock(
         return_value=Response(201, json={"id": 2711382, "external_id": "posext"})
     )
+    order_id = f"ORD-{uuid.uuid4()}"
     respx.post("https://api.mercadopago.com/v1/orders").mock(return_value=Response(201, json={
-        "id": "ORD9", "status": "created", "status_detail": "created", "total_amount": "20.00",
+        "id": order_id, "status": "created", "status_detail": "created", "total_amount": "20.00",
         "type_response": {"qr_data": "QRSTRING"}, "user_id": "42"}))
 
     headers = {"Authorization": f"Bearer {_token_for(seeded['owner_id'])}"}
