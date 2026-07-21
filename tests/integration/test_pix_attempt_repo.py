@@ -69,12 +69,12 @@ async def test_active_attempt_unique_per_sale():
         await session.flush()
         a = PixPaymentAttemptModel(
             market_id=market_id, sale_id=sale_id, box_id=box_id, terminal_id=terminal_id,
-            operator_id=user_id, amount=Decimal("10.00"), external_reference="pix1",
-            idempotency_key="k1", status="pending",
+            operator_id=user_id, amount=Decimal("10.00"), external_reference=f"pix-{sale_id.hex}",
+            idempotency_key=f"k-{uuid.uuid4()}", status="pending",
         )
         await repo.save(a)
         found = await repo.get_active_by_sale(sale_id)
-        assert found is not None and found.external_reference == "pix1"
+        assert found is not None and found.external_reference == f"pix-{sale_id.hex}"
 
         await session.rollback()
     await engine.dispose()
