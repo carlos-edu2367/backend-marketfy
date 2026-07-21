@@ -43,6 +43,9 @@ class MarketPermission(str, Enum):
     ANALYTICS_READ = "analytics.read"
     REPORTS_READ = "reports.read"
 
+    PAYMENTS_READ = "payments.read"
+    PAYMENTS_WRITE = "payments.write"
+
 
 # Mapeamento role -> permissões. Owner recebe todas implicitamente em
 # `resolve_market_access`. Este mapa é usado quando o PR 10 ativa
@@ -62,6 +65,8 @@ ROLE_PERMISSIONS: dict[UserRole, set[MarketPermission]] = {
         MarketPermission.FISCAL_WRITE,
         MarketPermission.ANALYTICS_READ,
         MarketPermission.REPORTS_READ,
+        MarketPermission.PAYMENTS_READ,
+        MarketPermission.PAYMENTS_WRITE,
     },
     UserRole.ACCOUNTANT: {
         MarketPermission.MARKET_READ,
@@ -73,6 +78,7 @@ ROLE_PERMISSIONS: dict[UserRole, set[MarketPermission]] = {
         MarketPermission.INVENTORY_READ,
         MarketPermission.SALES_READ,
         MarketPermission.SALES_WRITE,
+        MarketPermission.PAYMENTS_READ,
     },
     UserRole.ADMIN: set(),
 }
