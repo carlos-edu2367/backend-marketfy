@@ -20,6 +20,7 @@ class SaleStatus(Enum):
     COMPLETED = "concluida"
     CANCELED = "cancelada"
     PENDING_SYNC = "pendente_sync"
+    AWAITING_PAYMENT = "aguardando_pagamento"
 
 class PaymentMethod(Enum):
     CASH = "dinheiro"

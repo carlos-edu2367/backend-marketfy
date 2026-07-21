@@ -5,11 +5,12 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.database.models import (
     MercadoPagoConnectionModel, MercadoPagoOAuthStateModel,
+    PixPaymentAttemptModel, PixStatusQueryModel, MercadoPagoPosRegistrationModel,
 )
 
 
@@ -31,6 +32,26 @@ class MercadoPagoConnectionRepository:
         else:
             await self.db.flush()
         return model
+
+    async def list_expiring(self, before: datetime, limit: int = 100):
+        """Conexões ativas cujo access token vence antes de `before` (ou nunca teve expiração registrada)."""
+        res = await self.db.execute(
+            select(MercadoPagoConnectionModel).where(
+                MercadoPagoConnectionModel.status.in_(("connected", "refresh_required")),
+                or_(
+                    MercadoPagoConnectionModel.access_token_expires_at < before,
+                    MercadoPagoConnectionModel.access_token_expires_at.is_(None),
+                ),
+            ).limit(limit)
+        )
+        return res.scalars().all()
+
+    async def count_by_status(self, status: str) -> int:
+        res = await self.db.execute(
+            select(func.count()).select_from(MercadoPagoConnectionModel)
+            .where(MercadoPagoConnectionModel.status == status)
+        )
+        return int(res.scalar() or 0)
 
 
 class MercadoPagoOAuthStateRepository:
@@ -75,3 +96,156 @@ class MercadoPagoOAuthStateRepository:
             select(MercadoPagoOAuthStateModel).where(MercadoPagoOAuthStateModel.id == row[0])
         )
         return loaded.scalar_one()
+
+
+_ACTIVE = ("pending", "in_analysis", "confirmation_pending")
+
+
+class PixPaymentAttemptRepository:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_active_by_sale(self, sale_id):
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(
+                PixPaymentAttemptModel.sale_id == sale_id,
+                PixPaymentAttemptModel.status.in_(_ACTIVE),
+            )
+        )
+        return res.scalar_one_or_none()
+
+    async def get_by_id(self, attempt_id, market_id):
+        """Leitura simples, sem `FOR UPDATE` — para endpoints que só consultam
+        estado (ex.: SSE), onde segurar um lock de linha pela duração de um
+        stream de longa duração bloquearia writers (verify/webhook)."""
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(
+                PixPaymentAttemptModel.id == attempt_id,
+                PixPaymentAttemptModel.market_id == market_id,
+            )
+        )
+        return res.scalar_one_or_none()
+
+    async def get_by_id_for_update(self, attempt_id, market_id):
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(
+                PixPaymentAttemptModel.id == attempt_id,
+                PixPaymentAttemptModel.market_id == market_id,
+            ).with_for_update()
+        )
+        return res.scalar_one_or_none()
+
+    async def get_by_order_id(self, order_id):
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(PixPaymentAttemptModel.order_id == order_id)
+        )
+        return res.scalar_one_or_none()
+
+    async def save(self, model, commit: bool = True):
+        self.db.add(model)
+        if commit:
+            await self.db.commit()
+            await self.db.refresh(model)
+        else:
+            await self.db.flush()
+        return model
+
+    async def list_active_stale(self, older_than: datetime, limit: int = 50):
+        """Tentativas ativas cuja última consulta de status está velha (ou nunca ocorreu)."""
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(
+                PixPaymentAttemptModel.status.in_(_ACTIVE),
+                or_(
+                    PixPaymentAttemptModel.last_status_query_at < older_than,
+                    PixPaymentAttemptModel.last_status_query_at.is_(None),
+                ),
+            ).order_by(PixPaymentAttemptModel.created_at.asc()).limit(limit)
+        )
+        return res.scalars().all()
+
+    async def list_active_expired(self, before: datetime, limit: int = 50):
+        """Tentativas ativas cujo QR já venceu (expires_at < before)."""
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(
+                PixPaymentAttemptModel.status.in_(_ACTIVE),
+                PixPaymentAttemptModel.expires_at.isnot(None),
+                PixPaymentAttemptModel.expires_at < before,
+            ).order_by(PixPaymentAttemptModel.expires_at.asc()).limit(limit)
+        )
+        return res.scalars().all()
+
+    async def record_query(self, *, attempt_id, market_id, source, received_status=None,
+                           latency_ms=None, http_status=None, error_code=None):
+        q = PixStatusQueryModel(attempt_id=attempt_id, market_id=market_id, source=source,
+            received_status=received_status, latency_ms=latency_ms, http_status=http_status,
+            error_code=error_code)
+        self.db.add(q)
+        await self.db.flush()
+        return q
+
+    async def count_paid_not_completed(self) -> int:
+        from infra.database.models import SaleModel
+        res = await self.db.execute(
+            select(func.count()).select_from(PixPaymentAttemptModel)
+            .join(SaleModel, SaleModel.id == PixPaymentAttemptModel.sale_id)
+            .where(PixPaymentAttemptModel.status == "approved",
+                   SaleModel.status != "concluida")
+        )
+        return int(res.scalar() or 0)
+
+    async def count_completed_not_confirmed(self) -> int:
+        from infra.database.models import SaleModel, PaymentModel
+        res = await self.db.execute(
+            select(func.count()).select_from(PaymentModel)
+            .join(SaleModel, SaleModel.id == PaymentModel.sale_id)
+            .join(PixPaymentAttemptModel, PixPaymentAttemptModel.id == PaymentModel.pix_attempt_id)
+            .where(PaymentModel.modality == "qr_dynamic",
+                   SaleModel.status == "concluida",
+                   PixPaymentAttemptModel.status != "approved")
+        )
+        return int(res.scalar() or 0)
+
+    async def count_by_status(self, status: str) -> int:
+        res = await self.db.execute(
+            select(func.count()).select_from(PixPaymentAttemptModel)
+            .where(PixPaymentAttemptModel.status == status)
+        )
+        return int(res.scalar() or 0)
+
+    async def get_by_id_any_market(self, attempt_id):
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(PixPaymentAttemptModel.id == attempt_id)
+        )
+        return res.scalar_one_or_none()
+
+
+class MercadoPagoPosRegistrationRepository:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_by_market_and_terminal(self, market_id, terminal_id):
+        res = await self.db.execute(
+            select(MercadoPagoPosRegistrationModel).where(
+                MercadoPagoPosRegistrationModel.market_id == market_id,
+                MercadoPagoPosRegistrationModel.terminal_id == terminal_id,
+            )
+        )
+        return res.scalar_one_or_none()
+
+    async def get_store_id_for_market(self, market_id):
+        res = await self.db.execute(
+            select(MercadoPagoPosRegistrationModel).where(
+                MercadoPagoPosRegistrationModel.market_id == market_id,
+            )
+        )
+        existing = res.scalars().first()
+        return existing.mp_store_id if existing else None
+
+    async def save(self, model, commit: bool = True):
+        self.db.add(model)
+        if commit:
+            await self.db.commit()
+            await self.db.refresh(model)
+        else:
+            await self.db.flush()
+        return model

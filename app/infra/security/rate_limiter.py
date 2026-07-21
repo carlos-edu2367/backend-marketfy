@@ -72,3 +72,31 @@ async def enforce_rate_limit_async(request: Request, bucket: str, limit: int, wi
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Muitas tentativas. Tente novamente em instantes.",
         )
+
+
+async def enforce_pix_verify_rate_limit(request, *, attempt_id, sale_id, user_id, market_id,
+                                        cooldown_seconds: int) -> None:
+    settings = get_settings()
+    checks = [
+        (f"pix_verify:attempt:{attempt_id}", 1, cooldown_seconds),
+        (f"pix_verify:user:{user_id}", 20, 60),
+        (f"pix_verify:market:{market_id}", 120, 60),
+    ]
+    for bucket, limit, window in checks:
+        # reusa o backend configurado (memória/redis) por chave dedicada (não por IP)
+        key = f"rate_limit:{bucket}"
+        if settings.RATE_LIMIT_BACKEND != "redis":
+            if not rate_limiter.hit(key, limit=limit, window_seconds=window):
+                raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                                    detail="Aguarde antes de verificar novamente.")
+        else:
+            try:
+                count = await redis_client.redis.incr(key)
+                if count == 1:
+                    await redis_client.redis.expire(key, window)
+            except RedisError:
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                    detail="Controle de taxa indisponivel.")
+            if count > limit:
+                raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                                    detail="Aguarde antes de verificar novamente.")

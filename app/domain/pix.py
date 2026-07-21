@@ -1,6 +1,7 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from enum import Enum
 from typing import Optional
 
@@ -52,3 +53,55 @@ class MercadoPagoConnection(Entity):
         if self.access_token_expires_at is None:
             return True
         return self.access_token_expires_at <= now + timedelta(seconds=margin_seconds)
+
+
+class PixPaymentModality(Enum):
+    MANUAL = "manual"
+    QR_DYNAMIC = "qr_dynamic"
+
+
+class PixAttemptStatus(Enum):
+    PENDING = "pending"
+    IN_ANALYSIS = "in_analysis"
+    CONFIRMATION_PENDING = "confirmation_pending"
+    APPROVED = "approved"
+    EXPIRED = "expired"
+    CANCELED = "canceled"
+    REJECTED = "rejected"
+    ERROR = "error"
+    DIVERGENT = "divergent"
+
+
+@dataclass(frozen=True)
+class PixItem:
+    title: str
+    unit_price: Decimal
+    quantity: int
+    unit_measure: str = "unit"
+    external_code: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PixOrderResult:
+    order_id: str
+    external_status: str
+    status_detail: Optional[str]
+    mapped_status: Optional["PixAttemptStatus"]
+    total_amount: Decimal
+    currency: str
+    qr_data: Optional[str]
+    receiver_account_id: Optional[str]
+
+
+# Mapeamento externo->interno. Fail-safe: status desconhecido -> None (nao avanca).
+_ORDER_STATUS_MAP = {
+    "created": PixAttemptStatus.PENDING,
+    "processed": PixAttemptStatus.APPROVED,
+    "canceled": PixAttemptStatus.CANCELED,
+    "expired": PixAttemptStatus.EXPIRED,
+    "refunded": None,  # tratado por conciliacao/estorno, fora do MVP
+}
+
+
+def map_order_status(status: str, status_detail: Optional[str] = None) -> Optional[PixAttemptStatus]:
+    return _ORDER_STATUS_MAP.get(status, None)

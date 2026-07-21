@@ -584,8 +584,27 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
         if commit:
             await self.session.commit()
             await self.session.refresh(model)
-        
+
         return sale
+
+    async def add_pix_payment(self, *, sale_id: uuid.UUID, amount: Decimal, pix_attempt_id: uuid.UUID,
+                              external_reference: Optional[str], confirmed_at, commit: bool = True) -> None:
+        """Registra o pagamento Pix de uma venda já existente (AWAITING_PAYMENT → concluída).
+
+        Diferente do bloco `for pay in sale.payments` em `save()` (que só roda ao criar
+        a venda), este método insere um `PaymentModel` avulso para uma venda que já existe,
+        já que o fluxo Pix cria a venda em AWAITING_PAYMENT antes de o pagamento ser
+        confirmado (webhook/verify/reconciliação chegam depois, em outra requisição).
+        """
+        model = PaymentModel(
+            id=uuid.uuid4(), sale_id=sale_id, method=PaymentMethod.PIX.value, amount=amount,
+            installments=1, modality="qr_dynamic", provider="mercado_pago",
+            pix_attempt_id=pix_attempt_id, confirmed_at=confirmed_at,
+            external_reference=external_reference,
+        )
+        self.session.add(model)
+        if commit:
+            await self.session.commit()
 
     async def get_daily_stats(self, market_id: uuid.UUID, date_obj) -> dict:
         stmt = select(

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, Integer, ForeignKey, DateTime, Numeric, Text, UniqueConstraint, Index, Date, JSON
+from sqlalchemy import Column, String, Boolean, Integer, ForeignKey, DateTime, Numeric, Text, UniqueConstraint, Index, Date, JSON, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, synonym
 from infra.database.setup import Base
@@ -251,6 +251,11 @@ class PaymentModel(Base):
     method = Column(String, nullable=False)
     amount = Column(Numeric(10, 2), nullable=False)
     installments = Column(Integer, default=1)
+    modality = Column(String, default="manual", nullable=False, server_default="manual")
+    provider = Column(String, nullable=True)
+    pix_attempt_id = Column(UUID(as_uuid=True), ForeignKey("pix_payment_attempts.id"), nullable=True)
+    confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    external_reference = Column(String(64), nullable=True)
 
 # =============================================================================
 # FINANCE (Clientes, Fiado, Contas)
@@ -979,6 +984,10 @@ class ProviderWebhookEventModel(Base):
     processing_status = Column(String, default="pending", nullable=False)
     processed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    request_id = Column(String, nullable=True)
+    signature_valid = Column(Boolean, nullable=True)
+    received_ts = Column(String, nullable=True)
+    action = Column(String, nullable=True)
 
 
 # =============================================================================
@@ -1070,6 +1079,12 @@ class MercadoPagoConnectionModel(Base):
     last_refreshed_at = Column(DateTime(timezone=True), nullable=True)
     last_validated_at = Column(DateTime(timezone=True), nullable=True)
     last_error = Column(String, nullable=True)
+
+    enabled_in_pdv = Column(Boolean, default=False, nullable=False, server_default="false")
+    allowed_terminal_ids = Column(JSON, nullable=True)
+    fees_acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    expiration_override = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -1089,4 +1104,73 @@ class MercadoPagoOAuthStateModel(Base):
     redirect_uri = Column(String, nullable=False)
     used_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PixPaymentAttemptModel(Base):
+    __tablename__ = "pix_payment_attempts"
+    __table_args__ = (
+        Index("uq_pix_attempt_active_sale", "sale_id", unique=True,
+              postgresql_where=text("status IN ('pending','in_analysis','confirmation_pending')")),
+        UniqueConstraint("idempotency_key", name="uq_pix_attempt_idempotency"),
+        UniqueConstraint("provider", "order_id", name="uq_pix_attempt_provider_order"),
+        UniqueConstraint("external_reference", name="uq_pix_attempt_external_reference"),
+        Index("ix_pix_attempt_market_status", "market_id", "status"),
+        Index("ix_pix_attempt_expires", "expires_at"),
+        Index("ix_pix_attempt_sale", "sale_id"),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id"), nullable=False)
+    sale_id = Column(UUID(as_uuid=True), ForeignKey("sales.id"), nullable=True)
+    box_id = Column(UUID(as_uuid=True), ForeignKey("boxes.id"), nullable=False)
+    terminal_id = Column(UUID(as_uuid=True), ForeignKey("terminals.id"), nullable=False)
+    operator_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    provider = Column(String, default="mercado_pago", nullable=False)
+    modality = Column(String, default="qr_dynamic", nullable=False)
+    status = Column(String, default="pending", nullable=False)
+    external_status = Column(String, nullable=True)
+    amount = Column(Numeric(10, 2), nullable=False)
+    currency = Column(String(3), default="BRL", nullable=False)
+    external_reference = Column(String(64), nullable=False)
+    idempotency_key = Column(String, nullable=False)
+    order_id = Column(String, nullable=True)
+    payment_id = Column(String, nullable=True)
+    receiver_account_id = Column(String, nullable=True)
+    qr_data = Column(Text, nullable=True)
+    attempt_number = Column(Integer, default=1, nullable=False)
+    version = Column(Integer, default=1, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    canceled_at = Column(DateTime(timezone=True), nullable=True)
+    last_status_query_at = Column(DateTime(timezone=True), nullable=True)
+    failure_reason = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class PixStatusQueryModel(Base):
+    __tablename__ = "pix_status_queries"
+    __table_args__ = (Index("ix_pix_query_attempt", "attempt_id", "created_at"),)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    attempt_id = Column(UUID(as_uuid=True), ForeignKey("pix_payment_attempts.id"), nullable=False)
+    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id"), nullable=False)
+    source = Column(String, nullable=False)  # webhook | manual_button | polling | reconciliation
+    received_status = Column(String, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    http_status = Column(Integer, nullable=True)
+    error_code = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class MercadoPagoPosRegistrationModel(Base):
+    __tablename__ = "mercado_pago_pos_registrations"
+    __table_args__ = (
+        UniqueConstraint("market_id", "terminal_id", name="uq_mp_pos_market_terminal"),
+        Index("ix_mp_pos_market", "market_id"),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"), nullable=False)
+    terminal_id = Column(UUID(as_uuid=True), ForeignKey("terminals.id", ondelete="CASCADE"), nullable=False)
+    mp_store_id = Column(String, nullable=False)
+    mp_pos_external_id = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
