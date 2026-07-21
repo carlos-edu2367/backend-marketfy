@@ -29,6 +29,13 @@ from infra.database.models import (
     CustomerLedgerModel, StockMovementModel, FinancialTransactionModel
 )
 
+
+def _as_naive_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Adapt an instant to legacy PostgreSQL TIMESTAMP columns."""
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
 # ==================================================================================
 # USER REPOSITORY
 # ==================================================================================
@@ -974,8 +981,8 @@ class SQLAlchemyFinancialTransactionRepository(FinancialTransactionRepositoryInt
         model.description = transaction.description
         model.amount = transaction.amount
         model.type = transaction.type.value
-        model.due_date = transaction.due_date
-        model.paid_at = transaction.paid_at
+        model.due_date = _as_naive_utc(transaction.due_date)
+        model.paid_at = _as_naive_utc(transaction.paid_at)
         model.category = transaction.category
         model.sale_id = transaction.sale_id
         model.customer_id = transaction.customer_id
