@@ -434,5 +434,9 @@ def test_cashier_permissions_minimal():
         MarketPermission.INVENTORY_READ,
         MarketPermission.SALES_READ,
         MarketPermission.SALES_WRITE,
+        # Pix (Mercado Pago): o operador de caixa pode ver o status da
+        # integração (para saber se pode oferecer QR Code), mas não pode
+        # conectar/desconectar a conta (isso exige PAYMENTS_WRITE).
+        MarketPermission.PAYMENTS_READ,
     }
     assert cashier_perms == expected
