@@ -18,10 +18,34 @@ SECRET = "whsec-test"
 
 def _sign(data_id, req_id, ts):
     # Mercado Pago signs using data.id lowercased; mirror that here so the
-    # fixture behaves like a real MP-issued signature.
-    manifest = f"id:{data_id.lower()};request-id:{req_id};ts:{ts};"
+    # fixture behaves like a real MP-issued signature. Per the official docs,
+    # parts whose value is absent from the notification are omitted from the
+    # manifest entirely (not sent as an empty value).
+    parts = []
+    if data_id:
+        parts.append(f"id:{data_id.lower()}")
+    if req_id:
+        parts.append(f"request-id:{req_id}")
+    parts.append(f"ts:{ts}")
+    manifest = ";".join(parts) + ";"
     v1 = hmac.new(SECRET.encode(), manifest.encode(), hashlib.sha256).hexdigest()
     return f"ts={ts},v1={v1}"
+
+
+def test_valid_signature_without_request_id():
+    """MP docs: omit `request-id` from the manifest when the header is absent.
+
+    Building `request-id:;` instead would reject a legitimate notification.
+    """
+    ts = int(time.time() * 1000)
+    header = _sign("ORD1", "", ts)
+    assert validate_mp_signature(
+        x_signature=header,
+        x_request_id="",
+        data_id="ORD1",
+        secret=SECRET,
+        now_ts=ts,
+    ) is True
 
 
 def test_valid_signature():

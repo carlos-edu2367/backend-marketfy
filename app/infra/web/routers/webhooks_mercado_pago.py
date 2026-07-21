@@ -52,6 +52,11 @@ def validate_mp_signature(
     Per Mercado Pago's docs, `data.id` must be normalized to lowercase before
     it is used to build the HMAC manifest; this function does that
     internally so callers don't each have to remember to do it.
+
+    Also per the docs: parts whose value is absent from the notification are
+    omitted from the manifest entirely. Emitting `request-id:;` for a missing
+    `x-request-id` header produces a different HMAC than the one Mercado Pago
+    signed, which would reject a legitimate notification.
     """
     if not x_signature or not secret or not data_id:
         return False
@@ -65,7 +70,11 @@ def validate_mp_signature(
     now = now_ts if now_ts is not None else int(time.time() * 1000)
     if abs(now - ts_int) > max_skew:
         return False
-    manifest = f"id:{data_id.lower()};request-id:{x_request_id};ts:{ts};"
+    parts = [f"id:{data_id.lower()}"]
+    if x_request_id:
+        parts.append(f"request-id:{x_request_id}")
+    parts.append(f"ts:{ts}")
+    manifest = ";".join(parts) + ";"
     expected = hmac.new(
         secret.encode("utf-8"), manifest.encode("utf-8"), hashlib.sha256
     ).hexdigest()
