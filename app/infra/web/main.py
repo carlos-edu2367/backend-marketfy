@@ -38,6 +38,7 @@ from infra.web.routers import (
     inventory,
     billing_core_webhooks,
     billing_invoice_webhooks,
+    pix,
     sales,
 )
 
@@ -85,6 +86,8 @@ async def _rate_limit_for_request(request: Request):
             await enforce_rate_limit_async(request, "billing-core-webhook", limit=200, window_seconds=60)
         elif method == "POST" and path == "/api/v1/webhooks/billing-invoices":
             await enforce_rate_limit_async(request, "billing-invoices-webhook", limit=200, window_seconds=60)
+        elif method == "GET" and path == "/api/v1/pix/oauth/callback":
+            await enforce_rate_limit_async(request, "pix-oauth-callback", limit=30, window_seconds=60)
     except HTTPException as exc:
         if exc.status_code == 429:
             metrics_registry.record_rate_limit(path)
@@ -345,6 +348,7 @@ app.include_router(billing_core_webhooks.router, prefix="/api/v1/webhooks", tags
 app.include_router(billing_invoice_webhooks.router, prefix="/api/v1/webhooks", tags=["Billing Invoice Webhooks"])
 app.include_router(finance_report.router, prefix="/api/v1/finance-reports", tags=["Finance Reports"])
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["Billing"])
+app.include_router(pix.router, prefix="/api/v1/pix", tags=["Pix"])
 
 
 @app.get("/health", tags=["Health"])
