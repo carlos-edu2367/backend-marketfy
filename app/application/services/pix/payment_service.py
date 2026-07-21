@@ -160,3 +160,33 @@ class PixPaymentService:
         # status desconhecido (None) ou pending: não avança
         await self.attempt_repo.save(attempt, commit=True)
         return attempt
+
+    async def _apply_processed_or(self, attempt, result, otherwise_status):
+        if result.mapped_status is PixAttemptStatus.APPROVED and result.total_amount == attempt.amount:
+            attempt.status = "approved"
+            if self.completer:
+                await self.completer.complete_sale(attempt)
+            return True
+        attempt.status = otherwise_status
+        attempt.qr_data = None
+        return False
+
+    async def cancel(self, *, market_id, attempt_id):
+        attempt = await self.attempt_repo.get_by_id_for_update(attempt_id, market_id)
+        if attempt is None:
+            raise PixInvalidItemsError("Tentativa não encontrada.")
+        if attempt.status in ("canceled", "expired", "approved"):
+            return attempt
+        access_token = await self.connection_service.get_valid_access_token(market_id)
+        # reconsulta antes de cancelar
+        pre = await self.provider.get_payment(access_token=access_token, order_id=attempt.order_id)
+        if await self._apply_processed_or(attempt, pre, "pending") and attempt.status == "approved":
+            await self.attempt_repo.save(attempt, commit=True)
+            return attempt
+        # cancela no MP e reconsulta
+        import uuid as _u
+        cancel_res = await self.provider.cancel_payment(
+            access_token=access_token, order_id=attempt.order_id, idempotency_key=str(_u.uuid4()))
+        await self._apply_processed_or(attempt, cancel_res, "canceled")
+        await self.attempt_repo.save(attempt, commit=True)
+        return attempt
