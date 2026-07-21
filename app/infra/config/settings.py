@@ -105,6 +105,20 @@ class Settings(BaseSettings):
     BILLING_CORE_TIMEOUT_SECONDS: int = 10
     BILLING_CORE_ENABLED: bool = False
 
+    # Mercado Pago Pix (QR dinâmico presencial) — aplicação OAuth única do Marketfy
+    MP_ENABLED: bool = False
+    MP_APP_ID: str = ""                 # client_id da aplicação Marketfy
+    MP_CLIENT_SECRET: str = ""          # client_secret (nunca em log/frontend)
+    MP_OAUTH_REDIRECT_URI: str = ""     # https://.../api/v1/pix/oauth/callback
+    MP_WEBHOOK_SECRET: str = ""         # secret de assinatura de webhook
+    MP_SECRET_KEY: Optional[str] = None # chave Fernet dos tokens MP (>=32), fora do banco
+    MP_API_BASE_URL: str = "https://api.mercadopago.com"
+    MP_AUTH_BASE_URL: str = "https://auth.mercadopago.com"
+    MP_ENVIRONMENT: str = "sandbox"     # sandbox | production
+    MP_ORDER_DEFAULT_EXPIRATION: str = "PT5M"
+    MP_HTTP_TIMEOUT_SECONDS: int = 10
+    MP_VALIDATE_COOLDOWN_SECONDS: int = 5
+
     class Config:
         env_file = ".env"
         extra = "ignore"
@@ -224,6 +238,17 @@ class Settings(BaseSettings):
             raise ValueError("BILLING_CORE_WEBHOOK_SECRET e obrigatoria em producao.")
         if not self.BILLING_CORE_WEBHOOK_CALLBACK_URL:
             raise ValueError("BILLING_CORE_WEBHOOK_CALLBACK_URL e obrigatoria em producao.")
+        if self.MP_ENABLED:
+            if not self.MP_APP_ID or not self.MP_CLIENT_SECRET:
+                raise ValueError("MP_ENABLED exige MP_APP_ID e MP_CLIENT_SECRET.")
+            if not self.MP_OAUTH_REDIRECT_URI.startswith("https://"):
+                raise ValueError("MP_OAUTH_REDIRECT_URI HTTPS e obrigatoria com MP_ENABLED.")
+            if not self.MP_WEBHOOK_SECRET:
+                raise ValueError("MP_WEBHOOK_SECRET e obrigatoria com MP_ENABLED.")
+            if not self.MP_SECRET_KEY or len(self.MP_SECRET_KEY) < 32:
+                raise ValueError("MP_SECRET_KEY precisa ter pelo menos 32 caracteres com MP_ENABLED.")
+            if self.RATE_LIMIT_BACKEND != "redis":
+                raise ValueError("RATE_LIMIT_BACKEND=redis e obrigatorio com MP_ENABLED.")
         return self
 
 
