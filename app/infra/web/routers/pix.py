@@ -29,7 +29,7 @@ from application.services.pix.oauth_service import (
 )
 from application.services.pix.payment_service import (
     PixNotConnectedError, PixActiveAttemptError, PixBoxClosedError, PixInvalidItemsError,
-    PixLocationNotConfiguredError,
+    PixLocationNotConfiguredError, PixAttemptNotFoundError,
 )
 
 router = APIRouter()
@@ -247,7 +247,10 @@ async def verify_attempt(market_id: uuid.UUID, attempt_id: uuid.UUID, request: R
     await enforce_pix_verify_rate_limit(request, attempt_id=str(attempt_id), sale_id=str(attempt_id),
         user_id=str(current_user.id), market_id=str(market_id),
         cooldown_seconds=settings.MP_VALIDATE_COOLDOWN_SECONDS)
-    attempt = await svc.verify(market_id=market_id, attempt_id=attempt_id)
+    try:
+        attempt = await svc.verify(market_id=market_id, attempt_id=attempt_id)
+    except PixAttemptNotFoundError:
+        raise HTTPException(status_code=404, detail={"code": "pix.attempt_not_found"})
     if attempt.status == "approved":
         await record_audit_event(
             audit, request, actor=current_user, action="pix.payment.confirmed",
@@ -264,7 +267,10 @@ async def cancel_attempt(market_id: uuid.UUID, attempt_id: uuid.UUID, request: R
                          svc=Depends(get_pix_payment_service),
                          audit: AuditService = Depends(get_audit_service),
                          market=Depends(require_market_access(MarketPermission.SALES_WRITE))):
-    attempt = await svc.cancel(market_id=market_id, attempt_id=attempt_id)
+    try:
+        attempt = await svc.cancel(market_id=market_id, attempt_id=attempt_id)
+    except PixAttemptNotFoundError:
+        raise HTTPException(status_code=404, detail={"code": "pix.attempt_not_found"})
     if attempt.status == "canceled":
         await record_audit_event(
             audit, request, actor=current_user, action="pix.attempt.canceled",

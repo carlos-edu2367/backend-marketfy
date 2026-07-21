@@ -18,6 +18,8 @@ class PixActiveAttemptError(Exception):
     def __init__(self, attempt): self.attempt = attempt; super().__init__("Tentativa ativa existente.")
 class PixBoxClosedError(Exception): ...
 class PixInvalidItemsError(Exception): ...
+class PixAttemptNotFoundError(Exception):
+    """Tentativa inexistente OU pertencente a outro tenant — nunca revelar qual."""
 class PixLocationNotConfiguredError(Exception):
     """A localização estruturada (rua/cidade/estado/lat/long) da loja não foi
     configurada pelo tenant. Nunca geocodificar ou inventar coordenadas — exigir
@@ -179,7 +181,7 @@ class PixPaymentService:
     async def verify(self, *, market_id, attempt_id, source: str = "manual_button"):
         attempt = await self.attempt_repo.get_by_id_for_update(attempt_id, market_id)
         if attempt is None:
-            raise PixInvalidItemsError("Tentativa não encontrada.")  # substituir por PixAttemptNotFoundError
+            raise PixAttemptNotFoundError("Tentativa não encontrada.")
         if attempt.status == "approved":
             return attempt  # idempotente
         access_token = await self.connection_service.get_valid_access_token(market_id)
@@ -224,7 +226,7 @@ class PixPaymentService:
     async def cancel(self, *, market_id, attempt_id):
         attempt = await self.attempt_repo.get_by_id_for_update(attempt_id, market_id)
         if attempt is None:
-            raise PixInvalidItemsError("Tentativa não encontrada.")
+            raise PixAttemptNotFoundError("Tentativa não encontrada.")
         if attempt.status in ("canceled", "expired", "approved"):
             return attempt
         access_token = await self.connection_service.get_valid_access_token(market_id)
