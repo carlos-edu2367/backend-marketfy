@@ -129,3 +129,34 @@ class PixPaymentService:
         finally:
             if got:
                 await self.lock.release(lock_key)
+
+    async def verify(self, *, market_id, attempt_id, source: str = "manual_button"):
+        attempt = await self.attempt_repo.get_by_id_for_update(attempt_id, market_id)
+        if attempt is None:
+            raise PixInvalidItemsError("Tentativa não encontrada.")  # substituir por PixAttemptNotFoundError
+        if attempt.status == "approved":
+            return attempt  # idempotente
+        access_token = await self.connection_service.get_valid_access_token(market_id)
+        result = await self.provider.get_payment(access_token=access_token, order_id=attempt.order_id)
+        attempt.external_status = result.external_status
+        await self.attempt_repo.record_query(
+            attempt_id=attempt.id, market_id=market_id, source=source,
+            received_status=result.external_status)
+
+        if result.mapped_status is PixAttemptStatus.APPROVED:
+            if result.total_amount == attempt.amount:
+                attempt.status = "approved"
+                if self.completer:
+                    await self.completer.complete_sale(attempt)
+            else:
+                attempt.status = "divergent"
+                attempt.failure_reason = f"amount_mismatch:{result.total_amount}"
+        elif result.mapped_status is PixAttemptStatus.EXPIRED:
+            attempt.status = "expired"
+            attempt.qr_data = None
+        elif result.mapped_status is PixAttemptStatus.CANCELED:
+            attempt.status = "canceled"
+            attempt.qr_data = None
+        # status desconhecido (None) ou pending: não avança
+        await self.attempt_repo.save(attempt, commit=True)
+        return attempt
