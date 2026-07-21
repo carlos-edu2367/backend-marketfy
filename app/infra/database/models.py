@@ -984,6 +984,10 @@ class ProviderWebhookEventModel(Base):
     processing_status = Column(String, default="pending", nullable=False)
     processed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    request_id = Column(String, nullable=True)
+    signature_valid = Column(Boolean, nullable=True)
+    received_ts = Column(String, nullable=True)
+    action = Column(String, nullable=True)
 
 
 # =============================================================================
