@@ -46,6 +46,13 @@ class MercadoPagoConnectionRepository:
         )
         return res.scalars().all()
 
+    async def count_by_status(self, status: str) -> int:
+        res = await self.db.execute(
+            select(func.count()).select_from(MercadoPagoConnectionModel)
+            .where(MercadoPagoConnectionModel.status == status)
+        )
+        return int(res.scalar() or 0)
+
 
 class MercadoPagoOAuthStateRepository:
     def __init__(self, db: AsyncSession):

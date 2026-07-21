@@ -25,6 +25,7 @@ from infra.security.rate_limiter import enforce_rate_limit_async
 from infra.web.routers import (
     admin,
     admin_fiscal,
+    admin_pix,
     analytics,
     auth,
     billing,
@@ -342,6 +343,7 @@ app.include_router(finance_support.router_finance, prefix="/api/v1/finance", tag
 app.include_router(finance_support.router_support, prefix="/api/v1/support", tags=["Support"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
 app.include_router(admin_fiscal.router, prefix="/api/v1/admin", tags=["Admin Fiscal"])
+app.include_router(admin_pix.router, prefix="/api/v1/admin", tags=["Admin Pix"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["Analytics"])
 app.include_router(fiscal_credits.router, prefix="/api/v1/fiscal", tags=["Fiscal Credits"])
 app.include_router(fiscal.router, prefix="/api/v1/fiscal", tags=["Fiscal"])
