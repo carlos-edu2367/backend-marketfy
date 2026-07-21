@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.database.models import (
     MercadoPagoConnectionModel, MercadoPagoOAuthStateModel,
-    PixPaymentAttemptModel, PixStatusQueryModel,
+    PixPaymentAttemptModel, PixStatusQueryModel, MercadoPagoPosRegistrationModel,
 )
 
 
@@ -126,3 +126,35 @@ class PixPaymentAttemptRepository:
         self.db.add(q)
         await self.db.flush()
         return q
+
+
+class MercadoPagoPosRegistrationRepository:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_by_market_and_terminal(self, market_id, terminal_id):
+        res = await self.db.execute(
+            select(MercadoPagoPosRegistrationModel).where(
+                MercadoPagoPosRegistrationModel.market_id == market_id,
+                MercadoPagoPosRegistrationModel.terminal_id == terminal_id,
+            )
+        )
+        return res.scalar_one_or_none()
+
+    async def get_store_id_for_market(self, market_id):
+        res = await self.db.execute(
+            select(MercadoPagoPosRegistrationModel).where(
+                MercadoPagoPosRegistrationModel.market_id == market_id,
+            )
+        )
+        existing = res.scalars().first()
+        return existing.mp_store_id if existing else None
+
+    async def save(self, model, commit: bool = True):
+        self.db.add(model)
+        if commit:
+            await self.db.commit()
+            await self.db.refresh(model)
+        else:
+            await self.db.flush()
+        return model
