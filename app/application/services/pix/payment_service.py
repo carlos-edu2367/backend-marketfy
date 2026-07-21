@@ -30,9 +30,16 @@ def _iso_expiration_to_delta(iso: str) -> timedelta:
 
 
 class PixPaymentService:
+    _STATUS_EVENT = {
+        "pending": "payment.pending", "approved": "payment.approved",
+        "expired": "payment.expired", "canceled": "payment.cancelled",
+        "divergent": "payment.error", "error": "payment.error",
+        "confirmation_pending": "payment.confirmation_pending",
+    }
+
     def __init__(self, *, attempt_repo, sale_repo, box_repo, product_repo,
                  connection_service, provider, lock,
-                 market_repo=None, pos_location_provider=None, completer=None):
+                 market_repo=None, pos_location_provider=None, completer=None, event_bus=None):
         # market_repo/pos_location_provider: usados apenas por create_qr (Task 5b/6); ficam
         # opcionais para não quebrar a construção de PixPaymentService nos testes de
         # verify/cancel (Tasks 7-8), que não os utilizam.
@@ -52,7 +59,18 @@ class PixPaymentService:
         self.provider = provider
         self.lock = lock
         self.completer = completer
+        self.event_bus = event_bus
         self.settings = get_settings()
+
+    async def _publish_status_event(self, attempt):
+        if not self.event_bus:
+            return
+        event = self._STATUS_EVENT.get(attempt.status, "payment.pending")
+        await self.event_bus.publish(str(attempt.id), event, {
+            "attempt_id": str(attempt.id), "status": attempt.status,
+            "sale_id": str(attempt.sale_id) if attempt.sale_id else None,
+            "sale_completed": attempt.status == "approved",
+        })
 
     async def create_qr(self, *, market_id, terminal_id, box_id, operator_id, items):
         box = await self.box_repo.get_by_id(box_id)
@@ -125,6 +143,12 @@ class PixPaymentService:
             attempt.external_status = result.external_status
             attempt.expires_at = datetime.now(timezone.utc) + _iso_expiration_to_delta(expiration)
             await self.attempt_repo.save(attempt, commit=True)
+            if self.event_bus:
+                await self.event_bus.publish(str(attempt.id), "payment.created", {
+                    "attempt_id": str(attempt.id), "status": attempt.status,
+                    "sale_id": str(attempt.sale_id) if attempt.sale_id else None,
+                    "sale_completed": False,
+                })
             return attempt
         finally:
             if got:
@@ -159,6 +183,7 @@ class PixPaymentService:
             attempt.qr_data = None
         # status desconhecido (None) ou pending: não avança
         await self.attempt_repo.save(attempt, commit=True)
+        await self._publish_status_event(attempt)
         return attempt
 
     async def _apply_processed_or(self, attempt, result, otherwise_status):
@@ -182,6 +207,7 @@ class PixPaymentService:
         pre = await self.provider.get_payment(access_token=access_token, order_id=attempt.order_id)
         if await self._apply_processed_or(attempt, pre, "pending") and attempt.status == "approved":
             await self.attempt_repo.save(attempt, commit=True)
+            await self._publish_status_event(attempt)
             return attempt
         # cancela no MP e reconsulta
         import uuid as _u
@@ -189,4 +215,5 @@ class PixPaymentService:
             access_token=access_token, order_id=attempt.order_id, idempotency_key=str(_u.uuid4()))
         await self._apply_processed_or(attempt, cancel_res, "canceled")
         await self.attempt_repo.save(attempt, commit=True)
+        await self._publish_status_event(attempt)
         return attempt
