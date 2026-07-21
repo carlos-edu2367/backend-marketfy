@@ -46,6 +46,9 @@ class FakeBoxRepo:
 
 class FakeConnection:
     mp_user_id = "42"
+    status = "connected"
+    enabled_in_pdv = True
+    allowed_terminal_ids = None
 
 
 class FakeConnRepoForCreate:
@@ -88,6 +91,13 @@ class FakeLock:
 @pytest.mark.asyncio
 async def test_create_qr_uses_backend_total(monkeypatch):
     monkeypatch.setenv("MP_ORDER_DEFAULT_EXPIRATION", "PT5M")
+    monkeypatch.setenv("MP_ENABLED", "true")
+    monkeypatch.setenv("MP_APP_ID", "app-1")
+    monkeypatch.setenv("MP_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("MP_OAUTH_REDIRECT_URI", "https://cb")
+    monkeypatch.setenv("MP_WEBHOOK_SECRET", "whsec")
+    monkeypatch.setenv("MP_SECRET_KEY", "k" * 32)
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "redis")
     from infra.config import settings as sm
     sm.get_settings.cache_clear()
     from application.services.pix.payment_service import PixPaymentService

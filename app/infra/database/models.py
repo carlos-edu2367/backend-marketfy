@@ -1079,6 +1079,12 @@ class MercadoPagoConnectionModel(Base):
     last_refreshed_at = Column(DateTime(timezone=True), nullable=True)
     last_validated_at = Column(DateTime(timezone=True), nullable=True)
     last_error = Column(String, nullable=True)
+
+    enabled_in_pdv = Column(Boolean, default=False, nullable=False, server_default="false")
+    allowed_terminal_ids = Column(JSON, nullable=True)
+    fees_acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    expiration_override = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

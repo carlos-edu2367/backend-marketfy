@@ -93,6 +93,11 @@ class PixPaymentService:
         if not box or box.market_id != market_id or box.status != BoxStatus.OPEN:
             raise PixBoxClosedError("Caixa inválido ou fechado.")
 
+        from application.services.pix.feature_flag import is_pix_qr_enabled, PixFeatureDisabledError
+        connection_for_flag = await self.connection_service.repo.get_by_market(market_id)
+        if not is_pix_qr_enabled(settings=self.settings, connection=connection_for_flag, terminal_id=terminal_id):
+            raise PixFeatureDisabledError("Pix QR não habilitado para este caixa.")
+
         # 1. Resolver itens e total NO BACKEND
         pix_items, total = [], Decimal("0.00")
         for it in items:
@@ -114,7 +119,7 @@ class PixPaymentService:
 
         # 2b. Garante Loja+Caixa registrados no MP (Task 5b) — nunca usar
         # str(terminal_id) diretamente como external_pos_id.
-        connection = await self.connection_service.repo.get_by_market(market_id)
+        connection = connection_for_flag
         market = await self.market_repo.get_by_id(market_id)
         location = await self.pos_location_provider.get_location(market_id)
         external_pos_id = await self.connection_service.ensure_pos_registered(

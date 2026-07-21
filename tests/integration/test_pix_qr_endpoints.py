@@ -26,7 +26,9 @@ pytestmark = pytest.mark.skipif(
 os.environ.setdefault("DATABASE_URL", TEST_POSTGRES_URL or "postgresql://x:y@localhost/z")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-com-mais-de-32-caracteres-ok")
 os.environ.setdefault("MP_APP_ID", "app-1")
+os.environ.setdefault("MP_CLIENT_SECRET", "secret")
 os.environ.setdefault("MP_OAUTH_REDIRECT_URI", "https://cb")
+os.environ.setdefault("MP_WEBHOOK_SECRET", "whsec")
 os.environ.setdefault("MP_SECRET_KEY", "k" * 32)
 os.environ.setdefault("PUBLIC_FRONTEND_URL", "https://front")
 
@@ -77,6 +79,7 @@ async def _seed(session):
         market_id=market_id, status="connected", mp_user_id="42",
         access_token_ciphertext=cipher.encrypt("AT"),
         access_token_expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+        enabled_in_pdv=True,
     ))
     await session.commit()
 
@@ -116,6 +119,13 @@ async def test_qr_requires_sales_write(app_client):
 @pytest.mark.asyncio
 @respx.mock
 async def test_qr_creates_attempt_and_returns_qr(app_client, monkeypatch):
+    monkeypatch.setenv("MP_ENABLED", "true")
+    monkeypatch.setenv("MP_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("MP_WEBHOOK_SECRET", "whsec")
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "redis")
+    from infra.config import settings as sm
+    sm.get_settings.cache_clear()
+
     from infra.providers.pix.location import UnconfiguredPosLocationProvider
 
     async def _fake_location(self, market_id):

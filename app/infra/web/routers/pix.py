@@ -139,6 +139,54 @@ async def disconnect(
     return {"status": "not_connected"}
 
 
+@router.put("/{market_id}/settings")
+async def update_settings(
+    market_id: uuid.UUID,
+    payload: dict,
+    request: Request,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    audit: AuditService = Depends(get_audit_service),
+    market=Depends(require_market_access(MarketPermission.PAYMENTS_WRITE)),
+):
+    from datetime import datetime, timezone
+
+    repo = MercadoPagoConnectionRepository(db)
+    conn = await repo.get_by_market(market_id)
+    if conn is None:
+        raise HTTPException(status_code=404, detail={"code": "pix.not_connected"})
+
+    enabled_in_pdv = payload.get("enabled_in_pdv", conn.enabled_in_pdv)
+    fees_acknowledged = payload.get("fees_acknowledged")
+
+    if fees_acknowledged is True:
+        conn.fees_acknowledged_at = datetime.now(timezone.utc)
+    elif fees_acknowledged is False:
+        conn.fees_acknowledged_at = None
+
+    if enabled_in_pdv and conn.fees_acknowledged_at is None:
+        raise HTTPException(status_code=422, detail={"code": "pix.fees_acknowledgement_required"})
+
+    conn.enabled_in_pdv = bool(enabled_in_pdv)
+    if "allowed_terminal_ids" in payload:
+        conn.allowed_terminal_ids = payload["allowed_terminal_ids"]
+    if "expiration" in payload:
+        conn.expiration_override = payload["expiration"]
+
+    await repo.save(conn)
+    await record_audit_event(
+        audit, request, actor=current_user, action="pix.settings.updated",
+        resource_type="pix_connection", resource_id=str(conn.id),
+        result="success", market_id=market_id, metadata={"enabled_in_pdv": conn.enabled_in_pdv},
+    )
+    return {
+        "enabled_in_pdv": conn.enabled_in_pdv,
+        "allowed_terminal_ids": conn.allowed_terminal_ids,
+        "expiration": conn.expiration_override,
+        "fees_acknowledged_at": conn.fees_acknowledged_at,
+    }
+
+
 def _attempt_response(a, include_qr=False):
     body = {"attempt_id": str(a.id), "sale_id": str(a.sale_id), "status": a.status,
             "amount": f"{a.amount:.2f}", "currency": a.currency, "order_id": a.order_id,
