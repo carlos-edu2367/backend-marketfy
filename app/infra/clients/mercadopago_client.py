@@ -186,6 +186,10 @@ class MercadoPagoClient:
                                          access_token=access_token, idempotency_key=idempotency_key)
         return self._parse_order(data)
 
+    async def get_user_me(self, *, access_token: str) -> dict:
+        """Chamada leve autenticada usada para validar se o token ainda vale."""
+        return await self._request_order("GET", "/users/me", access_token=access_token)
+
     async def create_store(self, *, access_token: str, user_id: str, name: str,
                            external_id: str, location: dict) -> dict:
         return await self._request_order(
