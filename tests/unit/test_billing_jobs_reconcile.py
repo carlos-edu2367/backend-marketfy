@@ -40,3 +40,16 @@ async def test_reconcile_activates_confirmed_payment():
     result = await reconcile_pending_invoices({}, invoice_repo=InvRepo([inv]), bc_client=bc, invoice_service=svc)
     assert result["activated"] == 1
     svc.activate_invoice.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_keeps_expired_checkout_invoice_available_for_reissue():
+    inv = StubInvoice()
+    bc = AsyncMock()
+    bc.get_payment.return_value = {"payment_id": "pay_1", "payment_status": "EXPIRED"}
+    svc = AsyncMock()
+
+    result = await reconcile_pending_invoices({}, invoice_repo=InvRepo([inv]), bc_client=bc, invoice_service=svc)
+
+    assert result["failed"] == 0
+    svc.mark_invoice_failed.assert_not_awaited()

@@ -131,7 +131,7 @@ async def reconcile_pending_invoices(
             if status in ("CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH", "PAID"):
                 await invoice_service.activate_invoice(inv.id, payment["payment_id"], payment)
                 activated += 1
-            elif status in ("OVERDUE", "REFUNDED", "CANCELED", "EXPIRED"):
+            elif status in ("REFUNDED", "REFUND_IN_PROGRESS", "CHARGEBACK_REQUESTED"):
                 await invoice_service.mark_invoice_failed(inv.id, reason=f"Status: {status}")
                 failed += 1
         except BillingCoreRateLimitError:
