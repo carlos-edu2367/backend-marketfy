@@ -247,3 +247,37 @@ def require_market_access_context(
 def require_market_owner() -> Callable:
     """Dependência FastAPI que exige que o usuário seja o owner da loja."""
     return _build_market_dependency(permission=None, owner_only=True)
+
+
+def get_pix_payment_service(db: AsyncSession = Depends(get_db)):
+    from application.services.pix.payment_service import PixPaymentService
+    from application.services.pix.connection_service import MercadoPagoConnectionService
+    from application.services.pix.completion import SaleCompleter
+    from infra.repositories.pix_repo import (
+        PixPaymentAttemptRepository, MercadoPagoConnectionRepository,
+        MercadoPagoPosRegistrationRepository,
+    )
+    from infra.repositories.sqlalchemy_repos import (
+        SQLAlchemySaleRepository, SQLAlchemyBoxRepository, SQLAlchemyProductRepository,
+        SQLAlchemyMarketRepository, SQLAlchemyFinancialTransactionRepository,
+    )
+    from infra.providers.pix.mercadopago import MercadoPagoPixProvider
+    from infra.providers.pix.location import UnconfiguredPosLocationProvider
+    from infra.clients.mercadopago_client import MercadoPagoClient
+    from infra.cache.redis_lock import RedisLock
+
+    conn_service = MercadoPagoConnectionService(
+        MercadoPagoConnectionRepository(db), MercadoPagoClient(), RedisLock(),
+        pos_repo=MercadoPagoPosRegistrationRepository(db),
+    )
+    completer = SaleCompleter(
+        sale_repo=SQLAlchemySaleRepository(db), product_repo=SQLAlchemyProductRepository(db),
+        box_repo=SQLAlchemyBoxRepository(db), financial_repo=SQLAlchemyFinancialTransactionRepository(db),
+        payment_repo=SQLAlchemySaleRepository(db))  # TODO: helper dedicado de pagamento Pix
+    return PixPaymentService(
+        attempt_repo=PixPaymentAttemptRepository(db), sale_repo=SQLAlchemySaleRepository(db),
+        box_repo=SQLAlchemyBoxRepository(db), product_repo=SQLAlchemyProductRepository(db),
+        connection_service=conn_service, provider=MercadoPagoPixProvider(), lock=RedisLock(),
+        market_repo=SQLAlchemyMarketRepository(db),
+        pos_location_provider=UnconfiguredPosLocationProvider(),
+        completer=completer)
