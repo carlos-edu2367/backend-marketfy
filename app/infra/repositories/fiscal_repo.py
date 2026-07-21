@@ -1687,6 +1687,8 @@ class SQLAlchemyProviderWebhookEventRepository:
         provider_ref: Optional[str],
         raw_payload_hash: str,
         processing_status: str = "received",
+        action: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> ProviderWebhookEvent:
         m = ProviderWebhookEventModel(
             id=uuid.uuid4(),
@@ -1695,6 +1697,8 @@ class SQLAlchemyProviderWebhookEventRepository:
             provider_ref=provider_ref,
             raw_payload_hash=raw_payload_hash,
             processing_status=processing_status,
+            action=action,
+            request_id=request_id,
         )
         self.session.add(m)
         try:

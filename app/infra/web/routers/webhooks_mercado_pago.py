@@ -2,8 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import time
 from typing import Optional
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import Response
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from infra.config.logger import get_logger
+from infra.config.settings import get_settings
+from infra.database.setup import get_db
+
+logger = get_logger("mp_webhook")
+router = APIRouter()
 
 
 def _parse_x_signature(header: str) -> tuple[Optional[str], Optional[str]]:
@@ -58,3 +70,60 @@ def validate_mp_signature(
         secret.encode("utf-8"), manifest.encode("utf-8"), hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(expected, v1)
+
+
+@router.post("/mercado-pago")
+async def mercado_pago_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+    settings = get_settings()
+    raw = await request.body()
+    try:
+        payload = json.loads(raw.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+
+    # `data.id` chega como query param na URL do webhook (ex.:
+    # `POST /webhook?data.id=ORDX&type=order`), não apenas no corpo. A MP
+    # documenta a query string como a fonte, então ela tem prioridade; o
+    # corpo é apenas um fallback (ex.: chamadas de teste manuais). O valor
+    # resolvido é normalizado para minúsculas uma única vez aqui e reusado
+    # tanto na validação de assinatura quanto no payload passado ao
+    # processor — que também normaliza internamente (Task 3), então
+    # repassar um valor já em minúsculas é seguro e evita drift de casing.
+    query_data_id = request.query_params.get("data.id") or ""
+    body_data_id = str((payload.get("data") or {}).get("id") or "")
+    if query_data_id and body_data_id and query_data_id.lower() != body_data_id.lower():
+        logger.warning(
+            "mp_webhook_data_id_mismatch",
+            extra={"extra_data": {"query": query_data_id[:12], "body": body_data_id[:12]}},
+        )
+    data_id = (query_data_id or body_data_id).lower()
+
+    x_sig = request.headers.get("x-signature", "")
+    x_req = request.headers.get("x-request-id", "")
+    if not validate_mp_signature(
+        x_signature=x_sig, x_request_id=x_req, data_id=data_id,
+        secret=settings.MP_WEBHOOK_SECRET,
+    ):
+        logger.warning("mp_webhook_invalid_signature")
+        return Response(status_code=401)
+
+    from application.services.pix.webhook_processor import MercadoPagoWebhookProcessor
+    from infra.repositories.fiscal_repo import SQLAlchemyProviderWebhookEventRepository
+    from infra.repositories.pix_repo import (
+        PixPaymentAttemptRepository, MercadoPagoConnectionRepository,
+    )
+    from infra.web.dependencies import get_pix_payment_service
+
+    payload.setdefault("data", {})
+    if isinstance(payload.get("data"), dict):
+        payload["data"]["id"] = data_id
+
+    payment_service = get_pix_payment_service(db)
+    processor = MercadoPagoWebhookProcessor(
+        SQLAlchemyProviderWebhookEventRepository(db),
+        PixPaymentAttemptRepository(db),
+        MercadoPagoConnectionRepository(db),
+        payment_service,
+    )
+    status = await processor.process(payload, raw, dict(request.headers))
+    return Response(status_code=status)

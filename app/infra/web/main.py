@@ -40,6 +40,7 @@ from infra.web.routers import (
     billing_invoice_webhooks,
     pix,
     sales,
+    webhooks_mercado_pago,
 )
 
 settings = get_settings()
@@ -86,6 +87,8 @@ async def _rate_limit_for_request(request: Request):
             await enforce_rate_limit_async(request, "billing-core-webhook", limit=200, window_seconds=60)
         elif method == "POST" and path == "/api/v1/webhooks/billing-invoices":
             await enforce_rate_limit_async(request, "billing-invoices-webhook", limit=200, window_seconds=60)
+        elif method == "POST" and path == "/api/v1/webhooks/mercado-pago":
+            await enforce_rate_limit_async(request, "mercado-pago-webhook", limit=200, window_seconds=60)
         elif method == "GET" and path == "/api/v1/pix/oauth/callback":
             await enforce_rate_limit_async(request, "pix-oauth-callback", limit=30, window_seconds=60)
     except HTTPException as exc:
@@ -346,6 +349,7 @@ app.include_router(fiscal_tax_rules.router, prefix="/api/v1/fiscal", tags=["Fisc
 app.include_router(fiscal_webhooks.router, prefix="/api/v1/fiscal/webhooks", tags=["Fiscal Webhooks"])
 app.include_router(billing_core_webhooks.router, prefix="/api/v1/webhooks", tags=["Billing Core Webhooks"])
 app.include_router(billing_invoice_webhooks.router, prefix="/api/v1/webhooks", tags=["Billing Invoice Webhooks"])
+app.include_router(webhooks_mercado_pago.router, prefix="/api/v1/webhooks", tags=["Pix Webhooks"])
 app.include_router(finance_report.router, prefix="/api/v1/finance-reports", tags=["Finance Reports"])
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["Billing"])
 app.include_router(pix.router, prefix="/api/v1/pix", tags=["Pix"])
