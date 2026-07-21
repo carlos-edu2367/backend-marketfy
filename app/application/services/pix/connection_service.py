@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from infra.clients.mercadopago_client import MercadoPagoAuthError
 from infra.config.settings import get_settings
 from infra.security.secret_cipher import SecretCipher
+from infra.observability.metrics import metrics_registry
 
 REFRESH_MARGIN_SECONDS = 24 * 3600
 
@@ -54,6 +55,7 @@ class MercadoPagoConnectionService:
             if not refresh_token:
                 conn.status = "reauthorization_required"
                 await self.repo.save(conn)
+                metrics_registry.record_pix_token_refresh(result="fail")
                 raise ReauthorizationRequiredError("Sem refresh token; reconecte a conta.")
             try:
                 creds = await self.client.refresh_credentials(refresh_token=refresh_token)
@@ -61,6 +63,7 @@ class MercadoPagoConnectionService:
                 conn.status = "reauthorization_required"
                 conn.last_error = "refresh_rejected"
                 await self.repo.save(conn)
+                metrics_registry.record_pix_token_refresh(result="fail")
                 raise ReauthorizationRequiredError("Renovação recusada; reconecte a conta.") from exc
 
             conn.access_token_ciphertext = self.cipher.encrypt(creds.access_token)
@@ -71,6 +74,7 @@ class MercadoPagoConnectionService:
             conn.status = "connected"
             conn.last_error = None
             await self.repo.save(conn)
+            metrics_registry.record_pix_token_refresh(result="ok")
             return creds.access_token
         finally:
             if got:

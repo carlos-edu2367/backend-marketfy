@@ -1,6 +1,7 @@
 from __future__ import annotations
 import hashlib
 from infra.config.logger import get_logger
+from infra.observability.metrics import metrics_registry
 
 logger = get_logger("mp_webhook_processor")
 
@@ -37,6 +38,7 @@ class MercadoPagoWebhookProcessor:
             event_id = f"{data_id}:{action}"
             existing = await self.webhook_repo.get_event("mercado_pago", event_id)
             if existing and existing.processing_status == "processed":
+                metrics_registry.record_pix_webhook(action=action, result="skipped")
                 return 200
             event = existing or await self.webhook_repo.create_event(
                 provider="mercado_pago", event_id=event_id, provider_ref=data_id,
@@ -49,6 +51,7 @@ class MercadoPagoWebhookProcessor:
                 # aprovado sem venda / order desconhecida → conciliação
                 logger.warning("mp_webhook_attempt_not_found", extra={"extra_data": {"order": data_id[:6]}})
                 await self.webhook_repo.mark_processed(event.id)
+                metrics_registry.record_pix_webhook(action=action, result="attempt_not_found")
                 return 200
 
             # tripla âncora de tenant: só prossegue quando payload_user e
@@ -65,6 +68,7 @@ class MercadoPagoWebhookProcessor:
             if not tenant_ok:
                 logger.warning("mp_webhook_tenant_mismatch")
                 await self.webhook_repo.mark_processed(event.id)
+                metrics_registry.record_pix_webhook(action=action, result="tenant_mismatch")
                 return 200
 
             # delega a reconsulta autoritativa + conclusão idempotente
@@ -72,6 +76,7 @@ class MercadoPagoWebhookProcessor:
                 market_id=attempt.market_id, attempt_id=attempt.id, source="webhook")
 
             await self.webhook_repo.mark_processed(event.id)
+            metrics_registry.record_pix_webhook(action=action, result="processed")
             return 200
         except Exception:
             logger.exception("mp_webhook_processing_failed")
@@ -80,4 +85,6 @@ class MercadoPagoWebhookProcessor:
                     await self.webhook_repo.mark_failed(event.id)
                 except Exception:
                     pass
+            action_label = str((payload or {}).get("action") or "unknown")
+            metrics_registry.record_pix_webhook(action=action_label, result="failed")
             return 200  # MP re-tenta; conciliação cobre

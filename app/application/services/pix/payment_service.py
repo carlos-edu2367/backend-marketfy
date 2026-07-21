@@ -8,6 +8,7 @@ from domain.sales import Sale, SaleStatus, BoxStatus
 from infra.database.models import PixPaymentAttemptModel
 from infra.config.settings import get_settings
 from infra.config.logger import get_logger
+from infra.observability.metrics import metrics_registry
 
 logger = get_logger("pix_payment_service")
 
@@ -158,6 +159,7 @@ class PixPaymentService:
             attempt.external_status = result.external_status
             attempt.expires_at = datetime.now(timezone.utc) + _iso_expiration_to_delta(expiration)
             await self.attempt_repo.save(attempt, commit=True)
+            metrics_registry.record_pix_qr_created()
             if self.event_bus:
                 await self._publish_best_effort(attempt.id, "payment.created", {
                     "attempt_id": str(attempt.id), "status": attempt.status,
@@ -187,12 +189,15 @@ class PixPaymentService:
                 attempt.status = "approved"
                 if self.completer:
                     await self.completer.complete_sale(attempt)
+                metrics_registry.record_pix_payment_approved(source=source)
             else:
                 attempt.status = "divergent"
                 attempt.failure_reason = f"amount_mismatch:{result.total_amount}"
+                metrics_registry.record_pix_divergence(kind="amount")
         elif result.mapped_status is PixAttemptStatus.EXPIRED:
             attempt.status = "expired"
             attempt.qr_data = None
+            metrics_registry.record_pix_payment_expired()
         elif result.mapped_status is PixAttemptStatus.CANCELED:
             attempt.status = "canceled"
             attempt.qr_data = None
@@ -229,6 +234,8 @@ class PixPaymentService:
         cancel_res = await self.provider.cancel_payment(
             access_token=access_token, order_id=attempt.order_id, idempotency_key=str(_u.uuid4()))
         await self._apply_processed_or(attempt, cancel_res, "canceled")
+        if attempt.status == "canceled":
+            metrics_registry.record_pix_attempt_canceled()
         await self.attempt_repo.save(attempt, commit=True)
         await self._publish_status_event(attempt)
         return attempt

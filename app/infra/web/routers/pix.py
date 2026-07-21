@@ -13,9 +13,13 @@ from infra.cache.pix_event_bus import PixEventBus
 from infra.database.setup import get_db
 from infra.config.settings import get_settings
 from infra.config.logger import get_logger
-from infra.web.dependencies import get_current_user, require_market_access, get_pix_payment_service
+from infra.web.dependencies import (
+    get_current_user, require_market_access, get_pix_payment_service, get_audit_service,
+)
 from infra.security.market_access import MarketPermission
 from infra.security.rate_limiter import enforce_pix_verify_rate_limit
+from infra.observability.audit import record_audit_event
+from application.services.audit_service import AuditService
 from infra.repositories.pix_repo import (
     MercadoPagoConnectionRepository, MercadoPagoOAuthStateRepository, PixPaymentAttemptRepository,
 )
@@ -51,10 +55,12 @@ async def authorize(
 
 @router.get("/oauth/callback")
 async def oauth_callback(
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
     db: AsyncSession = Depends(get_db),
+    audit: AuditService = Depends(get_audit_service),
 ):
     settings = get_settings()
     front = (settings.PUBLIC_FRONTEND_URL or "").rstrip("/")
@@ -69,12 +75,17 @@ async def oauth_callback(
         client=MercadoPagoClient(),
     )
     try:
-        await svc.handle_callback(code=code, state=state)
+        conn = await svc.handle_callback(code=code, state=state)
     except OAuthStateInvalidError:
         return RedirectResponse(f"{front}/settings?pix_oauth=error")
     except MercadoPagoError:
         logger.warning("pix_oauth_callback_provider_error")
         return RedirectResponse(f"{front}/settings?pix_oauth=error")
+    await record_audit_event(
+        audit, request, actor=None, action="pix.oauth.connected",
+        resource_type="pix_connection", resource_id=str(conn.id),
+        result="success", market_id=conn.market_id, metadata={},
+    )
     return RedirectResponse(f"{front}/settings?pix_oauth=success")
 
 
@@ -105,7 +116,10 @@ async def oauth_status(
 @router.delete("/{market_id}/oauth")
 async def disconnect(
     market_id: uuid.UUID,
+    request: Request,
+    current_user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    audit: AuditService = Depends(get_audit_service),
     market=Depends(require_market_access(MarketPermission.PAYMENTS_WRITE)),
 ):
     repo = MercadoPagoConnectionRepository(db)
@@ -117,6 +131,11 @@ async def disconnect(
     conn.refresh_token_ciphertext = None
     conn.access_token_expires_at = None
     await repo.save(conn)
+    await record_audit_event(
+        audit, request, actor=current_user, action="pix.oauth.disconnected",
+        resource_type="pix_connection", resource_id=str(conn.id),
+        result="success", market_id=market_id, metadata={},
+    )
     return {"status": "not_connected"}
 
 
@@ -132,9 +151,10 @@ def _attempt_response(a, include_qr=False):
 
 
 @router.post("/{market_id}/qr", status_code=201)
-async def create_qr(market_id: uuid.UUID, payload: dict,
+async def create_qr(market_id: uuid.UUID, payload: dict, request: Request,
                     current_user=Depends(get_current_user),
                     svc=Depends(get_pix_payment_service),
+                    audit: AuditService = Depends(get_audit_service),
                     market=Depends(require_market_access(MarketPermission.SALES_WRITE))):
     try:
         attempt = await svc.create_qr(market_id=market_id,
@@ -151,6 +171,11 @@ async def create_qr(market_id: uuid.UUID, payload: dict,
         raise HTTPException(status_code=409, detail={"code": "pix.box_closed"})
     except (PixInvalidItemsError, ValueError, KeyError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    await record_audit_event(
+        audit, request, actor=current_user, action="pix.qr.created",
+        resource_type="pix_attempt", resource_id=str(attempt.id),
+        result="success", market_id=market_id, metadata={"box_id": str(attempt.box_id)},
+    )
     return _attempt_response(attempt, include_qr=True)
 
 
@@ -168,21 +193,36 @@ async def get_attempt(market_id: uuid.UUID, attempt_id: uuid.UUID,
 async def verify_attempt(market_id: uuid.UUID, attempt_id: uuid.UUID, request: Request,
                          current_user=Depends(get_current_user),
                          svc=Depends(get_pix_payment_service),
+                         audit: AuditService = Depends(get_audit_service),
                          market=Depends(require_market_access(MarketPermission.SALES_WRITE))):
     settings = get_settings()
     await enforce_pix_verify_rate_limit(request, attempt_id=str(attempt_id), sale_id=str(attempt_id),
         user_id=str(current_user.id), market_id=str(market_id),
         cooldown_seconds=settings.MP_VALIDATE_COOLDOWN_SECONDS)
     attempt = await svc.verify(market_id=market_id, attempt_id=attempt_id)
+    if attempt.status == "approved":
+        await record_audit_event(
+            audit, request, actor=current_user, action="pix.payment.confirmed",
+            resource_type="pix_attempt", resource_id=str(attempt.id),
+            result="success", market_id=market_id, metadata={},
+        )
     return {"attempt_id": str(attempt.id), "status": attempt.status,
             "sale_completed": attempt.status == "approved", "amount": f"{attempt.amount:.2f}"}
 
 
 @router.post("/{market_id}/attempts/{attempt_id}/cancel")
-async def cancel_attempt(market_id: uuid.UUID, attempt_id: uuid.UUID,
+async def cancel_attempt(market_id: uuid.UUID, attempt_id: uuid.UUID, request: Request,
+                         current_user=Depends(get_current_user),
                          svc=Depends(get_pix_payment_service),
+                         audit: AuditService = Depends(get_audit_service),
                          market=Depends(require_market_access(MarketPermission.SALES_WRITE))):
     attempt = await svc.cancel(market_id=market_id, attempt_id=attempt_id)
+    if attempt.status == "canceled":
+        await record_audit_event(
+            audit, request, actor=current_user, action="pix.attempt.canceled",
+            resource_type="pix_attempt", resource_id=str(attempt.id),
+            result="success", market_id=market_id, metadata={},
+        )
     return {"attempt_id": str(attempt.id), "status": attempt.status,
             "sale_completed": attempt.status == "approved"}
 
