@@ -107,6 +107,18 @@ class PixPaymentAttemptRepository:
         )
         return res.scalar_one_or_none()
 
+    async def get_by_id(self, attempt_id, market_id):
+        """Leitura simples, sem `FOR UPDATE` — para endpoints que só consultam
+        estado (ex.: SSE), onde segurar um lock de linha pela duração de um
+        stream de longa duração bloquearia writers (verify/webhook)."""
+        res = await self.db.execute(
+            select(PixPaymentAttemptModel).where(
+                PixPaymentAttemptModel.id == attempt_id,
+                PixPaymentAttemptModel.market_id == market_id,
+            )
+        )
+        return res.scalar_one_or_none()
+
     async def get_by_id_for_update(self, attempt_id, market_id):
         res = await self.db.execute(
             select(PixPaymentAttemptModel).where(

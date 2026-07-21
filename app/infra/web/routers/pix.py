@@ -1,10 +1,14 @@
 """Endpoints Pix (Mercado Pago) — conexão OAuth por tenant."""
 
+import asyncio
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from infra.cache.pix_event_bus import PixEventBus
 
 from infra.database.setup import get_db
 from infra.config.settings import get_settings
@@ -181,3 +185,67 @@ async def cancel_attempt(market_id: uuid.UUID, attempt_id: uuid.UUID,
     attempt = await svc.cancel(market_id=market_id, attempt_id=attempt_id)
     return {"attempt_id": str(attempt.id), "status": attempt.status,
             "sale_completed": attempt.status == "approved"}
+
+
+_SSE_STATUS_EVENT = {
+    "pending": "payment.pending", "approved": "payment.approved",
+    "expired": "payment.expired", "canceled": "payment.cancelled",
+    "divergent": "payment.error", "confirmation_pending": "payment.confirmation_pending",
+}
+_SSE_FINAL_EVENTS = {"payment.approved", "payment.expired", "payment.cancelled"}
+_SSE_HEARTBEAT_SECONDS = 15
+
+
+@router.get("/{market_id}/attempts/{attempt_id}/events")
+async def attempt_events(market_id: uuid.UUID, attempt_id: uuid.UUID,
+                         db: AsyncSession = Depends(get_db),
+                         market=Depends(require_market_access(MarketPermission.SALES_READ))):
+    attempt = await PixPaymentAttemptRepository(db).get_by_id(attempt_id, market_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail={"code": "pix.attempt_not_found"})
+
+    current_status = attempt.status
+    current_event = _SSE_STATUS_EVENT.get(current_status, "payment.pending")
+    current_data = {"attempt_id": str(attempt.id), "status": current_status,
+                    "sale_id": str(attempt.sale_id) if attempt.sale_id else None,
+                    "sale_completed": current_status == "approved"}
+
+    bus = PixEventBus()
+
+    async def event_stream():
+        seq = 0
+
+        def frame(event, data):
+            nonlocal seq
+            seq += 1
+            return f"id: {seq}\nevent: {event}\ndata: {json.dumps(data)}\n\n"
+
+        # 1. estado atual imediato
+        yield frame(current_event, current_data)
+        if current_event in _SSE_FINAL_EVENTS:
+            return
+        # 2. assina o bus. `bus.subscribe` cede um tick `None` a cada ~1s sem
+        # mensagem (ver pix_event_bus.py) — contamos ticks ociosos para emitir
+        # `: ping` a cada ~15s sem precisar cancelar/dar timeout no generator
+        # (fazer isso destruiria a assinatura Redis via o `finally` do subscribe).
+        idle_ticks = 0
+        subscription = bus.subscribe(str(attempt_id))
+        try:
+            async for evt in subscription:
+                if evt is None:
+                    idle_ticks += 1
+                    if idle_ticks >= _SSE_HEARTBEAT_SECONDS:
+                        idle_ticks = 0
+                        yield ": ping\n\n"
+                    continue
+                idle_ticks = 0
+                yield frame(evt["event"], evt["data"])
+                if evt["event"] in _SSE_FINAL_EVENTS:
+                    break
+        except asyncio.CancelledError:
+            return
+        finally:
+            await subscription.aclose()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

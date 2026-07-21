@@ -75,3 +75,18 @@ def test_channel_helper_matches_publish_and_subscribe():
     from infra.cache.pix_event_bus import channel
 
     assert channel("att-1") == "pix:attempt:att-1"
+
+
+@pytest.mark.asyncio
+async def test_subscribe_yields_none_on_idle_poll():
+    """Consumers (SSE endpoint) drive heartbeat cadence off these idle ticks —
+    the generator must not require external cancellation/timeout to keep going,
+    since that would tear down the pub/sub connection via its own cleanup."""
+    from infra.cache.pix_event_bus import PixEventBus
+
+    redis = FakeRedis([])  # nunca há mensagem: toda chamada a get_message expira
+    bus = PixEventBus(redis=redis)
+    gen = bus.subscribe("att-1")
+    tick = await gen.__anext__()
+    assert tick is None
+    await gen.aclose()

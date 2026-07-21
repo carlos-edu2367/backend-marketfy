@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from infra.cache.redis_adapter import redis_client
 
@@ -26,7 +26,14 @@ class PixEventBus:
         payload = json.dumps({"event": event, "data": data})
         await self.redis.publish(channel(attempt_id), payload)
 
-    async def subscribe(self, attempt_id: str) -> AsyncGenerator[dict, None]:
+    async def subscribe(self, attempt_id: str) -> AsyncGenerator[Optional[dict], None]:
+        """Yields `{event, data}` dicts as they're published. Yields `None` on each
+        idle poll (no message within 1s) so a consumer can drive its own heartbeat
+        cadence without needing to cancel/timeout this generator from the outside —
+        cancelling an in-flight `__anext__()` would tear down the pub/sub connection
+        via this method's own `finally` block, making the generator unusable after
+        the first heartbeat. Looping with a plain `async for` avoids that entirely.
+        """
         ps = self.redis.pubsub()
         await ps.subscribe(channel(attempt_id))
         try:
@@ -37,6 +44,8 @@ class PixEventBus:
                     if isinstance(raw, bytes):
                         raw = raw.decode("utf-8")
                     yield json.loads(raw)
+                else:
+                    yield None
         finally:
             await ps.unsubscribe(channel(attempt_id))
             await ps.close()
