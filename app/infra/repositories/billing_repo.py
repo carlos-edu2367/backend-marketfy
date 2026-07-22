@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.database.models import BillingSubscriptionModel, BillingEventModel
@@ -69,6 +70,25 @@ class SQLAlchemyBillingSubscriptionRepository:
         self._db.add(sub)
         await self._db.flush()
         return sub
+
+    async def create_if_absent_by_idempotency_key(
+        self, sub: BillingSubscriptionModel
+    ) -> tuple[BillingSubscriptionModel, bool]:
+        """Cria a assinatura uma única vez, inclusive sob cliques concorrentes."""
+        existing = await self.get_by_idempotency_key(sub.idempotency_key)
+        if existing is not None:
+            return existing, False
+
+        try:
+            async with self._db.begin_nested():
+                self._db.add(sub)
+                await self._db.flush()
+        except IntegrityError:
+            existing = await self.get_by_idempotency_key(sub.idempotency_key)
+            if existing is not None:
+                return existing, False
+            raise
+        return sub, True
 
     async def list_invoice_subs_expiring_within(self, cutoff: datetime) -> List[BillingSubscriptionModel]:
         """Assinaturas modo invoice, ativas, com expires_at até o cutoff (janela de faturamento)."""

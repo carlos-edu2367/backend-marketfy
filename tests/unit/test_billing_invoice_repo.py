@@ -20,6 +20,7 @@ from infra.database.setup import Base
 import infra.database.models  # noqa: F401  (registra os models)
 from infra.database.models import UserModel, PlanModel, BillingSubscriptionModel
 from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
+from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
 
 
 @pytest_asyncio.fixture
@@ -77,3 +78,33 @@ async def test_mark_paid_is_idempotent(session):
     second = await repo.mark_paid(inv.id, bc_payment_id="pay_1", paid_at=now)
     assert first == 1
     assert second == 0
+
+
+@pytest.mark.asyncio
+async def test_subscription_create_if_absent_reuses_the_idempotent_retry(session):
+    owner_id, plan_id, _ = await _seed(session)
+    repo = SQLAlchemyBillingSubscriptionRepository(session)
+    key = "invoice-retry:invoice-1"
+    first = BillingSubscriptionModel(
+        owner_id=owner_id,
+        plan_id=plan_id,
+        billing_mode="invoice",
+        status="pending",
+        billing_system_sub_id=str(owner_id),
+        idempotency_key=key,
+    )
+    second = BillingSubscriptionModel(
+        owner_id=owner_id,
+        plan_id=plan_id,
+        billing_mode="invoice",
+        status="pending",
+        billing_system_sub_id=str(owner_id),
+        idempotency_key=key,
+    )
+
+    created, was_created = await repo.create_if_absent_by_idempotency_key(first)
+    existing, was_created_again = await repo.create_if_absent_by_idempotency_key(second)
+
+    assert was_created is True
+    assert was_created_again is False
+    assert existing.id == created.id

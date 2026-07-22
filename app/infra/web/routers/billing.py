@@ -218,6 +218,30 @@ async def ensure_invoice_checkout(
     }
 
 
+@router.post("/invoices/{invoice_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_invoice(
+    invoice_id: uuid.UUID,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    invoice_service=Depends(_get_invoice_service),
+):
+    """Cria uma substituta pendente para uma fatura cancelada, sem checkout."""
+    from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
+
+    repo = SQLAlchemyBillingInvoiceRepository(db)
+    invoice = await repo.get_by_id(invoice_id)
+    if invoice is None or invoice.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+
+    try:
+        result = await invoice_service.retry_canceled_invoice(invoice_id)
+        await db.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return result
+
+
 @router.get("/invoices/{invoice_id}")
 async def get_invoice(
     invoice_id: uuid.UUID,

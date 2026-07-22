@@ -94,6 +94,84 @@ class InvoiceService:
             idempotency_key=idempotency_key,
         )
 
+    async def retry_canceled_invoice(self, invoice_id: uuid.UUID) -> Dict[str, Any]:
+        """Substitui uma fatura cancelada por uma nova assinatura pendente, sem checkout."""
+        original_invoice = await self._inv.get_by_id(invoice_id)
+        if original_invoice is None or original_invoice.status != "canceled":
+            raise ValueError("Somente faturas canceladas podem ser tentadas novamente.")
+
+        retry_key = f"invoice-retry:{original_invoice.id}"
+        existing_subscription = await self._sub.get_by_idempotency_key(retry_key)
+        if existing_subscription is not None:
+            existing_invoice = await self._inv.get_by_idempotency_key(retry_key)
+            if existing_invoice is None:
+                raise ValueError("Retry de fatura inconsistente.")
+            return {
+                "subscription_id": str(existing_subscription.id),
+                "invoice_id": str(existing_invoice.id),
+                "job_id": None,
+                "checkout_url": None,
+            }
+
+        original_subscription = await self._sub.get_by_id(original_invoice.subscription_id)
+        if original_subscription is None:
+            raise ValueError("Assinatura da fatura não encontrada.")
+        if original_subscription.status in {"active", "trialing"}:
+            raise ValueError("A assinatura vinculada à fatura ainda está ativa e não pode ser substituída.")
+        if await self._inv.get_open_invoice_for_subscription(original_subscription.id):
+            raise ValueError("A assinatura já possui uma fatura pendente.")
+
+        plan = await self._plan.get_by_id(original_invoice.plan_id)
+        if plan is None or not plan.is_active:
+            raise ValueError("Plano não disponível.")
+
+        # Mantém o histórico; a nova contratação é uma assinatura independente.
+        original_subscription.status = "canceled"
+        original_subscription.last_event_at = datetime.utcnow()
+        await self._sub.save(original_subscription)
+
+        from infra.database.models import BillingSubscriptionModel
+        replacement_subscription = BillingSubscriptionModel(
+            owner_id=original_invoice.owner_id,
+            plan_id=original_invoice.plan_id,
+            billing_system=self._settings.BILLING_CORE_SYSTEM,
+            billing_system_sub_id=str(original_invoice.owner_id),
+            billing_mode="invoice",
+            status="pending",
+            subscription_type=original_subscription.subscription_type,
+            value=price_for_period(plan, original_subscription.subscription_type),
+            idempotency_key=retry_key,
+        )
+        replacement_subscription, was_created = await self._sub.create_if_absent_by_idempotency_key(
+            replacement_subscription
+        )
+        if not was_created:
+            replacement_invoice = await self._inv.get_by_idempotency_key(retry_key)
+            if replacement_invoice is None:
+                raise ValueError("Retry de fatura inconsistente.")
+            return {
+                "subscription_id": str(replacement_subscription.id),
+                "invoice_id": str(replacement_invoice.id),
+                "job_id": None,
+                "checkout_url": None,
+            }
+
+        now = datetime.utcnow()
+        replacement_invoice = await self._create_invoice(
+            owner_id=original_invoice.owner_id,
+            subscription=replacement_subscription,
+            plan=plan,
+            period_start=now,
+            due_date=now,
+            idempotency_key=retry_key,
+        )
+        return {
+            "subscription_id": str(replacement_subscription.id),
+            "invoice_id": str(replacement_invoice.id),
+            "job_id": None,
+            "checkout_url": None,
+        }
+
     async def _create_checkout(self, invoice, plan, *, idempotency_key: str) -> None:
         s = self._settings
         result = await self._bc.create_payment(

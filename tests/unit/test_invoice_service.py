@@ -56,6 +56,7 @@ class StubSub:
     subscription_type: str = "monthly"
     status: str = "pending"
     expires_at: Optional[datetime] = None
+    idempotency_key: Optional[str] = None
 
 
 class InvoiceRepo:
@@ -72,7 +73,8 @@ class InvoiceRepo:
     async def create(self, **f):
         inv = StubInvoice(id=uuid.uuid4(), **f)
         self.items[inv.id] = inv
-        self.open_by_sub[inv.subscription_id] = inv
+        if inv.status == "pending":
+            self.open_by_sub[inv.subscription_id] = inv
         return inv
     async def get_by_id(self, iid):
         return self.items.get(iid)
@@ -99,13 +101,23 @@ class SubRepo:
     def __init__(self, sub):
         self._sub = sub
         self.saved = []
+        self.by_idempotency_key = {}
     async def get_by_id(self, sid):
         return self._sub
     async def get_by_idempotency_key(self, key):
-        return None
+        return self.by_idempotency_key.get(key)
     async def save(self, sub):
+        if sub.id is None:
+            sub.id = uuid.uuid4()
         self.saved.append(sub)
+        if getattr(sub, "idempotency_key", None):
+            self.by_idempotency_key[sub.idempotency_key] = sub
         return sub
+    async def create_if_absent_by_idempotency_key(self, sub):
+        existing = await self.get_by_idempotency_key(sub.idempotency_key)
+        if existing is not None:
+            return existing, False
+        return await self.save(sub), True
 
 
 class PlanRepo:
@@ -167,6 +179,86 @@ async def test_ensure_checkout_creates_the_first_checkout_only_after_payment_cli
     assert checkout == {"status": "completed", "checkout_url": "https://pay/x"}
     bc.create_payment.assert_awaited_once()
     assert inv_repo.items[uuid.UUID(contracted["invoice_id"])].bc_payment_id == "pay_1"
+
+
+@pytest.mark.asyncio
+async def test_retry_canceled_invoice_creates_new_pending_subscription_and_invoice_without_checkout():
+    plan = StubPlan()
+    old_sub = StubSub(plan_id=plan.id, status="canceled")
+    inv_repo = InvoiceRepo()
+    old_invoice = await inv_repo.create(
+        owner_id=old_sub.owner_id,
+        subscription_id=old_sub.id,
+        plan_id=plan.id,
+        period_start=datetime.utcnow(),
+        period_end=datetime.utcnow() + timedelta(days=30),
+        due_date=datetime.utcnow(),
+        amount=Decimal("50.00"),
+        status="canceled",
+        idempotency_key="old-invoice",
+    )
+    billing_client = AsyncMock()
+    service = InvoiceService(inv_repo, SubRepo(old_sub), PlanRepo(plan), billing_client, StubSettings())
+
+    result = await service.retry_canceled_invoice(old_invoice.id)
+
+    replacement = inv_repo.items[uuid.UUID(result["invoice_id"])]
+    assert replacement.id != old_invoice.id
+    assert replacement.subscription_id != old_invoice.subscription_id
+    assert replacement.status == "pending"
+    assert replacement.checkout_url is None
+    assert result["job_id"] is None
+    billing_client.create_payment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_canceled_invoice_is_idempotent():
+    plan = StubPlan()
+    old_sub = StubSub(plan_id=plan.id, status="canceled")
+    inv_repo = InvoiceRepo()
+    old_invoice = await inv_repo.create(
+        owner_id=old_sub.owner_id,
+        subscription_id=old_sub.id,
+        plan_id=plan.id,
+        period_start=datetime.utcnow(),
+        period_end=datetime.utcnow() + timedelta(days=30),
+        due_date=datetime.utcnow(),
+        amount=Decimal("50.00"),
+        status="canceled",
+        idempotency_key="old-invoice",
+    )
+    service = InvoiceService(inv_repo, SubRepo(old_sub), PlanRepo(plan), AsyncMock(), StubSettings())
+
+    first = await service.retry_canceled_invoice(old_invoice.id)
+    second = await service.retry_canceled_invoice(old_invoice.id)
+
+    assert second == first
+    assert len(inv_repo.items) == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_canceled_invoice_does_not_cancel_an_active_subscription():
+    plan = StubPlan()
+    active_sub = StubSub(plan_id=plan.id, status="active")
+    inv_repo = InvoiceRepo()
+    canceled_invoice = await inv_repo.create(
+        owner_id=active_sub.owner_id,
+        subscription_id=active_sub.id,
+        plan_id=plan.id,
+        period_start=datetime.utcnow(),
+        period_end=datetime.utcnow() + timedelta(days=30),
+        due_date=datetime.utcnow(),
+        amount=Decimal("50.00"),
+        status="canceled",
+        idempotency_key="old-invoice",
+    )
+    service = InvoiceService(inv_repo, SubRepo(active_sub), PlanRepo(plan), AsyncMock(), StubSettings())
+
+    with pytest.raises(ValueError, match="ativa"):
+        await service.retry_canceled_invoice(canceled_invoice.id)
+
+    assert active_sub.status == "active"
+    assert len(inv_repo.items) == 1
 
 
 @pytest.mark.asyncio
