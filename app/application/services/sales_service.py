@@ -414,6 +414,21 @@ class SalesService:
             ]
         return snapshots
 
+    async def freeze_fiscal_snapshots(
+        self,
+        *,
+        market_id: uuid.UUID,
+        sale: Sale,
+        prepared_items,
+    ) -> list[Optional[SaleItemFiscalEvidence]]:
+        """Freeze the same fiscal evidence used by online checkout before a Pix sale is persisted."""
+        sale._fiscal_rule_enforcement = await self._get_fiscal_rule_enforcement(market_id)
+        return await self._resolve_fiscal_snapshots(
+            market_id=market_id,
+            sale=sale,
+            prepared_items=prepared_items,
+        )
+
     async def fiscal_preflight(
         self,
         *,
@@ -652,6 +667,13 @@ class SalesService:
         return self._map_sale_to_response(saved_sale)
 
     def _map_sale_to_response(self, sale: Sale) -> SaleResponseDTO:
+        pix_payment = next((payment for payment in sale.payments if payment.method == PaymentMethod.PIX), None)
+        pix_modality = pix_payment.modality if pix_payment else None
+        pix_status = (
+            "approved"
+            if pix_modality in {"qr_dynamic", "qr_static"} and sale.status == SaleStatus.COMPLETED
+            else "pending" if pix_modality in {"qr_dynamic", "qr_static"} else None
+        )
         return SaleResponseDTO(
             id=sale.id,
             market_id=sale.market_id,
@@ -664,6 +686,8 @@ class SalesService:
             created_at=sale.created_at,
             synced_at=sale.synced_at,
             customer_cpf=sale.customer_cpf,
+            modality=pix_modality,
+            pix_status=pix_status,
             fiscal_rule_pendencies=sale.fiscal_rule_pendencies,
             items=[
                 SaleItemDTO(
@@ -684,7 +708,8 @@ class SalesService:
                 PaymentDTO(
                     method=p.method.value,
                     amount=p.amount,
-                    installments=p.installments
+                    installments=p.installments,
+                    modality=p.modality,
                 ) for p in sale.payments
             ],
             invoice=sale.invoice 

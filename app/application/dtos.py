@@ -229,6 +229,7 @@ class PaymentDTO(BaseModel):
     method: str
     amount: Decimal
     installments: int = 1
+    modality: Optional[str] = None
 
 class SaleCreateDTO(BaseModel):
     id: Optional[UUID] = None
@@ -258,6 +259,8 @@ class SaleResponseDTO(BaseModel):
     created_at: datetime
     synced_at: Optional[datetime]
     customer_cpf: Optional[str]
+    modality: Optional[str] = None
+    pix_status: Optional[str] = None
     fiscal_rule_pendencies: Optional[List[Dict[str, str]]] = None
     items: List[SaleItemDTO] = []
     payments: List[PaymentDTO] = []

@@ -570,7 +570,8 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                     sale_id=sale.id,
                     method=pay.method.value,
                     amount=pay.amount,
-                    installments=pay.installments
+                    installments=pay.installments,
+                    modality=pay.modality,
                 )
                 self.session.add(p_model)
         
@@ -689,7 +690,8 @@ class SQLAlchemySaleRepository(SaleRepositoryInterface):
                     sale_id=s.id,
                     method=PaymentMethod(p.method),
                     amount=p.amount,
-                    installments=p.installments
+                    installments=p.installments,
+                    modality=p.modality,
                 ))
 
         # Reconstrói a nota fiscal usando o novo FiscalDocument se disponível
