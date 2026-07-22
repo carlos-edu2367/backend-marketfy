@@ -43,14 +43,15 @@
 ```python
 @pytest.mark.asyncio
 async def test_retry_canceled_invoice_creates_new_pending_subscription_and_invoice_without_checkout():
-    old_sub = StubSub(status="canceled", subscription_type="monthly")
+    plan = StubPlan()
+    old_sub = StubSub(plan_id=plan.id, status="canceled", subscription_type="monthly")
     repo = InvoiceRepo()
     old = await repo.create(
         owner_id=old_sub.owner_id, subscription_id=old_sub.id, plan_id=old_sub.plan_id,
         period_start=datetime.utcnow(), period_end=datetime.utcnow(), due_date=datetime.utcnow(),
         amount=Decimal("50.00"), status="canceled", idempotency_key="old",
     )
-    service = InvoiceService(repo, SubRepo(old_sub), PlanRepo(StubPlan(id=old_sub.plan_id)), AsyncMock(), StubSettings())
+    service = InvoiceService(repo, SubRepo(old_sub), PlanRepo(plan), AsyncMock(), StubSettings())
 
     result = await service.retry_canceled_invoice(old.id)
 
@@ -83,8 +84,10 @@ class SubRepo:
         return self.by_idempotency_key.get(key)
 
     async def save(self, sub):
+        if sub.id is None:
+            sub.id = uuid.uuid4()
         self.saved.append(sub)
-        if sub.idempotency_key:
+        if getattr(sub, "idempotency_key", None):
             self.by_idempotency_key[sub.idempotency_key] = sub
         return sub
 ```
@@ -106,6 +109,8 @@ async def retry_canceled_invoice(self, invoice_id: uuid.UUID) -> Dict[str, Any]:
     original_subscription = await self._sub.get_by_id(original.subscription_id)
     if original_subscription is None:
         raise ValueError("Assinatura da fatura não encontrada.")
+    if await self._inv.get_open_invoice_for_subscription(original.subscription_id):
+        raise ValueError("A assinatura já possui uma fatura pendente.")
     plan = await self._plan.get_by_id(original.plan_id)
     if plan is None or not plan.is_active:
         raise ValueError("Plano não disponível.")
