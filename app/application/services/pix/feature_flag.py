@@ -9,6 +9,8 @@ class PixFeatureDisabledError(Exception):
 def is_pix_qr_enabled(*, settings, connection, terminal_id) -> bool:
     if not getattr(settings, "MP_ENABLED", False):
         return False
+    if not getattr(settings, "PIX_LOCATION_ENABLED", True):
+        return False
     if connection is None or getattr(connection, "status", None) != "connected":
         return False
     if not getattr(connection, "enabled_in_pdv", False):

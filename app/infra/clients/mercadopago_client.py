@@ -94,7 +94,8 @@ class MercadoPagoClient:
         return self._to_credentials(await self._post_token(payload))
 
     async def _request_order(self, method: str, path: str, *, access_token: str,
-                             json_body: dict | None = None, idempotency_key: str | None = None) -> dict:
+                             json_body: dict | None = None, idempotency_key: str | None = None,
+                             params: dict | None = None) -> dict:
         headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json",
                    "Content-Type": "application/json"}
         if idempotency_key:
@@ -103,14 +104,14 @@ class MercadoPagoClient:
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     resp = await client.request(method, f"{self._api_base}{path}",
-                                                json=json_body, headers=headers)
+                                                json=json_body, headers=headers, params=params)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError) as exc:
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
                     continue
                 raise MercadoPagoUnavailableError("Falha de rede com Mercado Pago (orders).") from exc
-            if resp.status_code in (200, 201):
-                return resp.json()
+            if resp.status_code in (200, 201, 204):
+                return resp.json() if resp.content else {}
             if resp.status_code in (401, 403):
                 raise MercadoPagoAuthError("Token Mercado Pago inválido/expirado.", status_code=resp.status_code)
             if resp.status_code in (429, 500, 502, 503, 504) and attempt < 2:
@@ -203,4 +204,22 @@ class MercadoPagoClient:
             "POST", "/pos", access_token=access_token,
             json_body={"name": name, "fixed_amount": True, "store_id": store_id,
                       "external_store_id": external_store_id, "external_id": external_id},
+        )
+
+    async def search_stores(self, *, access_token: str, user_id: str, external_id: str) -> dict:
+        return await self._request_order(
+            "GET", f"/users/{user_id}/stores/search", access_token=access_token,
+            params={"external_id": external_id},
+        )
+
+    async def update_store(self, *, access_token: str, user_id: str, store_id,
+                           name: str, external_id: str, location: dict) -> dict:
+        return await self._request_order(
+            "PUT", f"/users/{user_id}/stores/{store_id}", access_token=access_token,
+            json_body={"name": name, "external_id": external_id, "location": location},
+        )
+
+    async def search_pos(self, *, access_token: str, external_id: str) -> dict:
+        return await self._request_order(
+            "GET", "/pos", access_token=access_token, params={"external_id": external_id}
         )

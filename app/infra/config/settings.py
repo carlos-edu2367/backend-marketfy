@@ -118,6 +118,8 @@ class Settings(BaseSettings):
     MP_ORDER_DEFAULT_EXPIRATION: str = "PT5M"
     MP_HTTP_TIMEOUT_SECONDS: int = 10
     MP_VALIDATE_COOLDOWN_SECONDS: int = 5
+    # Kill switch for the Pix location/store synchronization rollout.
+    PIX_LOCATION_ENABLED: bool = True
 
     class Config:
         env_file = ".env"

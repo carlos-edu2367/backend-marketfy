@@ -40,7 +40,7 @@ def _async_url(url: str) -> str:
 async def _seed(session):
     from infra.database.models import (
         UserModel, MarketModel, TerminalModel, BoxModel, ProductModel,
-        MercadoPagoConnectionModel,
+        MercadoPagoConnectionModel, MarketLocationModel,
     )
     from infra.security.secret_cipher import SecretCipher
 
@@ -61,6 +61,12 @@ async def _seed(session):
 
     session.add(MarketModel(id=market_id, owner_id=owner_id, name="Loja",
                             document=str(market_id.int)[:14], address="Rua X"))
+    await session.flush()
+    session.add(MarketLocationModel(
+        market_id=market_id, postal_code="01001000", street_name="Rua X",
+        street_number="1", city_name="São Paulo", state_code="SP",
+        state_name="São Paulo", latitude=Decimal("-23.5"), longitude=Decimal("-46.6"),
+    ))
     await session.flush()
 
     session.add(TerminalModel(id=terminal_id, market_id=market_id, name="Terminal 1"))
@@ -125,14 +131,6 @@ async def test_qr_creates_attempt_and_returns_qr(app_client, monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_BACKEND", "redis")
     from infra.config import settings as sm
     sm.get_settings.cache_clear()
-
-    from infra.providers.pix.location import UnconfiguredPosLocationProvider
-
-    async def _fake_location(self, market_id):
-        return {"street_number": "1", "street_name": "R", "city_name": "SP",
-                "state_name": "SP", "latitude": -23.5, "longitude": -46.6}
-
-    monkeypatch.setattr(UnconfiguredPosLocationProvider, "get_location", _fake_location)
 
     engine = create_async_engine(_async_url(TEST_POSTGRES_URL), pool_pre_ping=True)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)

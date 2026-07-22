@@ -36,3 +36,26 @@ async def test_create_store_and_pos(monkeypatch):
         external_store_id="M1", external_id="T1",
     )
     assert pos["id"] == 2711382
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_search_and_update_store(monkeypatch):
+    from infra.config import settings as sm
+    sm.get_settings.cache_clear()
+    respx.get("https://api.mercadopago.com/users/42/stores/search").mock(
+        return_value=Response(200, json={"results": [{"id": 1234567, "external_id": "M1"}]})
+    )
+    respx.put("https://api.mercadopago.com/users/42/stores/1234567").mock(
+        return_value=Response(200, json={"id": 1234567, "external_id": "M1"})
+    )
+    client = MercadoPagoClient()
+
+    stores = await client.search_stores(access_token="AT", user_id="42", external_id="M1")
+    updated = await client.update_store(
+        access_token="AT", user_id="42", store_id="1234567", name="Loja",
+        external_id="M1", location={"street_number": "2"},
+    )
+
+    assert stores["results"][0]["id"] == 1234567
+    assert updated["id"] == 1234567

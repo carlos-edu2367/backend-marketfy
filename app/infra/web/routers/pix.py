@@ -17,12 +17,17 @@ from infra.web.dependencies import (
     get_current_user, require_market_access, get_pix_payment_service, get_audit_service,
 )
 from infra.security.market_access import MarketPermission
-from infra.security.rate_limiter import enforce_pix_verify_rate_limit
+from infra.security.rate_limiter import (
+    enforce_address_lookup_rate_limit,
+    enforce_pix_verify_rate_limit,
+)
 from infra.observability.audit import record_audit_event
+from infra.observability.metrics import metrics_registry
 from application.services.audit_service import AuditService
 from infra.repositories.pix_repo import (
     MercadoPagoConnectionRepository, MercadoPagoOAuthStateRepository, PixPaymentAttemptRepository,
 )
+from infra.repositories.market_location_repo import MarketLocationRepository
 from infra.clients.mercadopago_client import MercadoPagoClient, MercadoPagoError
 from application.services.pix.oauth_service import (
     MercadoPagoOAuthService, OAuthStateInvalidError,
@@ -31,6 +36,9 @@ from application.services.pix.payment_service import (
     PixNotConnectedError, PixActiveAttemptError, PixBoxClosedError, PixInvalidItemsError,
     PixLocationNotConfiguredError, PixAttemptNotFoundError,
 )
+from application.services.market_location_service import MarketLocationService
+from domain.market_location import MarketLocationValidationError
+from infra.providers.cep.viacep import ViaCepProvider
 
 router = APIRouter()
 logger = get_logger("pix_router")
@@ -40,6 +48,51 @@ def _mask(value: str | None, keep: int = 4) -> str | None:
     if not value:
         return value
     return value[:keep] + "***" + value[-keep:] if len(value) > keep * 2 else "***"
+
+
+@router.get("/address/cep/{postal_code}")
+async def lookup_cep(
+    postal_code: str,
+    request: Request,
+    current_user=Depends(get_current_user),
+):
+    await enforce_address_lookup_rate_limit(request, user_id=current_user.id)
+    result = await ViaCepProvider().lookup(postal_code)
+    if result is None:
+        raise HTTPException(status_code=404, detail={"code": "pix.cep_not_found"})
+    return result.public_dict()
+
+
+@router.get("/{market_id}/location")
+async def get_location(
+    market_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    market=Depends(require_market_access(MarketPermission.PAYMENTS_READ)),
+):
+    return await MarketLocationService(MarketLocationRepository(db)).get(market_id)
+
+
+@router.put("/{market_id}/location")
+async def update_location(
+    market_id: uuid.UUID,
+    payload: dict,
+    request: Request,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    audit: AuditService = Depends(get_audit_service),
+    market=Depends(require_market_access(MarketPermission.PAYMENTS_WRITE)),
+):
+    try:
+        result = await MarketLocationService(MarketLocationRepository(db)).save(market_id, payload)
+    except MarketLocationValidationError as exc:
+        metrics_registry.record_pix_location_event("location_validation_failed")
+        raise HTTPException(status_code=422, detail={"code": "pix.location_invalid", "field": str(exc)})
+    await record_audit_event(
+        audit, request, actor=current_user, action="pix.location.updated",
+        resource_type="market_location", resource_id=str(market_id), result="success",
+        market_id=market_id, metadata={"location_version": result["location_version"]},
+    )
+    return result
 
 
 @router.post("/{market_id}/oauth/authorize")
@@ -257,6 +310,7 @@ async def create_qr(market_id: uuid.UUID, payload: dict, request: Request,
     except PixNotConnectedError:
         raise HTTPException(status_code=409, detail={"code": "pix.not_connected"})
     except PixLocationNotConfiguredError:
+        metrics_registry.record_pix_location_event("location_missing")
         raise HTTPException(status_code=409, detail={"code": "pix.location_not_configured"})
     except PixBoxClosedError:
         raise HTTPException(status_code=409, detail={"code": "pix.box_closed"})

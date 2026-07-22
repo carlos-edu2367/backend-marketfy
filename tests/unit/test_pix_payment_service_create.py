@@ -75,6 +75,12 @@ class FakePosLocationProvider:
                 "state_name": "SP", "latitude": -23.5, "longitude": -46.6}
 
 
+class MissingPosLocationProvider:
+    async def get_location(self, market_id):
+        from application.services.pix.payment_service import PixLocationNotConfiguredError
+        raise PixLocationNotConfiguredError("location missing")
+
+
 class FakeProvider:
     def __init__(self): self.called_with=None
     async def create_qr_payment(self, **kw):
@@ -123,3 +129,32 @@ async def test_create_qr_uses_backend_total(monkeypatch):
     assert provider.called_with["amount"] == Decimal("30.00")  # backend calculou
     assert attempt.order_id == "ORD1" and attempt.qr_data == "QRDATA"
     assert attempt.external_reference and "-" not in attempt.external_reference  # sem PII, formato seguro
+
+
+@pytest.mark.asyncio
+async def test_create_qr_location_error_happens_before_sale_persistence(monkeypatch):
+    monkeypatch.setenv("MP_ENABLED", "true")
+    monkeypatch.setenv("MP_SECRET_KEY", "k" * 32)
+    from infra.config import settings as sm
+    sm.get_settings.cache_clear()
+    from application.services.pix.payment_service import PixLocationNotConfiguredError, PixPaymentService
+    from domain.sales import BoxStatus
+
+    market_id = uuid.uuid4()
+    product = Product(uuid.uuid4(), Decimal("10.00"), market_id=market_id)
+    box = FakeBox(market_id); box.status = BoxStatus.OPEN
+    sale_repo = FakeSaleRepo()
+    service = PixPaymentService(
+        attempt_repo=FakeAttemptRepo(), sale_repo=sale_repo, box_repo=FakeBoxRepo(box),
+        product_repo=FakeProductRepo([product]), connection_service=FakeConnSvc(),
+        provider=FakeProvider(), lock=FakeLock(), market_repo=FakeMarketRepo(),
+        pos_location_provider=MissingPosLocationProvider(),
+    )
+
+    with pytest.raises(PixLocationNotConfiguredError):
+        await service.create_qr(
+            market_id=market_id, terminal_id=uuid.uuid4(), box_id=box.id,
+            operator_id=uuid.uuid4(), items=[{"product_id": product.id, "quantity": 1}],
+        )
+
+    assert sale_repo.saved is None

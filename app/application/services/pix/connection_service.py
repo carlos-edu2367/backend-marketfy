@@ -21,11 +21,12 @@ class ReauthorizationRequiredError(Exception):
 
 
 class MercadoPagoConnectionService:
-    def __init__(self, connection_repo, client, lock, pos_repo=None):
+    def __init__(self, connection_repo, client, lock, pos_repo=None, store_repo=None):
         self.repo = connection_repo
         self.client = client
         self.lock = lock
         self.pos_repo = pos_repo
+        self.store_repo = store_repo
         self.settings = get_settings()
         self.cipher = SecretCipher(self.settings.MP_SECRET_KEY)
 
@@ -81,28 +82,69 @@ class MercadoPagoConnectionService:
                 await self.lock.release(lock_key)
 
     async def ensure_pos_registered(self, *, market_id, terminal_id, access_token,
-                                    market_name, location, mp_user_id) -> str:
-        existing = await self.pos_repo.get_by_market_and_terminal(market_id, terminal_id)
-        if existing:
-            return existing.mp_pos_external_id
+                                    market_name, location, mp_user_id,
+                                    location_version: int = 1) -> str:
+        if self.pos_repo is None:
+            raise ConnectionNotReadyError("Repositório de POS não configurado.")
 
-        store_id = await self.pos_repo.get_store_id_for_market(market_id)
-        if not store_id:
-            store = await self.client.create_store(
-                access_token=access_token, user_id=mp_user_id, name=market_name,
-                external_id=str(market_id).replace("-", "")[:60], location=location,
+        lock_key = f"pix:pos:{market_id}:{terminal_id}"
+        got = await self.lock.acquire(lock_key, ttl=30) if self.lock else True
+        if not got:
+            raise ConnectionNotReadyError("Registro do caixa ocupado; tente novamente.")
+        try:
+            existing = await self.pos_repo.get_by_market_and_terminal(market_id, terminal_id)
+            if existing:
+                return existing.mp_pos_external_id
+
+            external_store_id = str(market_id).replace("-", "")[:60]
+            store_registration = (
+                await self.store_repo.get_by_market(market_id) if self.store_repo else None
             )
-            store_id = str(store["id"])
+            if store_registration is not None:
+                store_id = str(store_registration.mp_store_id)
+                if (
+                    store_registration.location_version_synced < location_version
+                    or store_registration.sync_status != "synced"
+                ):
+                    await self.client.update_store(
+                        access_token=access_token, user_id=mp_user_id,
+                        store_id=store_id, name=market_name,
+                        external_id=external_store_id, location=location,
+                    )
+                    store_registration.location_version_synced = location_version
+                    store_registration.sync_status = "synced"
+                    store_registration.last_error_code = None
+                    await self.store_repo.save(store_registration)
+            else:
+                store_id = await self.pos_repo.get_store_id_for_market(market_id)
+                if not store_id:
+                    store = await self.client.create_store(
+                        access_token=access_token, user_id=mp_user_id, name=market_name,
+                        external_id=external_store_id, location=location,
+                    )
+                    store_id = str(store["id"])
+                if self.store_repo:
+                    from infra.database.models import MercadoPagoStoreRegistrationModel
+                    store_registration = MercadoPagoStoreRegistrationModel(
+                        market_id=market_id, mp_user_id=mp_user_id, mp_store_id=store_id,
+                        external_id=external_store_id,
+                        location_version_synced=location_version,
+                        sync_status="synced",
+                    )
+                    await self.store_repo.save(store_registration)
 
-        pos_external_id = f"T{str(terminal_id).replace('-', '')[:38]}"  # <=40 chars
-        pos = await self.client.create_pos(
-            access_token=access_token, name=f"Caixa {terminal_id}", store_id=store_id,
-            external_store_id=str(market_id).replace("-", "")[:60], external_id=pos_external_id,
-        )
-        from infra.database.models import MercadoPagoPosRegistrationModel
-        registration = MercadoPagoPosRegistrationModel(
-            market_id=market_id, terminal_id=terminal_id,
-            mp_store_id=store_id, mp_pos_external_id=pos["external_id"],
-        )
-        await self.pos_repo.save(registration)
-        return registration.mp_pos_external_id
+            pos_external_id = f"T{str(terminal_id).replace('-', '')[:38]}"
+            pos = await self.client.create_pos(
+                access_token=access_token, name=f"Caixa {terminal_id}", store_id=store_id,
+                external_store_id=external_store_id, external_id=pos_external_id,
+            )
+            from infra.database.models import MercadoPagoPosRegistrationModel
+            registration = MercadoPagoPosRegistrationModel(
+                market_id=market_id, terminal_id=terminal_id,
+                mp_store_id=store_id, mp_pos_external_id=pos["external_id"],
+            )
+            await self.pos_repo.save(registration)
+            return registration.mp_pos_external_id
+        finally:
+            if self.lock and got:
+                await self.lock.release(lock_key)
