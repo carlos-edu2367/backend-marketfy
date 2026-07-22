@@ -41,9 +41,12 @@ class MarketLocationRepository:
         for field in (
             "postal_code", "street_name", "street_number", "district", "complement",
             "city_name", "state_code", "state_name", "country_code", "latitude",
-            "longitude", "source", "location_version",
+            "longitude", "source",
         ):
             setattr(model, field, getattr(location, field))
+        # The domain uses the provider-agnostic name `version`; the database
+        # column is explicit about what is versioned.
+        model.location_version = location.version
         await self.db.commit()
         await self.db.refresh(model)
         return model
