@@ -73,8 +73,9 @@ async def test_handle_callback_persists_encrypted_connection(monkeypatch):
     assert conn.mp_user_id == "42"
     assert conn.access_token_ciphertext.startswith("enc:")
     assert conn.refresh_token_ciphertext.startswith("enc:")
-    # token nunca em claro
-    assert "AT" not in conn.access_token_ciphertext
+    # Token nunca fica em claro; não testar ausência textual porque o ciphertext
+    # Fernet é aleatório e pode conter a sequência "AT" por acaso.
+    assert SecretCipher("k" * 32).decrypt(conn.access_token_ciphertext) == "AT"
 
 
 @pytest.mark.asyncio
