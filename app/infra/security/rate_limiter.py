@@ -100,3 +100,10 @@ async def enforce_pix_verify_rate_limit(request, *, attempt_id, sale_id, user_id
             if count > limit:
                 raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                                     detail="Aguarde antes de verificar novamente.")
+
+
+async def enforce_address_lookup_rate_limit(request, *, user_id) -> None:
+    """Limit CEP lookups by authenticated user without exposing address data."""
+    await enforce_rate_limit_async(
+        request, bucket=f"pix_address:{user_id}", limit=30, window_seconds=60
+    )

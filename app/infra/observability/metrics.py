@@ -34,6 +34,7 @@ class MetricsRegistry:
         )
         self._pix_reconciliation: Dict[str, int] = defaultdict(int)
         self._pix_anomaly: Dict[str, int] = defaultdict(int)
+        self._pix_location_events: Dict[str, int] = defaultdict(int)
 
     def record_request(self, method: str, route: str, status_code: int, duration_ms: float) -> None:
         method = method.upper()
@@ -153,6 +154,13 @@ class MetricsRegistry:
         with self._lock:
             self._pix_anomaly[_safe_label(kind)] = value
 
+    def record_pix_location_event(self, event: str) -> None:
+        allowed = {"location_saved", "location_validation_failed", "location_missing"}
+        if event not in allowed:
+            return
+        with self._lock:
+            self._pix_location_events[event] += 1
+
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -178,6 +186,7 @@ class MetricsRegistry:
                 "pix_provider_call_ms": {key: value.copy() for key, value in self._pix_provider_latency.items()},
                 "pix_reconciliation_runs_total": dict(self._pix_reconciliation),
                 "pix_anomaly": dict(self._pix_anomaly),
+                "pix_location_events_total": dict(self._pix_location_events),
             }
 
     def to_prometheus_text(self) -> str:
@@ -268,6 +277,9 @@ class MetricsRegistry:
         lines.append("# TYPE marketfy_pix_anomaly gauge")
         for kind, value in snapshot["pix_anomaly"].items():
             lines.append(f'marketfy_pix_anomaly{{kind="{kind}"}} {value}')
+        lines.append("# TYPE marketfy_pix_location_events_total counter")
+        for event, count in snapshot["pix_location_events_total"].items():
+            lines.append(f'marketfy_pix_location_events_total{{event="{event}"}} {count}')
         return "\n".join(lines) + "\n"
 
 

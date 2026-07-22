@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, Integer, ForeignKey, DateTime, Numeric, Text, UniqueConstraint, Index, Date, JSON, text
+from sqlalchemy import CheckConstraint, Column, String, Boolean, Integer, ForeignKey, DateTime, Numeric, Text, UniqueConstraint, Index, Date, JSON, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, synonym
 from infra.database.setup import Base
@@ -67,6 +67,36 @@ class MarketModel(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow) # Restaurado
+
+
+class MarketLocationModel(Base):
+    """Structured physical location used by provider integrations."""
+
+    __tablename__ = "market_locations"
+    __table_args__ = (
+        UniqueConstraint("market_id", name="uq_market_locations_market"),
+        CheckConstraint("latitude >= -90 AND latitude <= 90", name="ck_market_location_latitude"),
+        CheckConstraint("longitude >= -180 AND longitude <= 180", name="ck_market_location_longitude"),
+        Index("ix_market_locations_market", "market_id"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"), nullable=False)
+    postal_code = Column(String(8), nullable=False)
+    street_name = Column(String(160), nullable=False)
+    street_number = Column(String(32), nullable=False)
+    district = Column(String(120), nullable=True)
+    complement = Column(String(160), nullable=True)
+    city_name = Column(String(120), nullable=False)
+    state_code = Column(String(2), nullable=False)
+    state_name = Column(String(80), nullable=False)
+    country_code = Column(String(2), nullable=False, default="BR", server_default="BR")
+    latitude = Column(Numeric(9, 6), nullable=False)
+    longitude = Column(Numeric(9, 6), nullable=False)
+    source = Column(String(32), nullable=False, default="manual", server_default="manual")
+    location_version = Column(Integer, nullable=False, default=1, server_default="1")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
 class MarketMemberModel(Base):
@@ -1174,3 +1204,24 @@ class MercadoPagoPosRegistrationModel(Base):
     mp_store_id = Column(String, nullable=False)
     mp_pos_external_id = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class MercadoPagoStoreRegistrationModel(Base):
+    """One Mercado Pago Store registration per Marketfy market."""
+
+    __tablename__ = "mercado_pago_store_registrations"
+    __table_args__ = (
+        UniqueConstraint("market_id", name="uq_mp_store_market"),
+        Index("ix_mp_store_market", "market_id"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"), nullable=False)
+    mp_user_id = Column(String, nullable=False)
+    mp_store_id = Column(String, nullable=False)
+    external_id = Column(String(60), nullable=False)
+    location_version_synced = Column(Integer, nullable=False, default=0, server_default="0")
+    sync_status = Column(String(24), nullable=False, default="synced", server_default="synced")
+    last_error_code = Column(String(80), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

@@ -257,19 +257,24 @@ def get_pix_payment_service(db: AsyncSession = Depends(get_db)):
         PixPaymentAttemptRepository, MercadoPagoConnectionRepository,
         MercadoPagoPosRegistrationRepository,
     )
+    from infra.repositories.market_location_repo import (
+        MarketLocationRepository, MercadoPagoStoreRegistrationRepository,
+    )
     from infra.repositories.sqlalchemy_repos import (
         SQLAlchemySaleRepository, SQLAlchemyBoxRepository, SQLAlchemyProductRepository,
         SQLAlchemyMarketRepository, SQLAlchemyFinancialTransactionRepository,
     )
     from infra.providers.pix.mercadopago import MercadoPagoPixProvider
-    from infra.providers.pix.location import UnconfiguredPosLocationProvider
+    from infra.providers.pix.location import DatabasePosLocationProvider
     from infra.clients.mercadopago_client import MercadoPagoClient
     from infra.cache.redis_lock import RedisLock
     from infra.cache.pix_event_bus import PixEventBus
 
+    location_repo = MarketLocationRepository(db)
     conn_service = MercadoPagoConnectionService(
         MercadoPagoConnectionRepository(db), MercadoPagoClient(), RedisLock(),
         pos_repo=MercadoPagoPosRegistrationRepository(db),
+        store_repo=MercadoPagoStoreRegistrationRepository(db),
     )
     completer = SaleCompleter(
         sale_repo=SQLAlchemySaleRepository(db), product_repo=SQLAlchemyProductRepository(db),
@@ -280,5 +285,5 @@ def get_pix_payment_service(db: AsyncSession = Depends(get_db)):
         box_repo=SQLAlchemyBoxRepository(db), product_repo=SQLAlchemyProductRepository(db),
         connection_service=conn_service, provider=MercadoPagoPixProvider(), lock=RedisLock(),
         market_repo=SQLAlchemyMarketRepository(db),
-        pos_location_provider=UnconfiguredPosLocationProvider(),
+        pos_location_provider=DatabasePosLocationProvider(location_repo),
         completer=completer, event_bus=PixEventBus())

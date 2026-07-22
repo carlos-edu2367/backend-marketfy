@@ -124,9 +124,14 @@ class PixPaymentService:
         connection = connection_for_flag
         market = await self.market_repo.get_by_id(market_id)
         location = await self.pos_location_provider.get_location(market_id)
+        location_version = 1
+        get_version = getattr(self.pos_location_provider, "get_location_version", None)
+        if get_version is not None:
+            location_version = await get_version(market_id)
         external_pos_id = await self.connection_service.ensure_pos_registered(
             market_id=market_id, terminal_id=terminal_id, access_token=access_token,
             market_name=market.name, location=location, mp_user_id=connection.mp_user_id,
+            location_version=location_version,
         )
 
         # 3. Venda AWAITING_PAYMENT (estoque/caixa NÃO mudam aqui)
