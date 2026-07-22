@@ -11,12 +11,15 @@ import uuid
 import pytest
 from decimal import Decimal
 from domain.pix import PixOrderResult, PixAttemptStatus
+from domain.sales import SaleItemFiscalEvidence
 
 
 class Product:
     def __init__(self, pid, price, name="Item", market_id=None, ncm=None):
         self.id, self.price, self.name, self.market_id = pid, price, name, market_id
         self.code = "C1"
+        self.ncm = ncm
+        self.origin = 0
 
 
 class FakeProductRepo:
@@ -94,6 +97,21 @@ class FakeLock:
     async def release(self, k): return None
 
 
+class FakeFiscalSaleService:
+    def __init__(self):
+        self.calls = []
+
+    async def freeze_fiscal_snapshots(self, *, market_id, sale, prepared_items):
+        self.calls.append((market_id, sale, prepared_items))
+        return [SaleItemFiscalEvidence(
+            tax_rule_id_snapshot=uuid.uuid4(),
+            tax_rule_version_snapshot=1,
+            fiscal_calculation_version="v2",
+            fiscal_tax_snapshot={"ncm": "22021000"},
+            snapshot_sha256="a" * 64,
+        ) for _ in prepared_items]
+
+
 @pytest.mark.asyncio
 async def test_create_qr_uses_backend_total(monkeypatch):
     monkeypatch.setenv("MP_ORDER_DEFAULT_EXPIRATION", "PT5M")
@@ -114,11 +132,13 @@ async def test_create_qr_uses_backend_total(monkeypatch):
     from domain.sales import BoxStatus
     box = FakeBox(market_id); box.status = BoxStatus.OPEN
     provider = FakeProvider()
+    fiscal_sale_service = FakeFiscalSaleService()
     svc = PixPaymentService(
         attempt_repo=FakeAttemptRepo(), sale_repo=FakeSaleRepo(), box_repo=FakeBoxRepo(box),
         product_repo=FakeProductRepo([p1, p2]), connection_service=FakeConnSvc(),
         provider=provider, lock=FakeLock(),
         market_repo=FakeMarketRepo(), pos_location_provider=FakePosLocationProvider(),
+        fiscal_sale_service=fiscal_sale_service,
     )
     # cliente pede 2x p1 + 1x p2 = 30.00; NENHUM valor é enviado pelo cliente
     attempt = await svc.create_qr(
@@ -129,6 +149,22 @@ async def test_create_qr_uses_backend_total(monkeypatch):
     assert provider.called_with["amount"] == Decimal("30.00")  # backend calculou
     assert attempt.order_id == "ORD1" and attempt.qr_data == "QRDATA"
     assert attempt.external_reference and "-" not in attempt.external_reference  # sem PII, formato seguro
+    assert [(item.product_id, item.quantity) for item in svc.sale_repo.saved.items] == [
+        (p1.id, Decimal("2")),
+        (p2.id, Decimal("1")),
+    ]
+    assert len(fiscal_sale_service.calls) == 1
+    assert [item.fiscal_tax_snapshot for item in svc.sale_repo.saved.items] == [
+        {"ncm": "22021000"},
+        {"ncm": "22021000"},
+    ]
+
+    from application.services.pix.payment_service import PixInvalidItemsError
+    with pytest.raises(PixInvalidItemsError, match="inteiro positivo"):
+        await svc.create_qr(
+            market_id=market_id, terminal_id=uuid.uuid4(), box_id=box.id, operator_id=uuid.uuid4(),
+            items=[{"product_id": p1.id, "quantity": "1.5"}],
+        )
 
 
 @pytest.mark.asyncio

@@ -114,6 +114,7 @@ class Payment(Entity):
     method: PaymentMethod
     amount: Decimal
     installments: int = 1
+    modality: str = "manual"
 
 @dataclass
 class Sale(Entity):

@@ -1,10 +1,11 @@
 from __future__ import annotations
 import uuid
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta, timezone
 
 from domain.pix import PixItem, PixAttemptStatus
 from domain.sales import Sale, SaleStatus, BoxStatus
+from application.dtos import SaleItemDTO
 from infra.database.models import PixPaymentAttemptModel
 from infra.config.settings import get_settings
 from infra.config.logger import get_logger
@@ -45,7 +46,8 @@ class PixPaymentService:
 
     def __init__(self, *, attempt_repo, sale_repo, box_repo, product_repo,
                  connection_service, provider, lock,
-                 market_repo=None, pos_location_provider=None, completer=None, event_bus=None):
+                 market_repo=None, pos_location_provider=None, completer=None, event_bus=None,
+                 fiscal_sale_service=None):
         # market_repo/pos_location_provider: usados apenas por create_qr (Task 5b/6); ficam
         # opcionais para não quebrar a construção de PixPaymentService nos testes de
         # verify/cancel (Tasks 7-8), que não os utilizam.
@@ -66,6 +68,7 @@ class PixPaymentService:
         self.lock = lock
         self.completer = completer
         self.event_bus = event_bus
+        self.fiscal_sale_service = fiscal_sale_service
         self.settings = get_settings()
 
     async def _publish_status_event(self, attempt):
@@ -101,13 +104,30 @@ class PixPaymentService:
             raise PixFeatureDisabledError("Pix QR não habilitado para este caixa.")
 
         # 1. Resolver itens e total NO BACKEND
-        pix_items, total = [], Decimal("0.00")
+        pix_items, sale_items, fiscal_items, total = [], [], [], Decimal("0.00")
         for it in items:
             product = await self.product_repo.get_by_id(it["product_id"])
             if not product or product.market_id != market_id:
                 raise PixInvalidItemsError("Produto não encontrado na loja.")
-            qty = int(it["quantity"])
+            try:
+                quantity = Decimal(str(it["quantity"]))
+            except (InvalidOperation, TypeError, ValueError, KeyError) as exc:
+                raise PixInvalidItemsError("Quantidade inválida.") from exc
+            if not quantity.is_finite() or quantity <= 0 or quantity != quantity.to_integral_value():
+                raise PixInvalidItemsError("Quantidade deve ser um inteiro positivo.")
+            qty = int(quantity)
             total += product.price * qty
+            sale_items.append((product, quantity))
+            fiscal_items.append((
+                SaleItemDTO(
+                    product_id=product.id,
+                    product_name=product.name,
+                    quantity=quantity,
+                    unit_price=product.price,
+                    total=product.price * qty,
+                ),
+                product,
+            ))
             pix_items.append(PixItem(title=product.name, unit_price=product.price,
                                      quantity=qty, external_code=getattr(product, "code", None)))
         if total <= 0:
@@ -136,7 +156,16 @@ class PixPaymentService:
 
         # 3. Venda AWAITING_PAYMENT (estoque/caixa NÃO mudam aqui)
         sale = Sale(market_id=market_id, box_id=box_id, operator_id=operator_id,
-                    status=SaleStatus.AWAITING_PAYMENT, total_amount=total)
+                    status=SaleStatus.AWAITING_PAYMENT)
+        fiscal_snapshots = [None] * len(sale_items)
+        if self.fiscal_sale_service:
+            fiscal_snapshots = await self.fiscal_sale_service.freeze_fiscal_snapshots(
+                market_id=market_id,
+                sale=sale,
+                prepared_items=fiscal_items,
+            )
+        for (product, quantity), fiscal_evidence in zip(sale_items, fiscal_snapshots):
+            sale.add_item(product, quantity, fiscal_evidence=fiscal_evidence)
         sale = await self.sale_repo.save(sale, commit=False)
 
         # 4. Tentativa ativa única

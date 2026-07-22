@@ -286,4 +286,5 @@ def get_pix_payment_service(db: AsyncSession = Depends(get_db)):
         connection_service=conn_service, provider=MercadoPagoPixProvider(), lock=RedisLock(),
         market_repo=SQLAlchemyMarketRepository(db),
         pos_location_provider=DatabasePosLocationProvider(location_repo),
-        completer=completer, event_bus=PixEventBus())
+        completer=completer, event_bus=PixEventBus(),
+        fiscal_sale_service=get_sales_service(db))

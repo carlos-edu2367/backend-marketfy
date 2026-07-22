@@ -328,7 +328,7 @@ async def create_qr(market_id: uuid.UUID, payload: dict, request: Request,
 async def get_attempt(market_id: uuid.UUID, attempt_id: uuid.UUID,
                       db: AsyncSession = Depends(get_db),
                       market=Depends(require_market_access(MarketPermission.SALES_READ))):
-    a = await PixPaymentAttemptRepository(db).get_by_id_for_update(attempt_id, market_id)
+    a = await PixPaymentAttemptRepository(db).get_by_id(attempt_id, market_id)
     if a is None:
         raise HTTPException(status_code=404, detail={"code": "pix.attempt_not_found"})
     return _attempt_response(a)
@@ -354,7 +354,7 @@ async def verify_attempt(market_id: uuid.UUID, attempt_id: uuid.UUID, request: R
             resource_type="pix_attempt", resource_id=str(attempt.id),
             result="success", market_id=market_id, metadata={},
         )
-    return {"attempt_id": str(attempt.id), "status": attempt.status,
+    return {"attempt_id": str(attempt.id), "sale_id": str(attempt.sale_id), "status": attempt.status,
             "sale_completed": attempt.status == "approved", "amount": f"{attempt.amount:.2f}"}
 
 
