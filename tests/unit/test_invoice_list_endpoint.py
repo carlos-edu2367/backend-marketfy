@@ -16,3 +16,4 @@ def test_invoice_endpoints_registered():
     assert "/invoices" in paths
     assert "/invoices/{invoice_id}" in paths
     assert "/invoices/{invoice_id}/checkout" in paths
+    assert "/invoices/{invoice_id}/retry" in paths
