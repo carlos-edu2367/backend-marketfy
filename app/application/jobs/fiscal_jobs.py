@@ -236,6 +236,7 @@ async def emit_nfce_job(
                 period=emit_period,
                 market_id=market_uuid,
                 reason="fiscal_tax_snapshot_invalid",
+                fiscal_document_id=doc_uuid,
             )
             await _append_event(
                 event_repo,
@@ -358,6 +359,7 @@ async def emit_nfce_job(
                 period=emit_period,
                 market_id=market_uuid,
                 reason="rejected",
+                fiscal_document_id=doc_uuid,
             )
             await _append_event(event_repo, doc, "rejected",
                                  f"Rejeitado {result.error_code}: {result.error_message}",
@@ -372,6 +374,15 @@ async def emit_nfce_job(
                 sefaz_msg="NFC-e cancelada antes da autorização.",
             )
             await doc_repo.save(doc)
+            # Regression: essa reserva ficava presa para sempre — nenhum outro
+            # branch libera a cota quando o provider cancela antes da autorização.
+            await quota_service.release(
+                owner_id=owner_uuid,
+                period=emit_period,
+                market_id=market_uuid,
+                reason="canceled",
+                fiscal_document_id=doc_uuid,
+            )
             await _append_event(event_repo, doc, "canceled",
                                  "NFC-e cancelada (retorno do provider).",
                                  FiscalEventSource.PROVIDER)
@@ -398,6 +409,7 @@ async def emit_nfce_job(
                 await ctx["redis"].enqueue_job(
                     "reconcile_nfce_job",
                     doc_id=doc_id, market_id=market_id, owner_id=owner_id,
+                    period=emit_period, consuming_addon=consuming_addon,
                     _queue_name=QUEUE_FISCAL_RECONCILE,
                     _defer_by=timedelta(seconds=8),
                 )
@@ -414,6 +426,7 @@ async def emit_nfce_job(
                 await ctx["redis"].enqueue_job(
                     "reconcile_nfce_job",
                     doc_id=doc_id, market_id=market_id, owner_id=owner_id,
+                    period=emit_period, consuming_addon=consuming_addon,
                     _queue_name=QUEUE_FISCAL_RECONCILE,
                     _defer_by=timedelta(seconds=60),
                 )
@@ -425,9 +438,17 @@ async def emit_nfce_job(
 # =============================================================================
 
 async def reconcile_nfce_job(
-    ctx: dict, doc_id: str, market_id: str, owner_id: str
+    ctx: dict, doc_id: str, market_id: str, owner_id: str,
+    period: str = "", consuming_addon: bool = False,
 ) -> dict:
-    """Consulta o provider para resolver estado incerto de um documento."""
+    """Consulta o provider para resolver estado incerto de um documento.
+
+    period/consuming_addon: propagados desde a reserva original (via
+    emit_nfce_job) para que, ao resolver o documento, a cota seja fechada
+    contra o mesmo período/tipo em que foi reservada. Se ausentes (jobs
+    enfileirados antes deste parâmetro existir), cai no período atual —
+    impreciso apenas se a reconciliação atravessar a virada do mês.
+    """
     from sqlalchemy.ext.asyncio import AsyncSession
     from infra.database.setup import async_session_factory
     from infra.repositories.fiscal_repo import (
@@ -435,10 +456,12 @@ async def reconcile_nfce_job(
         SQLAlchemyFiscalDocumentRepository,
         SQLAlchemyFiscalEventRepository,
         SQLAlchemyFiscalTenantConfigRepository,
+        SQLAlchemyFiscalUsageRepository,
     )
     from infra.providers.fiscal.provider_factory import get_fiscal_provider
     from infra.security.secret_cipher import SecretCipher
     from infra.config.settings import get_settings
+    from application.services.fiscal.fiscal_quota_service import FiscalQuotaService
     from application.services.fiscal.fiscal_reconciliation_service import (
         FiscalReconciliationService,
         _BACKOFF_DELAYS,
@@ -448,12 +471,15 @@ async def reconcile_nfce_job(
     settings = get_settings()
     doc_uuid = uuid.UUID(doc_id)
     market_uuid = uuid.UUID(market_id)
+    owner_uuid = uuid.UUID(owner_id)
+    resolved_period = period or datetime.utcnow().strftime("%Y%m")
 
     async with async_session_factory() as session:
         doc_repo = SQLAlchemyFiscalDocumentRepository(session)
         attempt_repo = SQLAlchemyFiscalAttemptRepository(session)
         event_repo = SQLAlchemyFiscalEventRepository(session)
         config_repo = SQLAlchemyFiscalTenantConfigRepository(session)
+        quota_service = FiscalQuotaService(SQLAlchemyFiscalUsageRepository(session))
 
         cfg = await config_repo.get_by_market(market_uuid)
         if not cfg:
@@ -472,6 +498,17 @@ async def reconcile_nfce_job(
         svc = FiscalReconciliationService(doc_repo, attempt_repo, event_repo, provider)
         doc = await svc.reconcile_document(doc_uuid, api_token)
 
+        if doc.is_terminal():
+            # Regression: reconcile_document() só resolve o status SEFAZ do
+            # documento — nunca fechava a reserva de cota. Todo NFC-e resolvido
+            # por este caminho (o padrão para o provider Neectify, que emite de
+            # forma assíncrona) ficava preso em reserved_count para sempre.
+            await _finalize_reconciled_quota(
+                doc, quota_service,
+                owner_id=owner_uuid, market_id=market_uuid,
+                period=resolved_period, consuming_addon=consuming_addon,
+            )
+
         # A emissão no Neectify é assíncrona: uma única consulta raramente cai
         # depois da resposta da SEFAZ. Enquanto o documento não for terminal,
         # reagendamos novas consultas com backoff até resolver ou o circuit breaker
@@ -487,6 +524,7 @@ async def reconcile_nfce_job(
                 await ctx["redis"].enqueue_job(
                     "reconcile_nfce_job",
                     doc_id=doc_id, market_id=market_id, owner_id=owner_id,
+                    period=resolved_period, consuming_addon=consuming_addon,
                     _queue_name=QUEUE_FISCAL_RECONCILE,
                     _job_id=f"reconcile:{doc_id}:{consult_count}",
                     _defer_by=timedelta(seconds=delay),
@@ -833,3 +871,43 @@ async def _append_event(event_repo, doc, event_type, message, source):
         await event_repo.append(event)
     except Exception as exc:
         logger.warning("event_append_failed", extra={"extra_data": {"error": str(exc)}})
+
+
+async def _finalize_reconciled_quota(
+    doc,
+    quota_service,
+    *,
+    owner_id: uuid.UUID,
+    market_id: uuid.UUID,
+    period: str,
+    consuming_addon: bool,
+) -> None:
+    """Fecha a reserva de cota fiscal quando a reconciliação assíncrona resolve
+    um documento.
+
+    reconcile_document() só atualiza o status SEFAZ do documento — nunca a
+    cota. emit_nfce_job() (caminho síncrono) chama consume()/release() inline
+    após a resposta do provider; este é o equivalente para o caminho
+    assíncrono (reconcile_nfce_job), que resolve a maioria das emissões do
+    provider Neectify. consume()/release() já são idempotentes por
+    fiscal_document_id, então reprocessamentos deste helper são seguros.
+    """
+    from domain.fiscal import FiscalDocumentStatus
+
+    if doc.status == FiscalDocumentStatus.AUTHORIZED:
+        await quota_service.consume(
+            owner_id=owner_id,
+            market_id=market_id,
+            period=period,
+            consuming_addon=consuming_addon,
+            sale_id=doc.sale_id,
+            fiscal_document_id=doc.id,
+        )
+    elif doc.status in (FiscalDocumentStatus.REJECTED, FiscalDocumentStatus.MANUAL_ACTION_REQUIRED):
+        await quota_service.release(
+            owner_id=owner_id,
+            period=period,
+            market_id=market_id,
+            reason=doc.status.value,
+            fiscal_document_id=doc.id,
+        )

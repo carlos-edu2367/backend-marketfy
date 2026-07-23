@@ -104,7 +104,23 @@ class FiscalQuotaService:
         sale_id: Optional[uuid.UUID] = None,
         fiscal_document_id: Optional[uuid.UUID] = None,
     ) -> None:
-        """Confirma consumo após emissão bem-sucedida."""
+        """Confirma consumo após emissão bem-sucedida.
+
+        Idempotente por fiscal_document_id: a reconciliação assíncrona pode
+        reprocessar o mesmo documento (retries com backoff, sweeps de cron).
+        Sem essa checagem, cada reprocessamento duplicaria used_count e
+        decrementaria reserved_count de novo.
+        """
+        idempotency_key = (
+            f"consume:{owner_id}:{period}:{fiscal_document_id}"
+            if fiscal_document_id
+            else f"consume:{owner_id}:{period}:{uuid.uuid4()}"
+        )
+        if fiscal_document_id is not None:
+            existing = await self.repo.get_ledger_entry_by_idempotency(idempotency_key)
+            if existing:
+                return
+
         await self.repo.increment_used(owner_id, period)
         await self.repo.decrement_reserved(owner_id, period)
 
@@ -114,11 +130,6 @@ class FiscalQuotaService:
                 await self.repo.decrement_package_remaining(oldest_package.id)
                 await self.repo.decrement_addon_limit(owner_id, period, amount=1)
 
-        idempotency_key = (
-            f"consume:{owner_id}:{period}:{fiscal_document_id}"
-            if fiscal_document_id
-            else f"consume:{owner_id}:{period}:{uuid.uuid4()}"
-        )
         entry = FiscalUsageLedger(
             owner_id=owner_id,
             period_yyyymm=period,
@@ -140,8 +151,22 @@ class FiscalQuotaService:
         period: str,
         market_id: Optional[uuid.UUID] = None,
         reason: str = "local_failure",
+        fiscal_document_id: Optional[uuid.UUID] = None,
     ) -> None:
-        """Libera reserva quando a emissão falha antes ou durante o provider."""
+        """Libera reserva quando a emissão falha antes ou durante o provider.
+
+        Idempotente por fiscal_document_id pelo mesmo motivo de consume().
+        """
+        idempotency_key = (
+            f"release:{owner_id}:{period}:{fiscal_document_id}"
+            if fiscal_document_id
+            else None
+        )
+        if idempotency_key is not None:
+            existing = await self.repo.get_ledger_entry_by_idempotency(idempotency_key)
+            if existing:
+                return
+
         await self.repo.decrement_reserved(owner_id, period)
 
         entry = FiscalUsageLedger(
@@ -149,8 +174,10 @@ class FiscalQuotaService:
             period_yyyymm=period,
             event_type=UsageLedgerEventType.RELEASED,
             market_id=market_id,
+            fiscal_document_id=fiscal_document_id,
             quantity=1,
             reason=reason,
+            idempotency_key=idempotency_key,
         )
         try:
             await self.repo.append_ledger(entry)

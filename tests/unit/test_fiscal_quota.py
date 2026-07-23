@@ -213,6 +213,34 @@ async def test_consume_tolerates_ledger_failure():
     await svc.consume(uuid.uuid4(), uuid.uuid4(), PERIOD, consuming_addon=False)
 
 
+@pytest.mark.asyncio
+async def test_consume_is_idempotent_per_fiscal_document():
+    """Regression: async reconciliation can resolve the same document more
+    than once (backoff retries, redundant cron sweeps). Without this guard,
+    each reprocessing double-counts used_count and double-decrements
+    reserved_count, permanently leaking reserved quota that never converts
+    to 'used'."""
+    repo = _make_repo()
+    doc_id = uuid.uuid4()
+    repo.get_ledger_entry_by_idempotency.return_value = MagicMock()  # already consumed
+    svc = _service(repo)
+    await svc.consume(uuid.uuid4(), uuid.uuid4(), PERIOD, consuming_addon=False, fiscal_document_id=doc_id)
+    repo.increment_used.assert_not_called()
+    repo.decrement_reserved.assert_not_called()
+    repo.append_ledger.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_consume_proceeds_when_fiscal_document_not_previously_consumed():
+    repo = _make_repo()
+    doc_id = uuid.uuid4()
+    repo.get_ledger_entry_by_idempotency.return_value = None
+    svc = _service(repo)
+    await svc.consume(uuid.uuid4(), uuid.uuid4(), PERIOD, consuming_addon=False, fiscal_document_id=doc_id)
+    repo.increment_used.assert_called_once()
+    repo.decrement_reserved.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # release
 # ---------------------------------------------------------------------------
@@ -234,6 +262,27 @@ async def test_release_writes_released_ledger_entry():
     entry = repo.append_ledger.call_args[0][0]
     assert entry.event_type == UsageLedgerEventType.RELEASED
     assert entry.reason == "test_failure"
+
+
+@pytest.mark.asyncio
+async def test_release_is_idempotent_per_fiscal_document():
+    repo = _make_repo()
+    doc_id = uuid.uuid4()
+    repo.get_ledger_entry_by_idempotency.return_value = MagicMock()  # already released
+    svc = _service(repo)
+    await svc.release(uuid.uuid4(), PERIOD, fiscal_document_id=doc_id)
+    repo.decrement_reserved.assert_not_called()
+    repo.append_ledger.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_release_proceeds_when_fiscal_document_not_previously_released():
+    repo = _make_repo()
+    doc_id = uuid.uuid4()
+    repo.get_ledger_entry_by_idempotency.return_value = None
+    svc = _service(repo)
+    await svc.release(uuid.uuid4(), PERIOD, fiscal_document_id=doc_id)
+    repo.decrement_reserved.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
