@@ -73,18 +73,20 @@ async def _run_generate_due_invoices_with_session(ctx: dict) -> dict:
     async with async_session_factory() as session:
         sub_repo = SQLAlchemyBillingSubscriptionRepository(session)
         invoice_repo = SQLAlchemyBillingInvoiceRepository(session)
+        user_repo = SQLAlchemyUserRepository(session)
         invoice_service = InvoiceService(
             invoice_repo=invoice_repo,
             subscription_repo=sub_repo,
             plan_repo=SQLAlchemyPlanRepository(session),
             billing_client=BillingCoreClient(),
             settings=settings,
+            user_repo=user_repo,
         )
         email_gateway = _build_email_gateway(settings)  # ver Task 14 (retorna None se sem config)
         result = await generate_due_invoices(
             ctx, sub_repo=sub_repo, invoice_service=invoice_service,
             invoice_repo=invoice_repo, email_gateway=email_gateway,
-            user_repo=SQLAlchemyUserRepository(session),
+            user_repo=user_repo,
         )
         await session.commit()
         return result
@@ -149,7 +151,7 @@ async def _run_reconcile_pending_invoices_with_session(ctx: dict) -> dict:
     from infra.clients.billing_core_client import BillingCoreClient
     from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
     from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
-    from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository
+    from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository, SQLAlchemyUserRepository
     from application.services.invoice_service import InvoiceService
 
     settings = get_settings()
@@ -161,6 +163,7 @@ async def _run_reconcile_pending_invoices_with_session(ctx: dict) -> dict:
             plan_repo=SQLAlchemyPlanRepository(session),
             billing_client=BillingCoreClient(),
             settings=settings,
+            user_repo=SQLAlchemyUserRepository(session),
         )
         result = await reconcile_pending_invoices(
             ctx, invoice_repo=invoice_repo, bc_client=BillingCoreClient(), invoice_service=invoice_service,

@@ -24,12 +24,13 @@ def price_for_period(plan, subscription_type: str) -> Decimal:
 
 
 class InvoiceService:
-    def __init__(self, invoice_repo, subscription_repo, plan_repo, billing_client, settings):
+    def __init__(self, invoice_repo, subscription_repo, plan_repo, billing_client, settings, user_repo=None):
         self._inv = invoice_repo
         self._sub = subscription_repo
         self._plan = plan_repo
         self._bc = billing_client
         self._settings = settings
+        self._user = user_repo
 
     # -- Contratação -------------------------------------------------------
     async def contract(self, owner_id: uuid.UUID, plan_id: uuid.UUID,
@@ -281,6 +282,13 @@ class InvoiceService:
             sub.expires_at = invoice.period_end
             sub.last_event_at = datetime.utcnow()
             await self._sub.save(sub)
+        if self._user is not None:
+            user = await self._user.get_by_id(invoice.owner_id)
+            if user is not None:
+                user.plan_id = invoice.plan_id
+                user.plan_expiration = invoice.period_end
+                user.is_active = True
+                await self._user.save(user)
         logger.info("invoice_activated", extra={"extra_data": {
             "invoice_id": str(invoice_id), "subscription_id": str(invoice.subscription_id)}})
 

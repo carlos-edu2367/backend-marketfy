@@ -81,7 +81,7 @@ def _get_invoice_service(db: AsyncSession = Depends(get_db)):
     from application.services.invoice_service import InvoiceService
     from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
     from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
-    from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository
+    from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository, SQLAlchemyUserRepository
 
     return InvoiceService(
         invoice_repo=SQLAlchemyBillingInvoiceRepository(db),
@@ -89,6 +89,7 @@ def _get_invoice_service(db: AsyncSession = Depends(get_db)):
         plan_repo=SQLAlchemyPlanRepository(db),
         billing_client=BillingCoreClient(),
         settings=settings,
+        user_repo=SQLAlchemyUserRepository(db),
     )
 
 

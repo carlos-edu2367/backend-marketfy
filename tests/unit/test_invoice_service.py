@@ -128,6 +128,25 @@ class PlanRepo:
 
 
 @dataclass
+class StubUser:
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    plan_id: Optional[uuid.UUID] = None
+    plan_expiration: Optional[datetime] = None
+    is_active: bool = False
+
+
+class UserRepo:
+    def __init__(self, user):
+        self._user = user
+        self.saved = []
+    async def get_by_id(self, uid):
+        return self._user
+    async def save(self, user):
+        self.saved.append(user)
+        return user
+
+
+@dataclass
 class StubSettings:
     BILLING_CORE_SYSTEM: str = "marketfy"
     BILLING_CORE_WEBHOOK_INVOICE_URL: str = "https://api-marketfy/api/v1/webhooks/billing-invoices"
@@ -280,3 +299,29 @@ async def test_activate_invoice_activates_subscription_idempotently():
     assert sub.status == "active"
     assert sub.expires_at is not None
     assert inv.status == "paid"
+
+
+@pytest.mark.asyncio
+async def test_activate_invoice_syncs_user_plan_cache():
+    """Regression: paying an invoice must update the UserModel cache
+    (plan_id/plan_expiration/is_active) that /auth/me and the frontend
+    banner read — not just the BillingSubscriptionModel row."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    now = datetime.utcnow()
+    sub = StubSub(owner_id=owner, plan_id=plan.id, status="pending")
+    inv_repo = InvoiceRepo()
+    inv = await inv_repo.create(owner_id=owner, subscription_id=sub.id, plan_id=plan.id,
+                                period_start=now, period_end=now + timedelta(days=30),
+                                due_date=now, amount=Decimal("50.00"), idempotency_key="idem-2")
+    sub_repo = SubRepo(sub)
+    user = StubUser(id=owner, plan_id=None, plan_expiration=None, is_active=False)
+    user_repo = UserRepo(user)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings(), user_repo=user_repo)
+
+    await svc.activate_invoice(inv.id, "pay_1", {})
+
+    assert user.plan_id == plan.id
+    assert user.plan_expiration == inv.period_end
+    assert user.is_active is True
+    assert len(user_repo.saved) == 1

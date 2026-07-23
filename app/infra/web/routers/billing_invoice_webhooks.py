@@ -65,7 +65,7 @@ async def billing_invoice_webhook(request: Request, db: AsyncSession = Depends(g
     from application.services.invoice_service import InvoiceService
     from infra.repositories.billing_invoice_repo import SQLAlchemyBillingInvoiceRepository
     from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
-    from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository
+    from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository, SQLAlchemyUserRepository
     from infra.clients.billing_core_client import BillingCoreClient
 
     svc = InvoiceService(
@@ -74,6 +74,7 @@ async def billing_invoice_webhook(request: Request, db: AsyncSession = Depends(g
         plan_repo=SQLAlchemyPlanRepository(db),
         billing_client=BillingCoreClient(),
         settings=settings,
+        user_repo=SQLAlchemyUserRepository(db),
     )
     processor = InvoiceWebhookProcessor(svc)
     code = await processor.process(payload)
