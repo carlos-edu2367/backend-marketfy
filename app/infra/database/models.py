@@ -973,6 +973,7 @@ class FiscalEmissionPackageModel(Base):
         Index("ix_fep_valid", "owner_id", "valid_until"),
         Index("ix_fep_owner_status", "owner_id", "payment_status"),
         Index("ix_fep_owner_payment_status", "owner_id", "payment_status"),
+        Index("ix_fep_owner_type", "owner_id", "package_type"),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -992,6 +993,9 @@ class FiscalEmissionPackageModel(Base):
     price_gross = Column(Numeric(10, 2), nullable=True)
     price_net_target = Column(Numeric(10, 2), nullable=True)
     purchased_at_market_id = Column(UUID(as_uuid=True), nullable=True)
+    grant_reason_code = Column(String(32), nullable=True)
+    grant_note = Column(String(500), nullable=True)
+    granted_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 # =============================================================================

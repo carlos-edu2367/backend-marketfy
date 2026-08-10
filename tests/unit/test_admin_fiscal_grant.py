@@ -92,3 +92,86 @@ def test_history_item_exposes_grant_metadata():
     # grant_note e granted_by_id NAO podem vazar para o item de historico
     assert not hasattr(item, "grant_note")
     assert not hasattr(item, "granted_by_id")
+
+
+from unittest.mock import AsyncMock, MagicMock
+
+from infra.repositories.fiscal_repo import _to_package
+
+
+def test_to_package_maps_grant_columns():
+    admin_id = uuid.uuid4()
+    model = MagicMock()
+    model.id = uuid.uuid4()
+    model.owner_id = uuid.uuid4()
+    model.package_type = PACKAGE_TYPE_ADMIN_GRANT
+    model.quantity = 500
+    model.remaining = 500
+    model.valid_from = None
+    model.valid_until = None
+    model.billing_subscription_id = None
+    model.payment_status = "paid"
+    model.market_id = None
+    model.package_slug = "admin_grant"
+    model.bc_job_id = None
+    model.bc_payment_id = None
+    model.bc_idempotency_key = "key-12345678"
+    model.price_gross = None
+    model.price_net_target = None
+    model.purchased_at_market_id = None
+    model.created_at = None
+    model.grant_reason_code = "courtesy"
+    model.grant_note = "nota interna"
+    model.granted_by_id = admin_id
+
+    package = _to_package(model)
+
+    assert package.package_type == PACKAGE_TYPE_ADMIN_GRANT
+    assert package.grant_reason_code == "courtesy"
+    assert package.grant_note == "nota interna"
+    assert package.granted_by_id == admin_id
+
+
+from datetime import datetime, timedelta
+
+from infra.repositories.fiscal_repo import SQLAlchemyFiscalUsageRepository
+
+
+@pytest.mark.asyncio
+async def test_create_grant_package_sets_owner_scoped_paid_package():
+    session = MagicMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    repo = SQLAlchemyFiscalUsageRepository(session)
+
+    owner_id = uuid.uuid4()
+    admin_id = uuid.uuid4()
+    now = datetime(2026, 8, 10, 12, 0, 0)
+
+    package = await repo.create_grant_package(
+        owner_id=owner_id,
+        quantity=500,
+        valid_from=now,
+        valid_until=now + timedelta(days=365),
+        grant_reason_code="courtesy",
+        grant_note="nota interna",
+        granted_by_id=admin_id,
+        idempotency_key="idem-12345678",
+    )
+
+    assert package.owner_id == owner_id
+    assert package.package_type == PACKAGE_TYPE_ADMIN_GRANT
+    assert package.package_slug == "admin_grant"
+    assert package.payment_status == "paid"
+    assert package.quantity == 500
+    assert package.remaining == 500
+    assert package.price_gross == 0
+    assert package.valid_until == now + timedelta(days=365)
+    # Credito e do owner, nao de uma loja
+    assert package.market_id is None
+    assert package.purchased_at_market_id is None
+    # Sem cobranca no Billing Core
+    assert package.bc_job_id is None
+    assert package.bc_payment_id is None
+    assert package.bc_idempotency_key == "idem-12345678"
+    session.flush.assert_awaited_once()

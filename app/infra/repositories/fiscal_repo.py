@@ -1426,6 +1426,9 @@ class SQLAlchemyFiscalUsageRepository:
         m.price_gross = pkg.price_gross
         m.price_net_target = pkg.price_net_target
         m.purchased_at_market_id = pkg.purchased_at_market_id
+        m.grant_reason_code = pkg.grant_reason_code
+        m.grant_note = pkg.grant_note
+        m.granted_by_id = pkg.granted_by_id
         if commit:
             await self.session.commit()
         return pkg
@@ -1487,6 +1490,52 @@ class SQLAlchemyFiscalUsageRepository:
             if existing:
                 return existing
             raise
+        return _to_package(m)
+
+    async def create_grant_package(
+        self,
+        *,
+        owner_id: uuid.UUID,
+        quantity: int,
+        valid_from: datetime,
+        valid_until: datetime,
+        grant_reason_code: str,
+        grant_note: Optional[str],
+        granted_by_id: Optional[uuid.UUID],
+        idempotency_key: str,
+        commit: bool = False,
+    ) -> FiscalEmissionPackage:
+        """Cria um pacote concedido pelo admin — pago, sem cobrança, owner-scoped.
+
+        Faz flush (não commit) por padrão para participar da transação do
+        service. A unique constraint em bc_idempotency_key é o backstop de
+        idempotência; o IntegrityError sobe para o chamador tratar.
+        """
+        from domain.fiscal import PACKAGE_TYPE_ADMIN_GRANT
+
+        m = FiscalEmissionPackageModel(
+            id=uuid.uuid4(),
+            owner_id=owner_id,
+            market_id=None,
+            purchased_at_market_id=None,
+            package_type=PACKAGE_TYPE_ADMIN_GRANT,
+            package_slug="admin_grant",
+            quantity=quantity,
+            remaining=quantity,
+            price_gross=0,
+            price_net_target=0,
+            payment_status="paid",
+            valid_from=valid_from,
+            valid_until=valid_until,
+            bc_idempotency_key=idempotency_key,
+            grant_reason_code=grant_reason_code,
+            grant_note=grant_note,
+            granted_by_id=granted_by_id,
+        )
+        self.session.add(m)
+        await self.session.flush()
+        if commit:
+            await self.session.commit()
         return _to_package(m)
 
     async def update_package_preference(
@@ -1640,6 +1689,9 @@ def _to_package(m: FiscalEmissionPackageModel) -> FiscalEmissionPackage:
         price_gross=getattr(m, "price_gross", None),
         price_net_target=getattr(m, "price_net_target", None),
         purchased_at_market_id=getattr(m, "purchased_at_market_id", None),
+        grant_reason_code=getattr(m, "grant_reason_code", None),
+        grant_note=getattr(m, "grant_note", None),
+        granted_by_id=getattr(m, "granted_by_id", None),
         created_at=m.created_at,
     )
     p.id = m.id
