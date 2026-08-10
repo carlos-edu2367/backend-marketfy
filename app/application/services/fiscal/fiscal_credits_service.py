@@ -147,6 +147,17 @@ class FiscalCreditsService:
             addon_total=quota.addon_total,
         )
 
+    async def _resolve_included_limit(self, owner_id: uuid.UUID) -> int:
+        """Limite mensal incluso no plano do owner.
+
+        Precisa ser passado a add_addon_credits: se o counter do período ainda
+        não existe, ele é criado com este valor. Passar 0 aqui apagaria a
+        franquia do plano do usuário até o reset mensal.
+        """
+        if not self.plan_access_service:
+            return 0
+        return await self.plan_access_service.get_fiscal_monthly_limit(owner_id)
+
     async def activate_package(
         self,
         package_id: uuid.UUID,
@@ -196,12 +207,13 @@ class FiscalCreditsService:
             )
             return
 
+        included_limit = await self._resolve_included_limit(package.owner_id)
         await self.quota_service.add_addon_credits(
             owner_id=package.owner_id,
             period=now.strftime("%Y%m"),
             amount=package.quantity,
             idempotency_key=ledger_key,
-            included_limit=0,
+            included_limit=included_limit,
             commit=False,
         )
         await self._record_activation_audit(package, bc_payment_id, commit=False)

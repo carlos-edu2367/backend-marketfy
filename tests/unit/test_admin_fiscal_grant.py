@@ -175,3 +175,55 @@ async def test_create_grant_package_sets_owner_scoped_paid_package():
     assert package.bc_payment_id is None
     assert package.bc_idempotency_key == "idem-12345678"
     session.flush.assert_awaited_once()
+
+
+from decimal import Decimal
+
+from application.services.fiscal.fiscal_credits_service import FiscalCreditsService
+
+
+def _make_credits_service(**overrides):
+    """FiscalCreditsService com todas as dependências mockadas."""
+    credits_repo = AsyncMock()
+    credits_repo.session = AsyncMock()
+    quota_service = AsyncMock()
+    plan_access = AsyncMock()
+    plan_access.get_fiscal_monthly_limit.return_value = 200
+
+    kwargs = dict(
+        credits_repo=credits_repo,
+        quota_repo=credits_repo,
+        quota_service=quota_service,
+        notification_service=AsyncMock(),
+        audit_service=AsyncMock(),
+        settings=MagicMock(),
+        plan_access_service=plan_access,
+        user_repo=AsyncMock(),
+        bc_client=AsyncMock(),
+    )
+    kwargs.update(overrides)
+    return FiscalCreditsService(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_activate_package_credits_with_real_plan_limit():
+    """Regressivo: ativar addon nao pode criar counter com included_limit=0."""
+    svc = _make_credits_service()
+    owner_id = uuid.uuid4()
+    package = FiscalEmissionPackage(
+        owner_id=owner_id,
+        quantity=100,
+        remaining=100,
+        payment_status="pending",
+        package_slug="pack_100",
+        price_gross=Decimal("41.99"),
+    )
+    svc.credits_repo.get_package.return_value = package
+    svc.quota_repo.get_ledger_entry_by_idempotency.return_value = None
+    svc.credits_repo.activate_package.return_value = 1
+
+    await svc.activate_package(package.id, "bc-pay-1", {})
+
+    svc.plan_access_service.get_fiscal_monthly_limit.assert_awaited_once_with(owner_id)
+    kwargs = svc.quota_service.add_addon_credits.await_args.kwargs
+    assert kwargs["included_limit"] == 200

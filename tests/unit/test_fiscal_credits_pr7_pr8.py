@@ -343,8 +343,14 @@ def test_preview_price_boundary_max():
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_activate_package_passes_included_limit_zero():
-    """activate_package deve passar included_limit=0 para add_addon_credits."""
+async def test_activate_package_falls_back_to_zero_without_plan_access_service():
+    """Sem plan_access_service configurado, o fallback e included_limit=0.
+
+    Quando plan_access_service esta presente (caso real em producao), o
+    limite passado e o do plano do owner — ver
+    test_activate_package_credits_with_real_plan_limit em
+    test_admin_fiscal_grant.py.
+    """
     package = FakePackage(
         owner_id=uuid.uuid4(),
         market_id=uuid.uuid4(),
