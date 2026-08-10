@@ -129,6 +129,32 @@ class FiscalQuotaService:
             if oldest_package:
                 await self.repo.decrement_package_remaining(oldest_package.id)
                 await self.repo.decrement_addon_limit(owner_id, period, amount=1)
+            else:
+                # Addon sem pacote lastreando (grant legado, ajuste manual no
+                # banco). Debita o counter mesmo assim — senão o saldo nunca
+                # decresce e vira emissão ilimitada até o reset mensal.
+                counter = await self.repo.get_counter(owner_id, period)
+                if counter and counter.addon_limit > 0:
+                    await self.repo.decrement_addon_limit(owner_id, period, amount=1)
+                    logger.warning(
+                        "fiscal_addon_without_package",
+                        extra={"extra_data": {
+                            "owner_id": str(owner_id),
+                            "period": period,
+                            "addon_limit": counter.addon_limit,
+                        }},
+                    )
+                    try:
+                        await self.repo.append_ledger(FiscalUsageLedger(
+                            owner_id=owner_id,
+                            period_yyyymm=period,
+                            event_type=UsageLedgerEventType.ADJUSTED,
+                            market_id=market_id,
+                            quantity=1,
+                            reason="addon_without_package",
+                        ))
+                    except Exception:
+                        pass  # ledger é best-effort
 
         entry = FiscalUsageLedger(
             owner_id=owner_id,

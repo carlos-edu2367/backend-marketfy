@@ -206,6 +206,50 @@ async def test_consume_no_package_decrement_when_not_addon():
 
 
 @pytest.mark.asyncio
+async def test_consume_debits_orphan_addon_without_package():
+    """Addon sem pacote lastreando ainda deve ser debitado do counter."""
+    counter = _make_counter(included_limit=0, addon_limit=5)
+    repo = _make_repo(counter)
+    repo.get_oldest_active_package.return_value = None
+    service = FiscalQuotaService(usage_repo=repo)
+
+    await service.consume(
+        owner_id=counter.owner_id,
+        market_id=uuid.uuid4(),
+        period=PERIOD,
+        consuming_addon=True,
+    )
+
+    repo.decrement_addon_limit.assert_awaited_once()
+    repo.decrement_package_remaining.assert_not_awaited()
+    ledger_events = [call.args[0].event_type for call in repo.append_ledger.await_args_list]
+    assert UsageLedgerEventType.ADJUSTED in ledger_events
+    adjusted_entry = next(
+        call.args[0] for call in repo.append_ledger.await_args_list
+        if call.args[0].event_type == UsageLedgerEventType.ADJUSTED
+    )
+    assert adjusted_entry.reason == "addon_without_package"
+
+
+@pytest.mark.asyncio
+async def test_consume_does_not_debit_when_no_addon_left():
+    """Sem pacote e sem addon_limit, nada a debitar."""
+    counter = _make_counter(included_limit=10, addon_limit=0)
+    repo = _make_repo(counter)
+    repo.get_oldest_active_package.return_value = None
+    service = FiscalQuotaService(usage_repo=repo)
+
+    await service.consume(
+        owner_id=counter.owner_id,
+        market_id=uuid.uuid4(),
+        period=PERIOD,
+        consuming_addon=True,
+    )
+
+    repo.decrement_addon_limit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_consume_tolerates_ledger_failure():
     repo = _make_repo()
     repo.append_ledger.side_effect = Exception("DB down")
