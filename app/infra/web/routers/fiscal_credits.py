@@ -201,6 +201,8 @@ async def credits_history(
             {
                 "package_id": str(item.package_id),
                 "package_slug": item.package_slug,
+                "package_type": item.package_type,
+                "grant_reason_code": item.grant_reason_code,
                 "quantity": item.quantity,
                 "remaining": item.remaining,
                 "payment_status": item.payment_status,

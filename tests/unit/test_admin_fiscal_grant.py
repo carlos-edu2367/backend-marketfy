@@ -451,3 +451,60 @@ def test_grant_request_rejects_oversized_note():
             note="x" * 501,
             idempotency_key="idem-12345678",
         )
+
+
+@pytest.mark.asyncio
+async def test_credits_history_exposes_origin_without_internal_fields():
+    """O histórico do usuário distingue grant de compra, sem vazar nota interna."""
+    from infra.web.routers import fiscal_credits as fiscal_credits_router
+
+    grant = FiscalEmissionPackage(
+        owner_id=uuid.uuid4(),
+        package_type=PACKAGE_TYPE_ADMIN_GRANT,
+        package_slug="admin_grant",
+        quantity=500,
+        remaining=500,
+        payment_status="paid",
+        grant_reason_code="courtesy",
+        grant_note="segredo interno",
+        granted_by_id=uuid.uuid4(),
+    )
+    purchase = FiscalEmissionPackage(
+        owner_id=grant.owner_id,
+        package_slug="pack_100",
+        quantity=100,
+        remaining=40,
+        payment_status="paid",
+        price_gross=Decimal("41.99"),
+    )
+
+    svc = _make_credits_service()
+    svc.credits_repo.list_packages_by_owner.return_value = [grant, purchase]
+
+    fake_user = MagicMock()
+    fake_user.id = grant.owner_id
+
+    monkey_service = lambda _db: svc
+    original = fiscal_credits_router._credits_service
+    fiscal_credits_router._credits_service = monkey_service
+    try:
+        payload = await fiscal_credits_router.credits_history(
+            market_id=uuid.uuid4(),
+            page=1,
+            per_page=20,
+            db=MagicMock(),
+            current_user=fake_user,
+            market=MagicMock(),
+        )
+    finally:
+        fiscal_credits_router._credits_service = original
+
+    granted_item, purchased_item = payload["items"]
+    assert granted_item["package_type"] == PACKAGE_TYPE_ADMIN_GRANT
+    assert granted_item["grant_reason_code"] == "courtesy"
+    assert purchased_item["package_type"] == "nfce_addon"
+    assert purchased_item["grant_reason_code"] is None
+    serialized = str(payload)
+    assert "segredo interno" not in serialized
+    assert "grant_note" not in serialized
+    assert "granted_by_id" not in serialized
