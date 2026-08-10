@@ -201,6 +201,27 @@ class UsageLedgerEventType(Enum):
     ADJUSTED = "adjusted"
 
 
+PACKAGE_TYPE_ADMIN_GRANT = "nfce_admin_grant"
+
+
+class GrantReasonCode(Enum):
+    """Categorias de concessão administrativa de créditos NFC-e."""
+    COURTESY = "courtesy"
+    COMPENSATION = "compensation"
+    BONUS = "bonus"
+    MIGRATION = "migration"
+
+
+# Texto exibido ao usuário final no histórico de créditos e na notificação.
+# A nota interna do admin (grant_note) nunca aparece aqui.
+GRANT_REASON_LABELS: dict[str, str] = {
+    GrantReasonCode.COURTESY.value: "Cortesia da equipe Marketfy",
+    GrantReasonCode.COMPENSATION.value: "Compensação por indisponibilidade",
+    GrantReasonCode.BONUS.value: "Bônus promocional",
+    GrantReasonCode.MIGRATION.value: "Créditos de migração de plano",
+}
+
+
 class NotificationSeverity(Enum):
     INFO = "info"
     WARNING = "warning"
@@ -845,6 +866,9 @@ class FiscalEmissionPackage(Entity):
     price_gross: Optional[Decimal] = None
     price_net_target: Optional[Decimal] = None
     purchased_at_market_id: Optional[uuid.UUID] = None
+    grant_reason_code: Optional[str] = None
+    grant_note: Optional[str] = None
+    granted_by_id: Optional[uuid.UUID] = None
 
     def is_valid(self) -> bool:
         now = datetime.utcnow()
@@ -939,6 +963,8 @@ class PackageHistoryItem:
     valid_from: Optional[datetime]
     valid_until: Optional[datetime]
     created_at: Optional[datetime]
+    package_type: str = "nfce_addon"
+    grant_reason_code: Optional[str] = None
 
     @classmethod
     def from_package(cls, package: FiscalEmissionPackage) -> "PackageHistoryItem":
@@ -953,7 +979,20 @@ class PackageHistoryItem:
             valid_from=package.valid_from,
             valid_until=package.valid_until,
             created_at=package.created_at,
+            package_type=package.package_type,
+            grant_reason_code=package.grant_reason_code,
         )
+
+
+@dataclass(frozen=True)
+class GrantResult:
+    """Resultado de uma concessão administrativa.
+
+    created=False indica replay idempotente — o pacote já existia e nenhum
+    crédito novo foi emitido.
+    """
+    package: FiscalEmissionPackage
+    created: bool
 
 
 @dataclass(frozen=True)
