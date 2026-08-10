@@ -5,11 +5,15 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
+
 from domain.fiscal import (
     CreditsBalance,
     EMISSION_PACKAGES,
     EmissionCreditPackage,
     FiscalEmissionPackage,
+    GRANT_REASON_LABELS,
+    GrantResult,
     NotificationSeverity,
     NotificationType,
     PackageHistoryItem,
@@ -229,6 +233,156 @@ class FiscalCreditsService:
                 "owner_id": str(package.owner_id),
                 "quantity": package.quantity,
             }},
+        )
+
+    async def grant_credits(
+        self,
+        *,
+        owner_id: uuid.UUID,
+        amount: int,
+        reason_code: str,
+        granted_by_id: uuid.UUID,
+        idempotency_key: str,
+        note: Optional[str] = None,
+        valid_days: int = 365,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> GrantResult:
+        """Concede créditos NFC-e a um owner, sem cobrança.
+
+        Cria um pacote pago de verdade — é o que faz o crédito sobreviver ao
+        reset mensal, ser debitado em FIFO e aparecer no histórico do usuário.
+
+        Idempotente em duas camadas: o pré-check por bc_idempotency_key e a
+        unique constraint como backstop de corrida.
+        """
+        existing = await self.credits_repo.get_package_by_idempotency_key(idempotency_key)
+        if existing:
+            return GrantResult(package=existing, created=False)
+
+        now = datetime.utcnow()
+        valid_until = now + timedelta(days=valid_days)
+
+        try:
+            package = await self.credits_repo.create_grant_package(
+                owner_id=owner_id,
+                quantity=amount,
+                valid_from=now,
+                valid_until=valid_until,
+                grant_reason_code=reason_code,
+                grant_note=note,
+                granted_by_id=granted_by_id,
+                idempotency_key=idempotency_key,
+                commit=False,
+            )
+        except IntegrityError:
+            # Corrida com um request concorrente de mesma chave.
+            await self.credits_repo.session.rollback()
+            existing = await self.credits_repo.get_package_by_idempotency_key(idempotency_key)
+            if existing:
+                return GrantResult(package=existing, created=False)
+            raise
+
+        included_limit = await self._resolve_included_limit(owner_id)
+        await self.quota_service.add_addon_credits(
+            owner_id=owner_id,
+            period=now.strftime("%Y%m"),
+            amount=amount,
+            idempotency_key=f"admin_grant:{package.id}",
+            included_limit=included_limit,
+            commit=False,
+        )
+
+        await self._record_grant_audit(
+            package,
+            granted_by_id=granted_by_id,
+            amount=amount,
+            reason_code=reason_code,
+            note=note,
+            valid_until=valid_until,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+
+        await self.credits_repo.session.commit()
+
+        # Notificação fora da transação: uma falha aqui não pode derrubar a
+        # concessão já persistida.
+        await self._notify_grant(package, amount=amount, reason_code=reason_code, valid_until=valid_until)
+
+        logger.info(
+            "fiscal_credits_granted",
+            extra={"extra_data": {
+                "package_id": str(package.id),
+                "owner_id": str(owner_id),
+                "amount": amount,
+                "reason_code": reason_code,
+                "granted_by_id": str(granted_by_id),
+                "valid_until": valid_until.isoformat(),
+            }},
+        )
+        return GrantResult(package=package, created=True)
+
+    async def _record_grant_audit(
+        self,
+        package: FiscalEmissionPackage,
+        *,
+        granted_by_id: uuid.UUID,
+        amount: int,
+        reason_code: str,
+        note: Optional[str],
+        valid_until: datetime,
+        ip_address: Optional[str],
+        user_agent: Optional[str],
+    ) -> None:
+        if not self.audit_service:
+            return
+        record = getattr(self.audit_service, "record", None)
+        if not record:
+            return
+        await record(
+            action="admin_fiscal_credits_granted",
+            resource_type="fiscal_emission_package",
+            resource_id=str(package.id),
+            result="success",
+            actor_user_id=granted_by_id,
+            actor_role="admin",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            metadata={
+                "owner_id": str(package.owner_id),
+                "amount": amount,
+                "reason_code": reason_code,
+                "note": note,
+                "valid_until": valid_until.isoformat(),
+            },
+            commit=False,
+        )
+
+    async def _notify_grant(
+        self,
+        package: FiscalEmissionPackage,
+        *,
+        amount: int,
+        reason_code: str,
+        valid_until: datetime,
+    ) -> None:
+        if not self.notification_service:
+            return
+        create_notification = getattr(self.notification_service, "create_notification", None)
+        if not create_notification:
+            return
+        label = GRANT_REASON_LABELS.get(reason_code, "Créditos concedidos pelo Marketfy")
+        await create_notification(
+            owner_id=package.owner_id,
+            notification_type="credits_activated",
+            severity="info",
+            title=f"{amount} créditos NFC-e adicionados",
+            message=(
+                f"{label}. Você recebeu {amount} emissões NFC-e para usar em qualquer "
+                f"uma das suas lojas. Válido até {valid_until.strftime('%d/%m/%Y')}."
+            ),
+            dedupe_key=f"admin_grant:{package.id}",
         )
 
     async def initiate_custom_purchase(

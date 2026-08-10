@@ -227,3 +227,167 @@ async def test_activate_package_credits_with_real_plan_limit():
     svc.plan_access_service.get_fiscal_monthly_limit.assert_awaited_once_with(owner_id)
     kwargs = svc.quota_service.add_addon_credits.await_args.kwargs
     assert kwargs["included_limit"] == 200
+
+
+def _grant_service():
+    svc = _make_credits_service()
+    svc.credits_repo.get_package_by_idempotency_key.return_value = None
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_grant_credits_creates_paid_package_valid_for_one_year():
+    svc = _grant_service()
+    owner_id = uuid.uuid4()
+    admin_id = uuid.uuid4()
+
+    created_package = FiscalEmissionPackage(
+        owner_id=owner_id,
+        package_type=PACKAGE_TYPE_ADMIN_GRANT,
+        quantity=500,
+        remaining=500,
+        payment_status="paid",
+        grant_reason_code="courtesy",
+        granted_by_id=admin_id,
+    )
+    svc.credits_repo.create_grant_package.return_value = created_package
+
+    result = await svc.grant_credits(
+        owner_id=owner_id,
+        amount=500,
+        reason_code="courtesy",
+        granted_by_id=admin_id,
+        idempotency_key="idem-12345678",
+        note="nota interna",
+    )
+
+    assert result.created is True
+    assert result.package is created_package
+
+    kwargs = svc.credits_repo.create_grant_package.await_args.kwargs
+    assert kwargs["owner_id"] == owner_id
+    assert kwargs["quantity"] == 500
+    assert kwargs["grant_reason_code"] == "courtesy"
+    assert kwargs["grant_note"] == "nota interna"
+    assert kwargs["granted_by_id"] == admin_id
+    assert (kwargs["valid_until"] - kwargs["valid_from"]).days == 365
+
+
+@pytest.mark.asyncio
+async def test_grant_credits_honours_custom_validity():
+    svc = _grant_service()
+    svc.credits_repo.create_grant_package.return_value = FiscalEmissionPackage(
+        owner_id=uuid.uuid4(), quantity=10, remaining=10, payment_status="paid"
+    )
+
+    await svc.grant_credits(
+        owner_id=uuid.uuid4(),
+        amount=10,
+        reason_code="bonus",
+        granted_by_id=uuid.uuid4(),
+        idempotency_key="idem-12345678",
+        valid_days=30,
+    )
+
+    kwargs = svc.credits_repo.create_grant_package.await_args.kwargs
+    assert (kwargs["valid_until"] - kwargs["valid_from"]).days == 30
+
+
+@pytest.mark.asyncio
+async def test_grant_credits_adds_addon_with_package_scoped_ledger_key():
+    svc = _grant_service()
+    package = FiscalEmissionPackage(
+        owner_id=uuid.uuid4(), quantity=500, remaining=500, payment_status="paid"
+    )
+    svc.credits_repo.create_grant_package.return_value = package
+
+    await svc.grant_credits(
+        owner_id=package.owner_id,
+        amount=500,
+        reason_code="courtesy",
+        granted_by_id=uuid.uuid4(),
+        idempotency_key="idem-12345678",
+    )
+
+    kwargs = svc.quota_service.add_addon_credits.await_args.kwargs
+    assert kwargs["idempotency_key"] == f"admin_grant:{package.id}"
+    assert kwargs["amount"] == 500
+    assert kwargs["included_limit"] == 200  # limite real do plano, nao 0
+    assert kwargs["commit"] is False
+    svc.credits_repo.session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_grant_credits_is_idempotent_on_replay():
+    svc = _make_credits_service()
+    existing = FiscalEmissionPackage(
+        owner_id=uuid.uuid4(), quantity=500, remaining=500, payment_status="paid"
+    )
+    svc.credits_repo.get_package_by_idempotency_key.return_value = existing
+
+    result = await svc.grant_credits(
+        owner_id=existing.owner_id,
+        amount=500,
+        reason_code="courtesy",
+        granted_by_id=uuid.uuid4(),
+        idempotency_key="idem-12345678",
+    )
+
+    assert result.created is False
+    assert result.package is existing
+    svc.credits_repo.create_grant_package.assert_not_awaited()
+    svc.quota_service.add_addon_credits.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_grant_credits_notifies_user_with_friendly_label():
+    svc = _grant_service()
+    package = FiscalEmissionPackage(
+        owner_id=uuid.uuid4(), quantity=500, remaining=500, payment_status="paid"
+    )
+    svc.credits_repo.create_grant_package.return_value = package
+
+    await svc.grant_credits(
+        owner_id=package.owner_id,
+        amount=500,
+        reason_code="compensation",
+        granted_by_id=uuid.uuid4(),
+        idempotency_key="idem-12345678",
+        note="segredo interno",
+    )
+
+    kwargs = svc.notification_service.create_notification.await_args.kwargs
+    assert "500" in kwargs["title"]
+    assert GRANT_REASON_LABELS["compensation"] in kwargs["message"]
+    assert kwargs["dedupe_key"] == f"admin_grant:{package.id}"
+    # A nota interna nunca pode chegar ao usuario
+    assert "segredo interno" not in kwargs["message"]
+
+
+@pytest.mark.asyncio
+async def test_grant_credits_audits_with_actor_and_note():
+    svc = _grant_service()
+    admin_id = uuid.uuid4()
+    package = FiscalEmissionPackage(
+        owner_id=uuid.uuid4(), quantity=500, remaining=500, payment_status="paid"
+    )
+    svc.credits_repo.create_grant_package.return_value = package
+
+    await svc.grant_credits(
+        owner_id=package.owner_id,
+        amount=500,
+        reason_code="courtesy",
+        granted_by_id=admin_id,
+        idempotency_key="idem-12345678",
+        note="nota interna",
+        ip_address="203.0.113.7",
+        user_agent="Mozilla/5.0",
+    )
+
+    kwargs = svc.audit_service.record.await_args.kwargs
+    assert kwargs["action"] == "admin_fiscal_credits_granted"
+    assert kwargs["actor_user_id"] == admin_id
+    assert kwargs["ip_address"] == "203.0.113.7"
+    assert kwargs["metadata"]["amount"] == 500
+    assert kwargs["metadata"]["note"] == "nota interna"
+    assert kwargs["commit"] is False
