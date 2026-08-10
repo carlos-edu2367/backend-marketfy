@@ -391,3 +391,63 @@ async def test_grant_credits_audits_with_actor_and_note():
     assert kwargs["metadata"]["amount"] == 500
     assert kwargs["metadata"]["note"] == "nota interna"
     assert kwargs["commit"] is False
+
+
+from pydantic import ValidationError
+
+from infra.web.routers.admin_fiscal import GrantCreditsRequest
+
+
+def test_grant_request_rejects_unknown_reason_code():
+    with pytest.raises(ValidationError):
+        GrantCreditsRequest(
+            owner_id=uuid.uuid4(),
+            amount=100,
+            reason_code="whatever",
+            idempotency_key="idem-12345678",
+        )
+
+
+def test_grant_request_defaults_to_one_year():
+    payload = GrantCreditsRequest(
+        owner_id=uuid.uuid4(),
+        amount=100,
+        reason_code="courtesy",
+        idempotency_key="idem-12345678",
+    )
+    assert payload.valid_days == 365
+    assert payload.note is None
+
+
+def test_grant_request_rejects_validity_out_of_range():
+    for bad in (0, 1096):
+        with pytest.raises(ValidationError):
+            GrantCreditsRequest(
+                owner_id=uuid.uuid4(),
+                amount=100,
+                reason_code="courtesy",
+                valid_days=bad,
+                idempotency_key="idem-12345678",
+            )
+
+
+def test_grant_request_rejects_amount_out_of_range():
+    for bad in (0, 50_001):
+        with pytest.raises(ValidationError):
+            GrantCreditsRequest(
+                owner_id=uuid.uuid4(),
+                amount=bad,
+                reason_code="courtesy",
+                idempotency_key="idem-12345678",
+            )
+
+
+def test_grant_request_rejects_oversized_note():
+    with pytest.raises(ValidationError):
+        GrantCreditsRequest(
+            owner_id=uuid.uuid4(),
+            amount=100,
+            reason_code="courtesy",
+            note="x" * 501,
+            idempotency_key="idem-12345678",
+        )
