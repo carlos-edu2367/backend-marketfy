@@ -134,8 +134,12 @@ class SQLAlchemyPlanRepository(PlanRepositoryInterface):
         model.price_monthly = plan.price_monthly
         model.price_180days = plan.price_180days
         model.price_annual = plan.price_annual
+        model.fiscal_monthly_limit = plan.fiscal_monthly_limit
+        model.description = plan.description
+        model.is_recommended = plan.is_recommended
+        model.display_order = plan.display_order
         model.is_active = plan.is_active
-        
+
         if commit:
             await self.session.commit()
         return plan
@@ -158,6 +162,9 @@ class SQLAlchemyPlanRepository(PlanRepositoryInterface):
             price_180days=m.price_180days,
             price_annual=m.price_annual,
             fiscal_monthly_limit=getattr(m, "fiscal_monthly_limit", 0) or 0,
+            description=m.description,
+            is_recommended=bool(m.is_recommended),
+            display_order=m.display_order or 0,
             is_active=m.is_active,
         )
         p.id = m.id

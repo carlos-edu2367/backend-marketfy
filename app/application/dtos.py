@@ -50,7 +50,8 @@ class UserResponseDTO(BaseModel):
     plan_name: Optional[str] = None
     plan_expiration: Optional[datetime] = None
     is_active: bool = True
-    
+    document_masked: Optional[str] = None
+
     # CORREÇÃO: Validadores 'before' para extrair valores de objetos de domínio (Email, Role)
     # Isso permite passar o objeto User direto do banco para o DTO sem conversão manual.
     
@@ -94,6 +95,10 @@ class PlanCreateDTO(BaseModel):
     price_monthly: Decimal
     price_180days: Decimal
     price_annual: Decimal
+    fiscal_monthly_limit: int = Field(0, ge=0)
+    description: Optional[str] = Field(None, max_length=280)
+    is_recommended: bool = False
+    display_order: int = 0
     is_active: bool = True
 
 class PlanUpdateDTO(BaseModel):
@@ -104,10 +109,39 @@ class PlanUpdateDTO(BaseModel):
     price_monthly: Optional[Decimal] = None
     price_180days: Optional[Decimal] = None
     price_annual: Optional[Decimal] = None
+    fiscal_monthly_limit: Optional[int] = Field(None, ge=0)
+    description: Optional[str] = Field(None, max_length=280)
+    is_recommended: Optional[bool] = None
+    display_order: Optional[int] = None
     is_active: Optional[bool] = None
 
 class PlanResponseDTO(PlanCreateDTO):
     id: UUID
+
+
+class PublicPlanDTO(BaseModel):
+    """Plano como visto por visitantes: sem campos internos."""
+    id: UUID
+    name: str
+    type: str
+    description: Optional[str] = None
+    max_markets: int
+    max_terminals: int
+    fiscal_monthly_limit: int = 0
+    price_monthly: Decimal
+    price_180days: Decimal
+    price_annual: Decimal
+    is_recommended: bool = False
+    display_order: int = 0
+    is_active: bool = True
+
+    @field_validator('type', mode='before')
+    @classmethod
+    def parse_plan_type(cls, v: Any) -> str:
+        return v.value if hasattr(v, 'value') else str(v)
+
+    class Config:
+        from_attributes = True
 
 
 # ===========================

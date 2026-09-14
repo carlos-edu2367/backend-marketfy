@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timedelta
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from infra.database.setup import get_db
@@ -8,7 +9,8 @@ from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionReposit
 from application.services.identity_service import IdentityService
 from application.services.subscription_service import SubscriptionService
 from application.services.plan_access_service import PlanAccessService, PlanFeature
-from application.dtos import UserCreateDTO, MarketCreateDTO, UserResponseDTO, SubscribeDTO
+from application.services.plan_catalog import select_public_plans
+from application.dtos import UserCreateDTO, MarketCreateDTO, UserResponseDTO, SubscribeDTO, PublicPlanDTO
 from infra.web.dependencies import get_identity_service, get_current_user, get_subscription_service
 from infra.security.authorization import is_admin_user
 
@@ -62,10 +64,10 @@ async def list_my_markets(
 
 # --- PLANOS ---
 
-@router.get("/plans")
+@router.get("/plans", response_model=List[PublicPlanDTO])
 async def list_plans(db: AsyncSession = Depends(get_db)):
     repo = SQLAlchemyPlanRepository(db)
-    return await repo.list_all()
+    return [PublicPlanDTO.model_validate(p) for p in select_public_plans(await repo.list_all())]
 
 @router.post("/plans/{plan_id}/subscribe")
 async def subscribe_to_plan(

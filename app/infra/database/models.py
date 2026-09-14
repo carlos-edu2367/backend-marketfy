@@ -20,6 +20,9 @@ class PlanModel(Base):
     price_180days = Column(Numeric(10, 2), default=0)
     price_annual = Column(Numeric(10, 2), default=0)
     fiscal_monthly_limit = Column(Integer, nullable=False, server_default="0")
+    description = Column(String(280), nullable=True)
+    is_recommended = Column(Boolean, nullable=False, server_default="false", default=False)
+    display_order = Column(Integer, nullable=False, server_default="0", default=0)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
