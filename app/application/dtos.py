@@ -50,7 +50,8 @@ class UserResponseDTO(BaseModel):
     plan_name: Optional[str] = None
     plan_expiration: Optional[datetime] = None
     is_active: bool = True
-    
+    document_masked: Optional[str] = None
+
     # CORREÇÃO: Validadores 'before' para extrair valores de objetos de domínio (Email, Role)
     # Isso permite passar o objeto User direto do banco para o DTO sem conversão manual.
     

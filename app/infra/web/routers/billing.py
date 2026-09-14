@@ -131,7 +131,9 @@ async def subscribe(
         return result
 
     # recurring
-    if not dto.document:
+    from application.services.billing_document import resolve_billing_document
+    document = resolve_billing_document(dto.document, current_user)
+    if not document:
         raise HTTPException(status_code=400, detail="Documento (CPF/CNPJ) é obrigatório para cobrança recorrente.")
     from application.services.recurring_service import RecurringService
     from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
@@ -146,7 +148,7 @@ async def subscribe(
     try:
         result = await rec.contract(
             user=current_user, plan_id=dto.plan_id,
-            subscription_type=dto.subscription_type, document=dto.document, idempotency_key=idem,
+            subscription_type=dto.subscription_type, document=document, idempotency_key=idem,
         )
         await db.commit()
     except ValueError as exc:
