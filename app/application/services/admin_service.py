@@ -44,6 +44,7 @@ class AdminService:
             description=_clean_description(dto.description),
             is_recommended=dto.is_recommended,
             display_order=dto.display_order,
+            includes_finance=dto.includes_finance,
             is_active=dto.is_active
         )
 
@@ -72,6 +73,8 @@ class AdminService:
             plan.is_recommended = dto.is_recommended
         if dto.display_order is not None:
             plan.display_order = dto.display_order
+        if dto.includes_finance is not None:
+            plan.includes_finance = dto.includes_finance
 
         # Se for cortesia, impede atualização de preço para valor > 0
         is_free = plan.type == PlanType.FREE

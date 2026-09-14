@@ -50,6 +50,8 @@ class Plan(Entity):
     is_recommended: bool = False
     display_order: int = 0
 
+    includes_finance: bool = True
+
     is_active: bool = True
 
     def is_limit_reached(self, current_count: int, context: str) -> bool:
