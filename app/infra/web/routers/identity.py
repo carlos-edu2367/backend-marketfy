@@ -75,6 +75,11 @@ async def subscribe_to_plan(
     current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    # Rota legada: ativa plano sem cobrança. Donos contratam por
+    # POST /billing/subscribe; aqui só administradores podem atribuir planos.
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Apenas administradores podem atribuir planos.")
+
     try:
         repo_plan = SQLAlchemyPlanRepository(db)
         repo_user = service.user_repo
