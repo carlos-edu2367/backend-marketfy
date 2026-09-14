@@ -46,6 +46,10 @@ class Plan(Entity):
 
     fiscal_monthly_limit: int = 0
 
+    description: Optional[str] = None
+    is_recommended: bool = False
+    display_order: int = 0
+
     is_active: bool = True
 
     def is_limit_reached(self, current_count: int, context: str) -> bool:

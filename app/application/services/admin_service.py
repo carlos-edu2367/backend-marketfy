@@ -6,6 +6,12 @@ from domain.interfaces import PlanRepositoryInterface
 from domain.shared import BusinessRuleException
 from application.dtos import PlanCreateDTO, PlanUpdateDTO
 
+
+def _clean_description(value):
+    text = (value or "").strip()
+    return text or None
+
+
 class AdminService:
     def __init__(self, plan_repo: PlanRepositoryInterface):
         self.plan_repo = plan_repo
@@ -35,10 +41,16 @@ class AdminService:
             price_180days=price_180days,
             price_annual=price_annual,
             fiscal_monthly_limit=dto.fiscal_monthly_limit,
+            description=_clean_description(dto.description),
+            is_recommended=dto.is_recommended,
+            display_order=dto.display_order,
             is_active=dto.is_active
         )
-        
-        return await self.plan_repo.save(plan)
+
+        saved = await self.plan_repo.save(plan)
+        if saved.is_recommended:
+            await self._unset_other_recommended(saved.id)
+        return saved
 
     async def update_plan(self, plan_id: uuid.UUID, dto: PlanUpdateDTO) -> Plan:
         plan = await self.plan_repo.get_by_id(plan_id)
@@ -54,6 +66,12 @@ class AdminService:
         if dto.max_markets is not None: plan.max_markets = dto.max_markets
         if dto.max_terminals is not None: plan.max_terminals = dto.max_terminals # CORRIGIDO
         if dto.fiscal_monthly_limit is not None: plan.fiscal_monthly_limit = dto.fiscal_monthly_limit
+        if "description" in dto.model_fields_set:
+            plan.description = _clean_description(dto.description)
+        if dto.is_recommended is not None:
+            plan.is_recommended = dto.is_recommended
+        if dto.display_order is not None:
+            plan.display_order = dto.display_order
 
         # Se for cortesia, impede atualização de preço para valor > 0
         is_free = plan.type == PlanType.FREE
@@ -74,7 +92,17 @@ class AdminService:
         if dto.is_active is not None:
             plan.is_active = dto.is_active
 
-        return await self.plan_repo.save(plan)
+        saved = await self.plan_repo.save(plan)
+        if saved.is_recommended:
+            await self._unset_other_recommended(saved.id)
+        return saved
+
+    async def _unset_other_recommended(self, keep_id: uuid.UUID) -> None:
+        """Mantém no máximo um plano recomendado."""
+        for other in await self.plan_repo.list_all():
+            if other.id != keep_id and other.is_recommended:
+                other.is_recommended = False
+                await self.plan_repo.save(other)
 
     async def list_plans(self) -> List[Plan]:
         return await self.plan_repo.list_all()
