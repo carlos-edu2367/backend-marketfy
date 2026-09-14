@@ -94,6 +94,7 @@ class PlanCreateDTO(BaseModel):
     price_monthly: Decimal
     price_180days: Decimal
     price_annual: Decimal
+    fiscal_monthly_limit: int = Field(0, ge=0)
     is_active: bool = True
 
 class PlanUpdateDTO(BaseModel):
@@ -104,6 +105,7 @@ class PlanUpdateDTO(BaseModel):
     price_monthly: Optional[Decimal] = None
     price_180days: Optional[Decimal] = None
     price_annual: Optional[Decimal] = None
+    fiscal_monthly_limit: Optional[int] = Field(None, ge=0)
     is_active: Optional[bool] = None
 
 class PlanResponseDTO(PlanCreateDTO):

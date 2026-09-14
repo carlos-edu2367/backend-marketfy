@@ -134,6 +134,7 @@ class SQLAlchemyPlanRepository(PlanRepositoryInterface):
         model.price_monthly = plan.price_monthly
         model.price_180days = plan.price_180days
         model.price_annual = plan.price_annual
+        model.fiscal_monthly_limit = plan.fiscal_monthly_limit
         model.is_active = plan.is_active
         
         if commit:

@@ -34,6 +34,7 @@ class AdminService:
             price_monthly=price_monthly,
             price_180days=price_180days,
             price_annual=price_annual,
+            fiscal_monthly_limit=dto.fiscal_monthly_limit,
             is_active=dto.is_active
         )
         
@@ -49,10 +50,11 @@ class AdminService:
             try:
                 plan.type = PlanType(dto.type)
             except ValueError:
-                raise BusinessRuleException(f"Tipo de plano invÃ¡lido: {dto.type}. Use 'cortesia', 'pago' ou 'trial'.")
+                raise BusinessRuleException(f"Tipo de plano inválido: {dto.type}. Use 'cortesia', 'pago' ou 'trial'.")
         if dto.max_markets is not None: plan.max_markets = dto.max_markets
         if dto.max_terminals is not None: plan.max_terminals = dto.max_terminals # CORRIGIDO
-        
+        if dto.fiscal_monthly_limit is not None: plan.fiscal_monthly_limit = dto.fiscal_monthly_limit
+
         # Se for cortesia, impede atualização de preço para valor > 0
         is_free = plan.type == PlanType.FREE
         

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.database.setup import get_db
-from domain.identity import User, UserRole
+from domain.identity import Plan, User, UserRole
 from domain.shared import BusinessRuleException
 from application.dtos import (
     AdminDashboardResponseDTO, AdminUserListDTO, AdminPasswordResetDTO,
@@ -102,20 +102,22 @@ async def reset_password(
 # PLANS MANAGEMENT
 # =============================================================================
 
+def _plan_to_response(p: Plan) -> PlanResponseDTO:
+    return PlanResponseDTO(
+        id=p.id, name=p.name, type=p.type.value,
+        max_markets=p.max_markets, max_terminals=p.max_terminals,
+        price_monthly=p.price_monthly, price_180days=p.price_180days,
+        price_annual=p.price_annual, fiscal_monthly_limit=p.fiscal_monthly_limit,
+        is_active=p.is_active,
+    )
+
 @router.get("/plans", response_model=List[PlanResponseDTO])
 async def list_plans(
     current_user: User = Depends(verify_admin_role),
     service: AdminService = Depends(get_admin_plans_service)
 ):
     plans = await service.plan_repo.list_all()
-    return [
-        PlanResponseDTO(
-            id=p.id, name=p.name, type=p.type.value, 
-            max_markets=p.max_markets, max_terminals=p.max_terminals,
-            price_monthly=p.price_monthly, price_180days=p.price_180days,
-            price_annual=p.price_annual, is_active=p.is_active
-        ) for p in plans
-    ]
+    return [_plan_to_response(p) for p in plans]
 
 @router.post("/plans", response_model=PlanResponseDTO, status_code=status.HTTP_201_CREATED)
 async def create_plan(
@@ -136,12 +138,7 @@ async def create_plan(
         result="success",
         metadata={"type": p.type.value if hasattr(p.type, "value") else str(p.type)},
     )
-    return PlanResponseDTO(
-        id=p.id, name=p.name, type=p.type.value, 
-        max_markets=p.max_markets, max_terminals=p.max_terminals,
-        price_monthly=p.price_monthly, price_180days=p.price_180days,
-        price_annual=p.price_annual, is_active=p.is_active
-    )
+    return _plan_to_response(p)
 
 @router.put("/plans/{plan_id}", response_model=PlanResponseDTO)
 async def update_plan(
@@ -163,12 +160,7 @@ async def update_plan(
         result="success",
         metadata={"is_active": p.is_active},
     )
-    return PlanResponseDTO(
-        id=p.id, name=p.name, type=p.type.value,
-        max_markets=p.max_markets, max_terminals=p.max_terminals,
-        price_monthly=p.price_monthly, price_180days=p.price_180days,
-        price_annual=p.price_annual, is_active=p.is_active
-    )
+    return _plan_to_response(p)
 
 # =============================================================================
 # MANUAL SUBSCRIPTION
