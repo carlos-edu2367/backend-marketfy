@@ -138,6 +138,7 @@ class SQLAlchemyPlanRepository(PlanRepositoryInterface):
         model.description = plan.description
         model.is_recommended = plan.is_recommended
         model.display_order = plan.display_order
+        model.includes_finance = plan.includes_finance
         model.is_active = plan.is_active
 
         if commit:
@@ -165,6 +166,7 @@ class SQLAlchemyPlanRepository(PlanRepositoryInterface):
             description=m.description,
             is_recommended=bool(m.is_recommended),
             display_order=m.display_order or 0,
+            includes_finance=bool(getattr(m, "includes_finance", True)),
             is_active=m.is_active,
         )
         p.id = m.id

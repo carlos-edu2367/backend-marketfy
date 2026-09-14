@@ -31,6 +31,8 @@ from application.services.sales_service import SalesService
 from application.services.inventory_service import InventoryService
 from application.services.finance_support import FinanceService, SupportService
 from application.services.subscription_service import SubscriptionService
+from application.services.plan_access_service import PlanAccessService
+from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
 from application.services.admin_dashboard_service import AdminDashboardService
 from application.services.admin_service import AdminService
 from application.services.fiscal_service import FiscalService
@@ -143,6 +145,13 @@ def get_subscription_service(db: AsyncSession = Depends(get_db)):
     return SubscriptionService(
         user_repo=SQLAlchemyUserRepository(db),
         plan_repo=SQLAlchemyPlanRepository(db)
+    )
+
+def get_plan_access_service(db: AsyncSession = Depends(get_db)):
+    return PlanAccessService(
+        user_repo=SQLAlchemyUserRepository(db),
+        plan_repo=SQLAlchemyPlanRepository(db),
+        subscription_repo=SQLAlchemyBillingSubscriptionRepository(db),
     )
 
 def get_admin_dashboard_service(db: AsyncSession = Depends(get_db)):

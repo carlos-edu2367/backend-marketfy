@@ -12,6 +12,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from application.services.plan_access_service import PlanAccessService, PlanFeature
 from application.dtos import (
     CustomerCreateDTO,
     CustomerCreditLimitUpdateDTO,
@@ -34,6 +35,7 @@ from infra.web.dependencies import (
     get_current_user,
     get_audit_service,
     get_finance_service,
+    get_plan_access_service,
     get_support_service,
     require_admin,
     require_market_access,
@@ -42,6 +44,14 @@ from infra.observability.audit import record_audit_event
 
 router_finance = APIRouter()
 router_support = APIRouter()
+
+
+async def _require_finance_feature(current_user: User, plan_svc: PlanAccessService) -> None:
+    """Financeiro (dashboard/lançamentos) é feature paga, ligada ao plano —
+    diferente de Clientes/Fiado, que é básica e sempre disponível."""
+    access = await plan_svc.check_feature(current_user.id, PlanFeature.FINANCE)
+    if not access.allowed:
+        raise HTTPException(status_code=403, detail=access.reason)
 
 
 def _customer_to_response(c) -> CustomerResponseDTO:
@@ -65,7 +75,10 @@ async def get_financial_dashboard(
     market_id: uuid.UUID,
     service: FinanceService = Depends(get_finance_service),
     market=Depends(require_market_access(MarketPermission.FINANCE_READ)),
+    current_user: User = Depends(get_current_user),
+    plan_svc: PlanAccessService = Depends(get_plan_access_service),
 ):
+    await _require_finance_feature(current_user, plan_svc)
     return await service.get_dashboard(market_id)
 
 
@@ -147,7 +160,10 @@ async def add_transaction(
     dto: TransactionCreateDTO,
     service: FinanceService = Depends(get_finance_service),
     market=Depends(require_market_access(MarketPermission.FINANCE_WRITE)),
+    current_user: User = Depends(get_current_user),
+    plan_svc: PlanAccessService = Depends(get_plan_access_service),
 ):
+    await _require_finance_feature(current_user, plan_svc)
     try:
         t = await service.add_transaction(market_id, dto)
         return FinancialTransactionResponseDTO.model_validate(t)
@@ -163,7 +179,10 @@ async def list_transactions(
     market_id: uuid.UUID,
     service: FinanceService = Depends(get_finance_service),
     market=Depends(require_market_access(MarketPermission.FINANCE_READ)),
+    current_user: User = Depends(get_current_user),
+    plan_svc: PlanAccessService = Depends(get_plan_access_service),
 ):
+    await _require_finance_feature(current_user, plan_svc)
     return [
         FinancialTransactionResponseDTO.model_validate(t)
         for t in await service.list_transactions(market_id)

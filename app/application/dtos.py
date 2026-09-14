@@ -99,6 +99,7 @@ class PlanCreateDTO(BaseModel):
     description: Optional[str] = Field(None, max_length=280)
     is_recommended: bool = False
     display_order: int = 0
+    includes_finance: bool = True
     is_active: bool = True
 
 class PlanUpdateDTO(BaseModel):
@@ -113,6 +114,7 @@ class PlanUpdateDTO(BaseModel):
     description: Optional[str] = Field(None, max_length=280)
     is_recommended: Optional[bool] = None
     display_order: Optional[int] = None
+    includes_finance: Optional[bool] = None
     is_active: Optional[bool] = None
 
 class PlanResponseDTO(PlanCreateDTO):

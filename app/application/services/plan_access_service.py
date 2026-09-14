@@ -267,6 +267,13 @@ class PlanAccessService:
                     subscription_status=status_result.subscription_status,
                     plan_name=plan.name,
                 )
+            if feature == PlanFeature.FINANCE and not getattr(plan, "includes_finance", True):
+                return PlanAccessResult(
+                    allowed=False,
+                    reason="Financeiro não incluído no seu plano.",
+                    subscription_status=status_result.subscription_status,
+                    plan_name=plan.name,
+                )
 
         return PlanAccessResult(
             allowed=True,
@@ -374,11 +381,12 @@ class PlanAccessService:
 
         is_operational = status_result.subscription_status in SubscriptionStatus.OPERATIONAL
         is_paid = plan is not None and plan.type in ("pago", "trial")
+        includes_finance = plan is not None and getattr(plan, "includes_finance", True)
 
         base["features"] = {
             PlanFeature.PDV: is_operational,
             PlanFeature.CUSTOMERS: is_operational,
-            PlanFeature.FINANCE: is_operational and is_paid,
+            PlanFeature.FINANCE: is_operational and is_paid and includes_finance,
             PlanFeature.REPORTS: is_operational and is_paid,
             PlanFeature.FISCAL: is_operational and is_paid,
             PlanFeature.SUPPORT: True,

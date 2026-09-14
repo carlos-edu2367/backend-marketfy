@@ -109,7 +109,7 @@ def _plan_to_response(p: Plan) -> PlanResponseDTO:
         price_monthly=p.price_monthly, price_180days=p.price_180days,
         price_annual=p.price_annual, fiscal_monthly_limit=p.fiscal_monthly_limit,
         description=p.description, is_recommended=p.is_recommended,
-        display_order=p.display_order,
+        display_order=p.display_order, includes_finance=p.includes_finance,
         is_active=p.is_active,
     )
 
