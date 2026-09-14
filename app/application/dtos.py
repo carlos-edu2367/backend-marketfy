@@ -118,6 +118,31 @@ class PlanResponseDTO(PlanCreateDTO):
     id: UUID
 
 
+class PublicPlanDTO(BaseModel):
+    """Plano como visto por visitantes: sem campos internos."""
+    id: UUID
+    name: str
+    type: str
+    description: Optional[str] = None
+    max_markets: int
+    max_terminals: int
+    fiscal_monthly_limit: int = 0
+    price_monthly: Decimal
+    price_180days: Decimal
+    price_annual: Decimal
+    is_recommended: bool = False
+    display_order: int = 0
+    is_active: bool = True
+
+    @field_validator('type', mode='before')
+    @classmethod
+    def parse_plan_type(cls, v: Any) -> str:
+        return v.value if hasattr(v, 'value') else str(v)
+
+    class Config:
+        from_attributes = True
+
+
 # ===========================
 # BILLING DTOs (Fase 4)
 # ===========================
