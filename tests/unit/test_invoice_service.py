@@ -344,6 +344,69 @@ async def test_contract_tracks_subscription_created_for_invoice_mode():
 
 
 @pytest.mark.asyncio
+async def test_checkout_description_uses_plan_name_not_uuid():
+    plan = StubPlan(name="Plano Pro")
+    inv_repo = InvoiceRepo()
+    inv = await inv_repo.create(
+        owner_id=uuid.uuid4(), subscription_id=uuid.uuid4(), plan_id=plan.id,
+        period_start=datetime.utcnow(), period_end=datetime.utcnow() + timedelta(days=30),
+        due_date=datetime.utcnow(), amount=Decimal("50.00"), idempotency_key="idem-desc-1",
+    )
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job-1"}
+    svc = InvoiceService(inv_repo, SubRepo(None), PlanRepo(plan), bc, StubSettings())
+
+    await svc._create_checkout(inv, plan, idempotency_key="idem-desc-1")
+
+    _, kwargs = bc.create_payment.call_args
+    assert kwargs["description"] == "Assinatura Marketfy Plano Pro"
+    assert str(inv.subscription_id) not in kwargs["description"]
+
+
+@pytest.mark.asyncio
+async def test_activate_invoice_recomputes_period_end_from_actual_payment_date_when_paid_late():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    period_start = datetime.utcnow() - timedelta(days=3)
+    period_end = period_start + timedelta(days=30)
+    sub = StubSub(owner_id=owner, plan_id=plan.id, status="pending", subscription_type="monthly")
+    inv_repo = InvoiceRepo()
+    inv = await inv_repo.create(owner_id=owner, subscription_id=sub.id, plan_id=plan.id,
+                                period_start=period_start, period_end=period_end,
+                                due_date=period_start, amount=Decimal("50.00"), idempotency_key="idem-late-1")
+    sub_repo = SubRepo(sub)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    before = datetime.utcnow()
+    await svc.activate_invoice(inv.id, "pay_1", {})
+    after = datetime.utcnow()
+
+    expected_min = before + timedelta(days=30)
+    expected_max = after + timedelta(days=30)
+    assert expected_min <= sub.expires_at <= expected_max
+    assert sub.expires_at > period_end  # nao perdeu os 3 dias que o checkout demorou
+
+
+@pytest.mark.asyncio
+async def test_activate_invoice_keeps_period_end_when_paid_same_day():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    now = datetime.utcnow()
+    period_end = now + timedelta(days=30)
+    sub = StubSub(owner_id=owner, plan_id=plan.id, status="pending")
+    inv_repo = InvoiceRepo()
+    inv = await inv_repo.create(owner_id=owner, subscription_id=sub.id, plan_id=plan.id,
+                                period_start=now, period_end=period_end,
+                                due_date=now, amount=Decimal("50.00"), idempotency_key="idem-sameday-1")
+    sub_repo = SubRepo(sub)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    await svc.activate_invoice(inv.id, "pay_1", {})
+
+    assert sub.expires_at == period_end
+
+
+@pytest.mark.asyncio
 async def test_activate_invoice_tracks_invoice_paid():
     owner = uuid.uuid4()
     plan = StubPlan()

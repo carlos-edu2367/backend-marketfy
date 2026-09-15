@@ -183,7 +183,7 @@ class InvoiceService:
         s = self._settings
         result = await self._bc.create_payment(
             value=f"{Decimal(str(invoice.amount)):.2f}",
-            description=f"Assinatura Marketfy {plan.name} — {invoice.subscription_id}",
+            description=f"Assinatura Marketfy {plan.name}",
             system=s.BILLING_CORE_SYSTEM,
             system_payment_id=str(invoice.id),
             webhook_link=s.BILLING_CORE_WEBHOOK_INVOICE_URL,
@@ -283,16 +283,24 @@ class InvoiceService:
             logger.info("invoice_already_paid", extra={"extra_data": {"invoice_id": str(invoice_id)}})
             return
         sub = await self._sub.get_by_id(invoice.subscription_id)
+        period_end = invoice.period_end
         if sub is not None:
+            # Se o pagamento veio depois do dia em que o periodo comecou (checkout
+            # demorou a ser pago), a validade conta a partir de agora — ninguem
+            # perde os dias que o checkout ficou parado.
+            paid_at = datetime.utcnow()
+            if paid_at.date() > invoice.period_start.date():
+                period_days = PERIOD_DAYS.get(sub.subscription_type, PERIOD_DAYS["monthly"])
+                period_end = paid_at + timedelta(days=period_days)
             sub.status = "active"
-            sub.expires_at = invoice.period_end
+            sub.expires_at = period_end
             sub.last_event_at = datetime.utcnow()
             await self._sub.save(sub)
         if self._user is not None:
             user = await self._user.get_by_id(invoice.owner_id)
             if user is not None:
                 user.plan_id = invoice.plan_id
-                user.plan_expiration = invoice.period_end
+                user.plan_expiration = period_end
                 user.is_active = True
                 await self._user.save(user)
         if sub is not None:
