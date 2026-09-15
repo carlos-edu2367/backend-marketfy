@@ -23,6 +23,7 @@ from domain.interfaces import UserRepositoryInterface, PlanRepositoryInterface
 from domain.shared import BusinessRuleException
 from infra.config.logger import get_logger
 from infra.config.settings import get_settings
+from infra.observability.analytics import PostHogClient
 
 logger = get_logger("subscription_service")
 settings = get_settings()
@@ -38,12 +39,14 @@ class SubscriptionService:
         subscription_repo=None,   # SQLAlchemyBillingSubscriptionRepository
         event_repo=None,          # SQLAlchemyBillingEventRepository
         billing_client=None,      # BillingCoreClient — injetado para testabilidade
+        analytics=None,           # PostHogClient — injetado para testabilidade
     ):
         self.user_repo = user_repo
         self.plan_repo = plan_repo
         self._sub_repo = subscription_repo
         self._event_repo = event_repo
         self._billing_client = billing_client
+        self._analytics = analytics or PostHogClient()
 
     # ------------------------------------------------------------------
     # Trial
@@ -72,6 +75,10 @@ class SubscriptionService:
         user.plan_expiration = expires_at
         user.is_active = True
         updated_user = await self.user_repo.save(user)
+
+        await self._analytics.track_event(
+            str(user.id), "trial_activated", {"plan_name": trial_plan.name}
+        )
 
         # Cria assinatura local
         if self._sub_repo is not None:
