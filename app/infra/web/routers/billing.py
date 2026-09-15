@@ -132,12 +132,15 @@ async def subscribe(
 
     # recurring
     from application.services.billing_document import resolve_billing_document
-    document = resolve_billing_document(dto.document, current_user)
+    from infra.repositories.sqlalchemy_repos import (
+        SQLAlchemyMarketRepository, SQLAlchemyPlanRepository, SQLAlchemyUserRepository,
+    )
+    markets = await SQLAlchemyMarketRepository(db).list_by_owner(current_user.id)
+    document = resolve_billing_document(dto.document, current_user, markets=markets)
     if not document:
         raise HTTPException(status_code=400, detail="Documento (CPF/CNPJ) é obrigatório para cobrança recorrente.")
     from application.services.recurring_service import RecurringService
     from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
-    from infra.repositories.sqlalchemy_repos import SQLAlchemyPlanRepository, SQLAlchemyUserRepository
     rec = RecurringService(
         subscription_repo=SQLAlchemyBillingSubscriptionRepository(db),
         plan_repo=SQLAlchemyPlanRepository(db),
