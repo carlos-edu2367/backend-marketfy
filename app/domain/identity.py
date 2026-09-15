@@ -65,14 +65,14 @@ class Plan(Entity):
 class User(Entity):
     name: str
     email: Email
-    cpf: CPF
     password_hash: str
     role: UserRole
     is_active: bool = True
-    plan_id: Optional[uuid.UUID] = None 
+    plan_id: Optional[uuid.UUID] = None
     plan_expiration: Optional[datetime] = None
     cnpj: Optional[CNPJ] = None
     asaas_customer_id: Optional[str] = None
+    cpf: Optional[CPF] = None
 
     @property
     def full_name(self) -> str:
@@ -105,6 +105,6 @@ class User(Entity):
 class Market(Entity):
     owner_id: uuid.UUID
     name: str
-    document: CNPJ
+    document: str
     address: str
     active: bool = True

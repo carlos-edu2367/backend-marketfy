@@ -93,7 +93,7 @@ class SQLAlchemyUserRepository(UserRepositoryInterface):
         u = User(
             name=m.name,
             email=Email(m.email),
-            cpf=CPF(m.cpf),
+            cpf=CPF(m.cpf) if m.cpf else None,
             password_hash=m.password_hash,
             role=UserRole(m.role),
             is_active=m.is_active,
@@ -983,7 +983,7 @@ class SQLAlchemyTicketRepository(TicketRepositoryInterface):
         u = User(
             name=m.name,
             email=Email(m.email),
-            cpf=CPF(m.cpf),
+            cpf=CPF(m.cpf) if m.cpf else None,
             password_hash=m.password_hash,
             role=UserRole(m.role),
             is_active=m.is_active,
