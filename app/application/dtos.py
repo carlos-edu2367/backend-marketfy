@@ -11,6 +11,7 @@ from application.dtos_finance import (  # noqa: F401
     FinanceDashboardDTO,
     FinancialTransactionResponseDTO,
 )
+from domain.validators import validate_document
 
 # ===========================
 # IDENTITY & ACCESS DTOs
@@ -19,7 +20,7 @@ from application.dtos_finance import (  # noqa: F401
 class UserCreateDTO(BaseModel):
     name: str
     email: EmailStr
-    cpf: str
+    cpf: Optional[str] = None
     # Removemos o max_length do Field para tratar manualmente no validator
     password: str = Field(..., min_length=6) 
 
@@ -76,8 +77,15 @@ class UserResponseDTO(BaseModel):
 
 class MarketCreateDTO(BaseModel):
     name: str
-    document: str  # CNPJ
+    document: str  # CPF ou CNPJ, validado por dígito verificador
     address: str
+
+    @field_validator('document')
+    @classmethod
+    def validate_document_checksum(cls, v: str) -> str:
+        if not validate_document(v):
+            raise ValueError('CPF ou CNPJ inválido.')
+        return v
 
 class SubscribeDTO(BaseModel):
     user_id_override: Optional[UUID] = None
