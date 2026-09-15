@@ -50,9 +50,18 @@ def test_falls_back_to_registered_document_when_omitted():
     assert resolve_billing_document("", _user()) == "12345678901"
 
 
-def test_auth_me_exposes_only_the_masked_document():
+def test_auth_me_exposes_only_the_masked_document(monkeypatch):
     from infra.web.main import app
     from infra.web.routers import auth as auth_router
+
+    class StubMarketRepo:
+        def __init__(self, db):
+            pass
+
+        async def list_by_owner(self, owner_id):
+            return []
+
+    monkeypatch.setattr(auth_router, "SQLAlchemyMarketRepository", StubMarketRepo)
 
     app.dependency_overrides[auth_router.get_current_user] = lambda: _user()
     app.dependency_overrides[auth_router.get_db] = lambda: None
@@ -103,3 +112,28 @@ def test_mask_document_masks_cnpj_keeping_only_middle_digits():
 
 def test_mask_document_still_masks_cpf():
     assert mask_document("12345678901") == "***.456.789-**"
+
+
+def test_auth_me_falls_back_to_market_document_when_no_personal_cpf(monkeypatch):
+    from datetime import datetime
+    from infra.web.main import app
+    from infra.web.routers import auth as auth_router
+
+    class StubMarketRepo:
+        def __init__(self, db):
+            pass
+
+        async def list_by_owner(self, owner_id):
+            return [SimpleNamespace(document="12345678000195", created_at=datetime(2023, 1, 1))]
+
+    monkeypatch.setattr(auth_router, "SQLAlchemyMarketRepository", StubMarketRepo)
+
+    app.dependency_overrides[auth_router.get_current_user] = lambda: _user(cpf=None)
+    app.dependency_overrides[auth_router.get_db] = lambda: None
+    try:
+        response = TestClient(app).get("/api/v1/auth/me")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["document_masked"] == "**.345.678/****-**"

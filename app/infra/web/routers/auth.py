@@ -7,7 +7,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from infra.database.setup import get_db
 from infra.security.auth_handler import AuthHandler
-from infra.repositories.sqlalchemy_repos import SQLAlchemyUserRepository, SQLAlchemyPlanRepository
+from infra.repositories.sqlalchemy_repos import SQLAlchemyUserRepository, SQLAlchemyPlanRepository, SQLAlchemyMarketRepository
 from infra.repositories.refresh_session_repo import SQLAlchemyRefreshSessionRepository
 from application.services.subscription_service import SubscriptionService
 from application.services.audit_service import AuditService
@@ -213,6 +213,8 @@ async def read_users_me(
         if plan:
             plan_name = plan.name
 
+    markets = await SQLAlchemyMarketRepository(db).list_by_owner(current_user.id)
+
     return UserResponseDTO(
         id=current_user.id,
         name=current_user.name,
@@ -222,7 +224,7 @@ async def read_users_me(
         plan_name=plan_name, # Campo populado dinamicamente
         plan_expiration=current_user.plan_expiration,
         is_active=current_user.is_active,
-        document_masked=mask_document(registered_document(current_user)),
+        document_masked=mask_document(registered_document(current_user, markets=markets)),
     )
 
 @router.post("/trial", response_model=UserResponseDTO)
