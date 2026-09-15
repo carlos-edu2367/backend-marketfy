@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
-from typing import List, Optional, Dict, Any, Union
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from typing import List, Optional, Dict, Any, Union, Literal
 from datetime import datetime, date
 from uuid import UUID
 from decimal import Decimal
@@ -674,3 +674,65 @@ class FinancialCategorySummaryDTO(BaseModel):
     category: str
     total: Decimal
     type: str
+
+
+# ===========================
+# MARKETING FUNNEL DTOs (A/B)
+# ===========================
+
+class MarketingFunnelEventCreateDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    visitor_id: str = Field(..., min_length=8, max_length=128)
+    funnel_variant: Literal["A", "B"]
+    event_name: str = Field(..., min_length=1, max_length=64)
+    step: Optional[str] = Field(None, max_length=32)
+    properties: Optional[dict] = None
+
+
+class MarketingFunnelLeadCreateDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    visitor_id: str = Field(..., min_length=8, max_length=128)
+    funnel_variant: Literal["A", "B"]
+    name: str = Field(..., min_length=2, max_length=120)
+    phone: Optional[str] = Field(None, max_length=32)
+    email: Optional[EmailStr] = None
+    city: Optional[str] = Field(None, max_length=120)
+    control_score: Optional[int] = Field(None, ge=0, le=100)
+    answers: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def phone_or_email_required(self):
+        if not self.phone and not self.email:
+            raise ValueError("Informe telefone ou e-mail.")
+        return self
+
+
+class MarketingFunnelLeadResponseDTO(BaseModel):
+    id: UUID
+    funnel_variant: str
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    city: Optional[str] = None
+    control_score: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MarketingFunnelStepSummaryDTO(BaseModel):
+    label: str
+    count: int
+    conversion_pct: float
+    drop_off_pct: float
+
+
+class MarketingFunnelSummaryDTO(BaseModel):
+    funnel_variant: str
+    steps: List[MarketingFunnelStepSummaryDTO]
+    lead_count: int
+    cta_click_count: int
+    lead_to_cta_rate: float
