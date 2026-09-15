@@ -459,6 +459,7 @@ class BillingSubscriptionModel(Base):
     billing_system_sub_id = Column(String, nullable=True)   # str(owner_user_id)
     billing_subscription_id = Column(String, nullable=True)  # ID retornado pelo Billing Core
     billing_job_id = Column(String, nullable=True)           # job_id para polling
+    checkout_url = Column(String, nullable=True)              # link de pagamento do preapproval
 
     # Identificador do cliente no provedor de pagamento
     customer_provider_id = Column(String, nullable=True)

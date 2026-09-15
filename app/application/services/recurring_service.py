@@ -47,8 +47,7 @@ class RecurringService:
 
         existing = await self._sub.get_by_idempotency_key(idempotency_key)
         if existing is not None:
-            return {"subscription_id": str(existing.id), "job_id": existing.billing_job_id,
-                    "checkout_url": getattr(existing, "checkout_url", None)}
+            return {"subscription_id": str(existing.id), "job_id": existing.billing_job_id}
 
         plan = await self._plan.get_by_id(plan_id)
         if plan is None or not plan.is_active:
@@ -57,31 +56,13 @@ class RecurringService:
         customer_provider_id = await self._ensure_customer(user, doc)
 
         value = _price(plan, subscription_type)
-        expires_at = datetime.utcnow() + timedelta(days=365 * 5)  # validade longa; billing controla ciclo
         webhook_link = self._webhook_link()
-
-        job = await self._bc.create_subscription(
-            system_sub_id=str(user.id),
-            customer_provider_id=customer_provider_id,
-            description=f"Assinatura Marketfy {plan.name}",
-            value=float(value),
-            subscription_type=CYCLE_MAP[subscription_type],
-            expires_at=expires_at,
-            webhook_link=webhook_link,
-            idempotency_key=idempotency_key,
-        )
-        job_id = job.get("job_id")
-
-        checkout_url, billing_sub_id = await self._poll_subscription_job(job_id)
 
         from infra.database.models import BillingSubscriptionModel
         sub = BillingSubscriptionModel(
             owner_id=user.id, plan_id=plan_id,
             billing_system=self._settings.BILLING_CORE_SYSTEM,
-            billing_system_sub_id=str(user.id),
             billing_mode="recurring",
-            billing_subscription_id=billing_sub_id,
-            billing_job_id=job_id,
             customer_provider_id=customer_provider_id,
             status="pending",
             subscription_type=subscription_type,
@@ -90,13 +71,65 @@ class RecurringService:
             idempotency_key=idempotency_key,
         )
         sub = await self._sub.save(sub)
+        sub.billing_system_sub_id = str(sub.id)
+
+        job = await self._bc.create_subscription(
+            system_sub_id=str(sub.id),
+            customer_provider_id=customer_provider_id,
+            description=f"Marketfy {plan.name}",
+            value=float(value),
+            subscription_type=CYCLE_MAP[subscription_type],
+            expires_at=datetime.utcnow() + timedelta(days=365 * 5),  # teto do billing-core; a validade real e local
+            webhook_link=webhook_link,
+            idempotency_key=f"bc-sub-{sub.id}",
+            back_url=self._back_url(sub.id),
+        )
+        sub.billing_job_id = job.get("job_id")
+        sub = await self._sub.save(sub)
 
         await self._analytics.track_event(
             str(user.id), "subscription_created",
             {"plan_id": str(plan_id), "subscription_type": subscription_type, "billing_mode": "recurring"},
         )
 
-        return {"subscription_id": str(sub.id), "job_id": job_id, "checkout_url": checkout_url}
+        return {"subscription_id": str(sub.id), "job_id": sub.billing_job_id}
+
+    def _back_url(self, local_subscription_id) -> str | None:
+        base = getattr(self._settings, "PUBLIC_FRONTEND_URL", None)
+        if not base:
+            return None
+        return f"{base.rstrip('/')}/billing/retorno?tipo=subscription&ref={local_subscription_id}"
+
+    async def ensure_checkout(self, local_subscription_id) -> Dict[str, Any]:
+        """Consulta o job do billing-core e persiste o checkout_url quando pronto.
+
+        Chamado pelo endpoint POST /billing/subscriptions/{id}/checkout, com o
+        mesmo padrao de polling que InvoiceService.refresh_checkout ja usa.
+        """
+        sub = await self._sub.get_by_id(local_subscription_id)
+        if sub is None:
+            return {"status": "not_found", "checkout_url": None}
+        if sub.checkout_url:
+            return {"status": "completed", "checkout_url": sub.checkout_url}
+        if not sub.billing_job_id:
+            return {"status": "pending", "checkout_url": None}
+
+        job = await self._bc.get_job(sub.billing_job_id)
+        job_status = job.get("status", "processing")
+        if job_status != "completed":
+            return {"status": job_status, "checkout_url": None}
+
+        result = job.get("result") or {}
+        checkout_url = result.get("checkout_url")
+        billing_subscription_id = result.get("subscription_id")
+        if checkout_url:
+            sub.checkout_url = checkout_url
+        if billing_subscription_id:
+            sub.billing_subscription_id = billing_subscription_id
+        if checkout_url or billing_subscription_id:
+            await self._sub.save(sub)
+
+        return {"status": "completed", "checkout_url": checkout_url}
 
     async def _ensure_customer(self, user, doc: str) -> str:
         if getattr(user, "asaas_customer_id", None):
@@ -113,15 +146,6 @@ class RecurringService:
         provider_id = result["provider_customer_id"]
         await self._user.update_asaas_customer_id(user.id, provider_id)
         return provider_id
-
-    async def _poll_subscription_job(self, job_id: str) -> tuple[str | None, str | None]:
-        if not job_id:
-            return None, None
-        job = await self._bc.get_job(job_id)
-        result = job.get("result") or {}
-        checkout_url = result.get("checkout_url") or job.get("checkout_url")
-        billing_sub_id = result.get("subscription_id") or job.get("subscription_id")
-        return checkout_url, billing_sub_id
 
     def _webhook_link(self) -> str:
         host = self._settings.BILLING_CORE_WEBHOOK_HOST or "http://localhost:8000"
