@@ -109,6 +109,9 @@ class InMemorySubscriptionRepo:
             return None
         return sorted(matches, key=lambda s: s.updated_at, reverse=True)[0]
 
+    async def get_current_for_owner(self, owner_id):
+        return await self.get_active_by_owner(owner_id)
+
     async def get_by_id(self, sub_id):
         for s in self._subs:
             if s.id == sub_id:

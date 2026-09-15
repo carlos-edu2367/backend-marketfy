@@ -102,6 +102,9 @@ class SubRepo:
     async def get_active_by_owner(self, owner_id):
         return self._sub
 
+    async def get_current_for_owner(self, owner_id):
+        return self._sub
+
 
 class PlanRepo:
     def __init__(self, plan):
