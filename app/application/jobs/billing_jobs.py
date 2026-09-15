@@ -170,3 +170,45 @@ async def _run_reconcile_pending_invoices_with_session(ctx: dict) -> dict:
         )
         await session.commit()
         return result
+
+
+async def reconcile_provisional_subscriptions(
+    ctx: dict,
+    *,
+    sub_repo=None,
+    bc_client=None,
+) -> dict:
+    """Concede acesso provisorio de 24h (D2) para quem autorizou o cartao no
+    Mercado Pago mas ainda nao voltou pelo navegador — cobre quem fechou a
+    aba antes do redirecionamento para /billing/retorno."""
+    if sub_repo is None:
+        return await _run_reconcile_provisional_subscriptions_with_session(ctx)
+
+    subs = await sub_repo.list_pending_recurring_with_gateway_id()
+    checked = granted = errors = 0
+    for sub in subs:
+        checked += 1
+        try:
+            remote = await bc_client.get_subscription_status(sub.billing_subscription_id)
+            if remote.get("gateway_status") == "ACTIVE":
+                sub.status = "active"
+                sub.provisional = True
+                sub.expires_at = datetime.utcnow() + timedelta(hours=24)
+                await sub_repo.save(sub)
+                granted += 1
+        except Exception as exc:
+            errors += 1
+            logger.error("reconcile_provisional_error", extra={"extra_data": {"sub_id": str(sub.id), "error": str(exc)}})
+    return {"checked": checked, "granted": granted, "errors": errors}
+
+
+async def _run_reconcile_provisional_subscriptions_with_session(ctx: dict) -> dict:
+    from infra.database.setup import async_session_factory
+    from infra.clients.billing_core_client import BillingCoreClient
+    from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
+
+    async with async_session_factory() as session:
+        sub_repo = SQLAlchemyBillingSubscriptionRepository(session)
+        result = await reconcile_provisional_subscriptions(ctx, sub_repo=sub_repo, bc_client=BillingCoreClient())
+        await session.commit()
+        return result
