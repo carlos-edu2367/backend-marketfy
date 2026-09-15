@@ -134,7 +134,7 @@ def test_alembic_graph_has_single_head() -> None:
     config = Config(str(VERSIONS_PATH.parents[1] / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["20260914_0022"]
+    assert script.get_heads() == ["20260915_0024"]
 
 
 def test_tax_rule_v2_migration_follows_repaired_marketfy_head() -> None:

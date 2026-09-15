@@ -473,6 +473,15 @@ class BillingSubscriptionModel(Base):
     expires_at = Column(DateTime, nullable=True)
     last_event_at = Column(DateTime, nullable=True)
 
+    # Cancelamento sem perda imediata de acesso (D1): o usuario mantem acesso
+    # ate expires_at; nenhuma fatura/cobranca nova e gerada depois disso.
+    cancel_at_period_end = Column(Boolean, default=False, nullable=False)
+    canceled_at = Column(DateTime, nullable=True)
+
+    # Acesso provisorio de 24h concedido quando o Mercado Pago autoriza o
+    # cartao mas a primeira fatura (e o webhook real) ainda nao chegou.
+    provisional = Column(Boolean, default=False, nullable=False)
+
     # Idempotência de criação
     idempotency_key = Column(String, nullable=True, unique=True)
 
