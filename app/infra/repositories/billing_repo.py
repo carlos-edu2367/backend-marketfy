@@ -98,6 +98,26 @@ class SQLAlchemyBillingSubscriptionRepository:
                 BillingSubscriptionModel.status == "active",
                 BillingSubscriptionModel.expires_at.isnot(None),
                 BillingSubscriptionModel.expires_at <= cutoff,
+                BillingSubscriptionModel.cancel_at_period_end.is_(False),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def get_current_for_owner(self, owner_id: uuid.UUID) -> Optional[BillingSubscriptionModel]:
+        """Assinatura que deve governar o acesso do owner agora (nao a mais recente)."""
+        from application.services.billing_subscription_selection import select_current_subscription
+
+        subs = await self.list_by_owner(owner_id)
+        return select_current_subscription(subs)
+
+    async def list_pending_recurring_with_gateway_id(self) -> List[BillingSubscriptionModel]:
+        """Assinaturas recorrentes com checkout ja criado no gateway, ainda pendentes
+        de confirmacao — candidatas ao acesso provisorio (D2)."""
+        result = await self._db.execute(
+            select(BillingSubscriptionModel).where(
+                BillingSubscriptionModel.billing_mode == "recurring",
+                BillingSubscriptionModel.status == "pending",
+                BillingSubscriptionModel.billing_subscription_id.isnot(None),
             )
         )
         return list(result.scalars().all())
