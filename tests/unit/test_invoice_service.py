@@ -325,3 +325,40 @@ async def test_activate_invoice_syncs_user_plan_cache():
     assert user.plan_expiration == inv.period_end
     assert user.is_active is True
     assert len(user_repo.saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_contract_tracks_subscription_created_for_invoice_mode():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    analytics = AsyncMock()
+    svc = InvoiceService(InvoiceRepo(), SubRepo(None), PlanRepo(plan), AsyncMock(), StubSettings(), analytics=analytics)
+
+    result = await svc.contract(owner, plan.id, "monthly", idempotency_key="idem-analytics-1")
+
+    analytics.track_event.assert_awaited_once_with(
+        str(owner), "subscription_created",
+        {"plan_id": str(plan.id), "subscription_type": "monthly", "billing_mode": "invoice"},
+    )
+    assert result["invoice_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_activate_invoice_tracks_invoice_paid():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    now = datetime.utcnow()
+    sub = StubSub(owner_id=owner, plan_id=plan.id, status="pending", subscription_type="annual")
+    inv_repo = InvoiceRepo()
+    inv = await inv_repo.create(owner_id=owner, subscription_id=sub.id, plan_id=plan.id,
+                                period_start=now, period_end=now + timedelta(days=365),
+                                due_date=now, amount=Decimal("510.00"), idempotency_key="idem-analytics-2")
+    analytics = AsyncMock()
+    svc = InvoiceService(inv_repo, SubRepo(sub), PlanRepo(plan), AsyncMock(), StubSettings(), analytics=analytics)
+
+    await svc.activate_invoice(inv.id, "pay_1", {})
+
+    analytics.track_event.assert_awaited_once_with(
+        str(owner), "invoice_paid",
+        {"amount": "510.00", "subscription_type": "annual"},
+    )

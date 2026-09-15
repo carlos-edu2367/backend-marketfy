@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from infra.config.logger import get_logger
+from infra.observability.analytics import PostHogClient
 
 logger = get_logger("invoice_service")
 
@@ -24,13 +25,14 @@ def price_for_period(plan, subscription_type: str) -> Decimal:
 
 
 class InvoiceService:
-    def __init__(self, invoice_repo, subscription_repo, plan_repo, billing_client, settings, user_repo=None):
+    def __init__(self, invoice_repo, subscription_repo, plan_repo, billing_client, settings, user_repo=None, analytics=None):
         self._inv = invoice_repo
         self._sub = subscription_repo
         self._plan = plan_repo
         self._bc = billing_client
         self._settings = settings
         self._user = user_repo
+        self._analytics = analytics or PostHogClient()
 
     # -- Contratação -------------------------------------------------------
     async def contract(self, owner_id: uuid.UUID, plan_id: uuid.UUID,
@@ -70,6 +72,11 @@ class InvoiceService:
             owner_id=owner_id, subscription=sub, plan=plan,
             period_start=now, due_date=now,
             idempotency_key=idempotency_key,
+        )
+
+        await self._analytics.track_event(
+            str(owner_id), "subscription_created",
+            {"plan_id": str(plan_id), "subscription_type": subscription_type, "billing_mode": "invoice"},
         )
 
         return {
@@ -289,6 +296,11 @@ class InvoiceService:
                 user.plan_expiration = invoice.period_end
                 user.is_active = True
                 await self._user.save(user)
+        if sub is not None:
+            await self._analytics.track_event(
+                str(invoice.owner_id), "invoice_paid",
+                {"amount": str(invoice.amount), "subscription_type": sub.subscription_type},
+            )
         logger.info("invoice_activated", extra={"extra_data": {
             "invoice_id": str(invoice_id), "subscription_id": str(invoice.subscription_id)}})
 
