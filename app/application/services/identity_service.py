@@ -1,3 +1,4 @@
+import re
 import uuid
 from typing import Optional, Callable, List
 from domain.identity import User, Market, UserRole, CPF, Email, CNPJ, Plan
@@ -39,9 +40,9 @@ class IdentityService:
         new_user = User(
             name=dto.name,
             email=Email(dto.email),
-            cpf=CPF(dto.cpf),
+            cpf=CPF(dto.cpf) if dto.cpf else None,
             password_hash=password_hash,
-            role=UserRole.OWNER 
+            role=UserRole.OWNER
         )
 
         saved_user = await self.user_repo.save(new_user)
@@ -82,7 +83,7 @@ class IdentityService:
         new_market = Market(
             owner_id=user.id,
             name=dto.name,
-            document=CNPJ(dto.document),
+            document=re.sub(r'\D', '', dto.document),
             address=dto.address,
             active=True
         )
