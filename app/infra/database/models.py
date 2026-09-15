@@ -1243,3 +1243,36 @@ class MercadoPagoStoreRegistrationModel(Base):
     last_error_code = Column(String(80), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class MarketingFunnelEventModel(Base):
+    __tablename__ = "marketing_funnel_events"
+    __table_args__ = (
+        Index("ix_mfe_variant_event_step", "funnel_variant", "event_name", "step"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    visitor_id = Column(String, nullable=False, index=True)
+    funnel_variant = Column(String(1), nullable=False)
+    event_name = Column(String(64), nullable=False)
+    step = Column(String(32), nullable=True)
+    properties = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class MarketingFunnelLeadModel(Base):
+    __tablename__ = "marketing_funnel_leads"
+    __table_args__ = (
+        Index("ix_mfl_variant", "funnel_variant"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    visitor_id = Column(String, nullable=False, index=True)
+    funnel_variant = Column(String(1), nullable=False)
+    name = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    control_score = Column(Integer, nullable=True)
+    answers = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
