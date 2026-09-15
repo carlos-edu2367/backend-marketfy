@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
+from domain.billing_periods import PERIOD_DAYS
 from domain.identity import User, Plan, PlanType
 from domain.interfaces import UserRepositoryInterface, PlanRepositoryInterface
 from domain.shared import BusinessRuleException
@@ -345,29 +346,40 @@ class SubscriptionService:
             event_model.owner_id = local_sub.owner_id
         await self._event_repo.save(event_model)
 
-        status_map = {
-            "PAYMENT_RECEIVED": "active",
-            "PAYMENT_REFUNDED": None,          # não altera acesso automaticamente
-            "SUBSCRIPTION_INACTIVATED": "canceled",
-        }
-        new_status = status_map.get(event, None)
-
         try:
-            if local_sub is not None and new_status is not None:
-                local_sub.status = new_status
-                local_sub.last_event_at = datetime.utcnow()
-                if subscription_expires_at and new_status == "active":
-                    local_sub.expires_at = subscription_expires_at
-                await self._sub_repo.save(local_sub)
+            if local_sub is not None:
+                if event == "PAYMENT_RECEIVED" and payment_date is not None:
+                    period_days = PERIOD_DAYS.get(local_sub.subscription_type, PERIOD_DAYS["monthly"])
+                    local_sub.status = "active"
+                    local_sub.expires_at = payment_date + timedelta(days=period_days)
+                    local_sub.provisional = False
+                    local_sub.last_event_at = datetime.utcnow()
+                    await self._sub_repo.save(local_sub)
 
-                user = await self.user_repo.get_by_id(local_sub.owner_id)
-                if user is not None:
-                    if local_sub.plan_id:
-                        user.plan_id = local_sub.plan_id
-                    if subscription_expires_at and new_status == "active":
-                        user.plan_expiration = subscription_expires_at
+                    user = await self.user_repo.get_by_id(local_sub.owner_id)
+                    if user is not None:
+                        if local_sub.plan_id:
+                            user.plan_id = local_sub.plan_id
+                        user.plan_expiration = local_sub.expires_at
                         user.is_active = True
-                    await self.user_repo.save(user)
+                        await self.user_repo.save(user)
+
+                elif event in ("PAYMENT_REFUNDED", "PAYMENT_CHARGEBACK_REQUESTED"):
+                    self._lock_immediately(local_sub)
+                    await self._sub_repo.save(local_sub)
+
+                elif event == "SUBSCRIPTION_INACTIVATED":
+                    if local_sub.cancel_at_period_end:
+                        # cancelamento ja solicitado pelo usuario (POST /billing/subscription/cancel);
+                        # isto e so a confirmacao do gateway — o acesso continua ate expires_at.
+                        if local_sub.canceled_at is None:
+                            local_sub.canceled_at = datetime.utcnow()
+                            await self._sub_repo.save(local_sub)
+                    else:
+                        # cancelado do lado do gateway (payer cancelou direto no Mercado Pago,
+                        # ou 3 faturas recusadas) — nao ha periodo pago a proteger.
+                        self._lock_immediately(local_sub)
+                        await self._sub_repo.save(local_sub)
 
             event_model.processing_status = "processed"
             event_model.processed_at = datetime.utcnow()
@@ -378,6 +390,15 @@ class SubscriptionService:
         await self._event_repo.save(event_model)
 
         return {"result": event_model.processing_status, "event_id": event_id, "event": event}
+
+    @staticmethod
+    def _lock_immediately(sub) -> None:
+        """Corta o acesso agora, sem carencia — usado por estorno, chargeback e
+        cancelamento iniciado pelo gateway (sem periodo pago a proteger)."""
+        sub.cancel_at_period_end = True
+        if sub.canceled_at is None:
+            sub.canceled_at = datetime.utcnow()
+        sub.expires_at = datetime.utcnow() - timedelta(seconds=1)
 
     async def _apply_event(
         self,

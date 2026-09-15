@@ -25,6 +25,9 @@ class StubSub:
     billing_subscription_id: Optional[str] = "sub_bc_1"
     status: str = "pending"
     expires_at: Optional[datetime] = None
+    subscription_type: str = "monthly"
+    cancel_at_period_end: bool = False
+    canceled_at: Optional[datetime] = None
 
 
 @dataclass
@@ -89,13 +92,81 @@ async def test_payment_received_activates_and_is_idempotent():
 
 
 @pytest.mark.asyncio
-async def test_subscription_inactivated_cancels():
-    sub = StubSub(status="active")
+async def test_payment_received_computes_expires_at_locally_ignoring_payload():
+    sub = StubSub()
     user = StubUser(id=sub.owner_id)
     svc = SubscriptionService(UserRepo(user), PlanRepo(), SubRepo(sub), EventRepo())
+
+    # o payload manda um valor absurdo (5 anos, como o Marketfy enviava para
+    # o billing-core) — o Marketfy nunca deve confiar nesse eco.
+    bogus_far_future = datetime(2099, 1, 1)
+    await svc.process_recurring_event(
+        event="PAYMENT_RECEIVED", billing_subscription_id="sub_bc_1",
+        subscription_expires_at=bogus_far_future, payment_date=datetime(2026, 10, 1), raw_payload={},
+    )
+
+    assert sub.expires_at == datetime(2026, 10, 31)  # +30 dias, monthly
+    assert sub.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_payment_refunded_locks_access_immediately():
+    sub = StubSub(status="active", expires_at=datetime(2026, 12, 1))
+    user = StubUser(id=sub.owner_id)
+    svc = SubscriptionService(UserRepo(user), PlanRepo(), SubRepo(sub), EventRepo())
+
+    await svc.process_recurring_event(
+        event="PAYMENT_REFUNDED", billing_subscription_id="sub_bc_1",
+        subscription_expires_at=None, payment_date=None, raw_payload={},
+    )
+
+    assert sub.cancel_at_period_end is True
+    assert sub.expires_at < datetime.utcnow()
+    assert sub.status == "active"  # status nao muda; o bloqueio vem de expires_at + cancel_at_period_end
+
+
+@pytest.mark.asyncio
+async def test_payment_chargeback_requested_locks_access_immediately():
+    sub = StubSub(status="active", expires_at=datetime(2026, 12, 1))
+    user = StubUser(id=sub.owner_id)
+    svc = SubscriptionService(UserRepo(user), PlanRepo(), SubRepo(sub), EventRepo())
+
+    await svc.process_recurring_event(
+        event="PAYMENT_CHARGEBACK_REQUESTED", billing_subscription_id="sub_bc_1",
+        subscription_expires_at=None, payment_date=None, raw_payload={},
+    )
+
+    assert sub.cancel_at_period_end is True
+    assert sub.expires_at < datetime.utcnow()
+
+
+@pytest.mark.asyncio
+async def test_subscription_inactivated_from_gateway_locks_when_no_prior_user_cancel():
+    sub = StubSub(status="active", expires_at=datetime(2026, 12, 1), cancel_at_period_end=False)
+    user = StubUser(id=sub.owner_id)
+    svc = SubscriptionService(UserRepo(user), PlanRepo(), SubRepo(sub), EventRepo())
+
     r = await svc.process_recurring_event(
         event="SUBSCRIPTION_INACTIVATED", billing_subscription_id="sub_bc_1",
-        subscription_expires_at=datetime(2027, 1, 1), payment_date=None, raw_payload={},
+        subscription_expires_at=None, payment_date=None, raw_payload={},
     )
+
     assert r["result"] == "processed"
-    assert sub.status == "canceled"
+    assert sub.cancel_at_period_end is True
+    assert sub.expires_at < datetime.utcnow()
+    assert sub.status == "active"  # status nao muda; SUBSCRIPTION_INACTIVATED nunca escreve "canceled"
+
+
+@pytest.mark.asyncio
+async def test_subscription_inactivated_after_user_requested_cancel_keeps_access_window():
+    original_expires = datetime(2026, 12, 1)
+    sub = StubSub(status="active", expires_at=original_expires, cancel_at_period_end=True, canceled_at=datetime(2026, 9, 15))
+    user = StubUser(id=sub.owner_id)
+    svc = SubscriptionService(UserRepo(user), PlanRepo(), SubRepo(sub), EventRepo())
+
+    await svc.process_recurring_event(
+        event="SUBSCRIPTION_INACTIVATED", billing_subscription_id="sub_bc_1",
+        subscription_expires_at=None, payment_date=None, raw_payload={},
+    )
+
+    assert sub.expires_at == original_expires  # confirmacao do gateway nao antecipa o corte
