@@ -7,12 +7,11 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
+from domain.billing_periods import PERIOD_DAYS
 from infra.config.logger import get_logger
 from infra.observability.analytics import PostHogClient
 
 logger = get_logger("invoice_service")
-
-PERIOD_DAYS = {"monthly": 30, "semiannual": 180, "annual": 365}
 
 
 def price_for_period(plan, subscription_type: str) -> Decimal:

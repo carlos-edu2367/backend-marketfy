@@ -8,13 +8,11 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict
 
+from domain.billing_periods import CYCLE_MAP, PERIOD_DAYS
 from infra.config.logger import get_logger
 from infra.observability.analytics import PostHogClient
 
 logger = get_logger("recurring_service")
-
-CYCLE_MAP = {"monthly": "MONTHLY", "semiannual": "SEMIANNUALLY", "annual": "YEARLY"}
-PERIOD_DAYS = {"monthly": 30, "semiannual": 180, "annual": 365}
 
 
 def _price(plan, subscription_type: str) -> Decimal:
