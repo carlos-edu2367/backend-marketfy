@@ -205,7 +205,7 @@ class SQLAlchemyMarketRepository(MarketRepositoryInterface):
         
         model.owner_id = market.owner_id
         model.name = market.name
-        model.document = market.document.value
+        model.document = market.document
         model.address = market.address
         model.is_active = market.active
         
@@ -217,7 +217,7 @@ class SQLAlchemyMarketRepository(MarketRepositoryInterface):
         market = Market(
             owner_id=m.owner_id,
             name=m.name,
-            document=CNPJ(m.document),
+            document=m.document,
             address=m.address,
             active=m.is_active
         )
