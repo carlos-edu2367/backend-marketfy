@@ -65,3 +65,41 @@ def test_auth_me_exposes_only_the_masked_document():
     body = response.json()
     assert body["document_masked"] == "***.456.789-**"
     assert "12345678901" not in response.text
+
+
+def _market(document, created_at):
+    return SimpleNamespace(document=document, created_at=created_at)
+
+
+def test_registered_document_falls_back_to_oldest_market_without_personal_cpf():
+    from datetime import datetime
+    markets = [
+        _market("12345678000195", datetime(2024, 6, 1)),
+        _market("98765432000110", datetime(2023, 1, 1)),  # mais antiga
+    ]
+    assert registered_document(_user(cpf=None), markets=markets) == "98765432000110"
+
+
+def test_registered_document_prefers_personal_cpf_over_markets():
+    from datetime import datetime
+    markets = [_market("12345678000195", datetime(2023, 1, 1))]
+    assert registered_document(_user(), markets=markets) == "12345678901"
+
+
+def test_registered_document_returns_none_without_cpf_or_markets():
+    assert registered_document(_user(cpf=None), markets=[]) is None
+    assert registered_document(_user(cpf=None)) is None
+
+
+def test_resolve_billing_document_propagates_markets_fallback():
+    from datetime import datetime
+    markets = [_market("12345678000195", datetime(2023, 1, 1))]
+    assert resolve_billing_document(None, _user(cpf=None), markets=markets) == "12345678000195"
+
+
+def test_mask_document_masks_cnpj_keeping_only_middle_digits():
+    assert mask_document("12345678000195") == "**.345.678/****-**"
+
+
+def test_mask_document_still_masks_cpf():
+    assert mask_document("12345678901") == "***.456.789-**"
