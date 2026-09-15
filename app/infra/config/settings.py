@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     BILLING_CORE_TIMEOUT_SECONDS: int = 10
     BILLING_CORE_ENABLED: bool = False
 
+    # Analytics de produto (PostHog) — Fase de conversão (D9)
+    ANALYTICS_ENABLED: bool = False
+    POSTHOG_API_KEY: Optional[str] = None
+    POSTHOG_HOST: str = "https://us.i.posthog.com"
+
     # Mercado Pago Pix (QR dinâmico presencial) — aplicação OAuth única do Marketfy
     MP_ENABLED: bool = False
     MP_APP_ID: str = ""                 # client_id da aplicação Marketfy
