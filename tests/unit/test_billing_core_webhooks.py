@@ -57,7 +57,7 @@ def FakePackage(**kwargs) -> FiscalEmissionPackage:
     return FiscalEmissionPackage(**defaults)
 
 
-def _credits_service(package=None, existing_ledger=None):
+def _credits_service(package=None, existing_ledger=None, analytics=None):
     repo = AsyncMock()
     repo.get_package.return_value = package
     repo.activate_package.return_value = 1
@@ -77,6 +77,7 @@ def _credits_service(package=None, existing_ledger=None):
         notification_service=notification_service,
         audit_service=audit_service,
         settings=SimpleNamespace(BILLING_CORE_ENABLED=True),
+        analytics=analytics or AsyncMock(),
     )
 
 
@@ -333,6 +334,21 @@ async def test_activate_package_creates_ledger_notification_and_audit():
 
     svc.notification_service.create_notification.assert_called_once()
     svc.audit_service.record.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_activate_package_tracks_fiscal_credits_purchased():
+    owner_id = uuid.uuid4()
+    pkg = FakePackage(owner_id=owner_id, payment_status="pending", quantity=250, price_gross=Decimal("73.57"))
+    analytics = AsyncMock()
+    svc = _credits_service(package=pkg, analytics=analytics)
+
+    await svc.activate_package(pkg.id, "pay-1", {"payment_id": "pay-1"})
+
+    analytics.track_event.assert_awaited_once_with(
+        str(owner_id), "fiscal_credits_purchased",
+        {"quantity": 250, "amount": "73.57"},
+    )
 
 
 @pytest.mark.asyncio

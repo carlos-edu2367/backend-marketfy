@@ -20,6 +20,7 @@ from domain.fiscal import (
     PurchaseInitResult,
 )
 from infra.config.logger import get_logger
+from infra.observability.analytics import PostHogClient
 
 logger = get_logger("fiscal_credits_service")
 
@@ -38,6 +39,7 @@ class FiscalCreditsService:
         plan_access_service=None,
         bc_client=None,
         user_repo=None,
+        analytics=None,
     ):
         self.credits_repo = credits_repo
         self.mp_client = mp_client
@@ -49,6 +51,7 @@ class FiscalCreditsService:
         self.plan_access_service = plan_access_service
         self.bc_client = bc_client
         self.user_repo = user_repo
+        self.analytics = analytics or PostHogClient()
 
     def get_packages(self) -> list[EmissionCreditPackage]:
         return list(EMISSION_PACKAGES.values())
@@ -221,7 +224,12 @@ class FiscalCreditsService:
             commit=False,
         )
         await self._record_activation_audit(package, bc_payment_id, commit=False)
-        
+
+        await self.analytics.track_event(
+            str(package.owner_id), "fiscal_credits_purchased",
+            {"quantity": package.quantity, "amount": str(package.price_gross)},
+        )
+
         await self.credits_repo.session.commit()
         
         await self._notify_activation(package, bc_payment_id, valid_until)
