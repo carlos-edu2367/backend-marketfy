@@ -91,3 +91,22 @@ async def test_contract_creates_customer_and_subscription():
     # ciclo mapeado corretamente
     _, kwargs = bc.create_subscription.call_args
     assert kwargs["subscription_type"] == "MONTHLY"
+
+
+@pytest.mark.asyncio
+async def test_contract_tracks_subscription_created_for_recurring_mode():
+    plan = StubPlan()
+    user = StubUser()
+    bc = AsyncMock()
+    bc.create_customer.return_value = {"provider_customer_id": "cus_1"}
+    bc.create_subscription.return_value = {"job_id": "job_1"}
+    bc.get_job.return_value = {"status": "done", "result": {"checkout_url": "https://pay/x", "subscription_id": "sub_bc_1"}}
+    analytics = AsyncMock()
+
+    svc = RecurringService(SubRepo(), PlanRepo(plan), UserRepo(), bc, StubSettings(), analytics=analytics)
+    await svc.contract(user, plan.id, "monthly", document="12345678901", idempotency_key="idem-analytics-1")
+
+    analytics.track_event.assert_awaited_once_with(
+        str(user.id), "subscription_created",
+        {"plan_id": str(plan.id), "subscription_type": "monthly", "billing_mode": "recurring"},
+    )

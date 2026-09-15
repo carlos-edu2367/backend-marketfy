@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any, Dict
 
 from infra.config.logger import get_logger
+from infra.observability.analytics import PostHogClient
 
 logger = get_logger("recurring_service")
 
@@ -30,12 +31,13 @@ def _only_digits(doc: str) -> str:
 
 
 class RecurringService:
-    def __init__(self, subscription_repo, plan_repo, user_repo, billing_client, settings):
+    def __init__(self, subscription_repo, plan_repo, user_repo, billing_client, settings, analytics=None):
         self._sub = subscription_repo
         self._plan = plan_repo
         self._user = user_repo
         self._bc = billing_client
         self._settings = settings
+        self._analytics = analytics or PostHogClient()
 
     async def contract(self, user, plan_id: uuid.UUID, subscription_type: str,
                        document: str, idempotency_key: str) -> Dict[str, Any]:
@@ -90,6 +92,11 @@ class RecurringService:
             idempotency_key=idempotency_key,
         )
         sub = await self._sub.save(sub)
+
+        await self._analytics.track_event(
+            str(user.id), "subscription_created",
+            {"plan_id": str(plan_id), "subscription_type": subscription_type, "billing_mode": "recurring"},
+        )
 
         return {"subscription_id": str(sub.id), "job_id": job_id, "checkout_url": checkout_url}
 
