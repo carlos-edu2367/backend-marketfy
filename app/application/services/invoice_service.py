@@ -64,7 +64,22 @@ class InvoiceService:
             value=price_for_period(plan, subscription_type),
             idempotency_key=f"invsub-{owner_id}-{plan_id}-{subscription_type}",
         )
-        sub = await self._sub.save(sub)
+        # A chave da assinatura e fixa por (owner, plano, ciclo), enquanto a chave
+        # recebida do cliente muda a cada tentativa. Sem isso, a segunda contratacao
+        # do mesmo plano batia na UNIQUE e virava 409 permanente.
+        sub, was_created = await self._sub.create_if_absent_by_idempotency_key(sub)
+
+        if not was_created:
+            if sub.status in {"active", "trialing"}:
+                raise ValueError("Você já possui uma assinatura ativa para este plano.")
+            open_invoice = await self._inv.get_open_invoice_for_subscription(sub.id)
+            if open_invoice is not None:
+                return {
+                    "subscription_id": str(sub.id),
+                    "invoice_id": str(open_invoice.id),
+                    "job_id": open_invoice.bc_job_id,
+                    "checkout_url": open_invoice.checkout_url,
+                }
 
         now = datetime.utcnow()
         invoice = await self._create_invoice(

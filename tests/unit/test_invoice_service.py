@@ -10,6 +10,7 @@ from typing import Optional
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 app_dir = os.path.abspath(os.path.join(current_dir, "../../app"))
@@ -107,11 +108,19 @@ class SubRepo:
     async def get_by_idempotency_key(self, key):
         return self.by_idempotency_key.get(key)
     async def save(self, sub):
+        key = getattr(sub, "idempotency_key", None)
+        # Espelha billing_subscriptions.idempotency_key UNIQUE: um INSERT com
+        # chave repetida estoura IntegrityError, nao sobrescreve em silencio.
+        if key and self.by_idempotency_key.get(key) not in (None, sub):
+            raise IntegrityError("INSERT INTO billing_subscriptions", {}, Exception(
+                'duplicate key value violates unique constraint '
+                '"billing_subscriptions_idempotency_key_key"'
+            ))
         if sub.id is None:
             sub.id = uuid.uuid4()
         self.saved.append(sub)
-        if getattr(sub, "idempotency_key", None):
-            self.by_idempotency_key[sub.idempotency_key] = sub
+        if key:
+            self.by_idempotency_key[key] = sub
         return sub
     async def create_if_absent_by_idempotency_key(self, sub):
         existing = await self.get_by_idempotency_key(sub.idempotency_key)
@@ -425,3 +434,60 @@ async def test_activate_invoice_tracks_invoice_paid():
         str(owner), "invoice_paid",
         {"amount": "510.00", "subscription_type": "annual"},
     )
+
+
+@pytest.mark.asyncio
+async def test_contract_twice_reuses_pending_subscription_and_open_invoice():
+    """Regressao: o frontend manda idempotency_key nova a cada abertura do modal
+    (`mktf-sub:<user>:<plan>:<Date.now()>`), entao a guarda por fatura nunca casa,
+    enquanto a chave da assinatura (`invsub-...`) e fixa. O segundo Pix do mesmo
+    plano/ciclo batia na UNIQUE e virava 409 para sempre."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    inv_repo = InvoiceRepo()
+    sub_repo = SubRepo(None)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    first = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:1000")
+    second = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:2000")
+
+    assert second["subscription_id"] == first["subscription_id"]
+    assert second["invoice_id"] == first["invoice_id"]
+    assert len(sub_repo.saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_contract_again_opens_a_new_invoice_when_none_is_open():
+    """Assinatura pendente orfa (fatura anterior paga/cancelada) deve render uma
+    fatura nova, nao um 409."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    inv_repo = InvoiceRepo()
+    sub_repo = SubRepo(None)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    first = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:1000")
+    inv_repo.open_by_sub.pop(uuid.UUID(first["subscription_id"]), None)
+
+    second = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:2000")
+
+    assert second["subscription_id"] == first["subscription_id"]
+    assert second["invoice_id"] != first["invoice_id"]
+    assert len(sub_repo.saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_contract_rejects_when_subscription_is_already_active():
+    """Plano ja ativo nao deve virar 409 generico, e sim erro de negocio (400)."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    inv_repo = InvoiceRepo()
+    sub_repo = SubRepo(None)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    first = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:1000")
+    sub_repo.by_idempotency_key[f"invsub-{owner}-{plan.id}-monthly"].status = "active"
+    inv_repo.open_by_sub.pop(uuid.UUID(first["subscription_id"]), None)
+
+    with pytest.raises(ValueError, match="assinatura ativa"):
+        await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:2000")
