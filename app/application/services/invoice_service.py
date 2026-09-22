@@ -53,6 +53,18 @@ class InvoiceService:
         if plan is None or not plan.is_active:
             raise ValueError("Plano não disponível.")
 
+        # A assinatura viva pode estar sob outra chave (ex.: `invoice-retry:<fatura>`,
+        # criada por retry_canceled_invoice), entao nao basta olhar a chave fixa
+        # abaixo: sem esta varredura, uma cliente com plano ativo ganhava uma
+        # segunda fatura pendente.
+        for owned in await self._sub.list_by_owner(owner_id):
+            if (
+                owned.plan_id == plan_id
+                and owned.subscription_type == subscription_type
+                and owned.status in {"active", "trialing"}
+            ):
+                raise ValueError("Você já possui uma assinatura ativa para este plano.")
+
         from infra.database.models import BillingSubscriptionModel
         sub = BillingSubscriptionModel(
             owner_id=owner_id, plan_id=plan_id,
@@ -72,14 +84,34 @@ class InvoiceService:
         if not was_created:
             if sub.status in {"active", "trialing"}:
                 raise ValueError("Você já possui uma assinatura ativa para este plano.")
-            open_invoice = await self._inv.get_open_invoice_for_subscription(sub.id)
-            if open_invoice is not None:
-                return {
-                    "subscription_id": str(sub.id),
-                    "invoice_id": str(open_invoice.id),
-                    "job_id": open_invoice.bc_job_id,
-                    "checkout_url": open_invoice.checkout_url,
-                }
+            if sub.status == "pending":
+                open_invoice = await self._inv.get_open_invoice_for_subscription(sub.id)
+                if open_invoice is not None:
+                    return {
+                        "subscription_id": str(sub.id),
+                        "invoice_id": str(open_invoice.id),
+                        "job_id": open_invoice.bc_job_id,
+                        "checkout_url": open_invoice.checkout_url,
+                    }
+            else:
+                # Assinatura encerrada (canceled/expired/failed): pendurar uma
+                # fatura nova nela deixaria a cobranca orfa. Libera a chave fixa,
+                # preservando a linha antiga, e contrata uma assinatura limpa.
+                closed = sub
+                closed.idempotency_key = f"{closed.idempotency_key}:closed:{closed.id}"
+                await self._sub.save(closed)
+                sub, _ = await self._sub.create_if_absent_by_idempotency_key(
+                    BillingSubscriptionModel(
+                        owner_id=owner_id, plan_id=plan_id,
+                        billing_system=self._settings.BILLING_CORE_SYSTEM,
+                        billing_system_sub_id=str(owner_id),
+                        billing_mode="invoice",
+                        status="pending",
+                        subscription_type=subscription_type,
+                        value=price_for_period(plan, subscription_type),
+                        idempotency_key=f"invsub-{owner_id}-{plan_id}-{subscription_type}",
+                    )
+                )
 
         now = datetime.utcnow()
         invoice = await self._create_invoice(

@@ -99,10 +99,13 @@ class InvoiceRepo:
 
 
 class SubRepo:
-    def __init__(self, sub):
+    def __init__(self, sub, owned=None):
         self._sub = sub
         self.saved = []
         self.by_idempotency_key = {}
+        self._owned = list(owned or [])
+    async def list_by_owner(self, owner_id):
+        return [s for s in self._owned if s.owner_id == owner_id]
     async def get_by_id(self, sid):
         return self._sub
     async def get_by_idempotency_key(self, key):
@@ -119,6 +122,9 @@ class SubRepo:
         if sub.id is None:
             sub.id = uuid.uuid4()
         self.saved.append(sub)
+        # Reindexa: um UPDATE que troca a chave libera a antiga, como no banco.
+        for stale in [k for k, v in self.by_idempotency_key.items() if v is sub and k != key]:
+            del self.by_idempotency_key[stale]
         if key:
             self.by_idempotency_key[key] = sub
         return sub
@@ -519,3 +525,43 @@ async def test_ensure_checkout_does_not_recreate_payment_after_a_failed_job():
     assert first["status"] == "failed"
     assert second["status"] == "failed"
     assert third["checkout_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_contract_rejects_when_owner_already_has_an_active_plan_under_another_key():
+    """Regressao: a assinatura ativa da cliente vivia sob a chave
+    `invoice-retry:<fatura>`, enquanto a busca so olhava a chave fixa
+    `invsub-...` — que apontava para uma assinatura CANCELADA. A contratacao
+    reaproveitava a cancelada e emitia uma segunda fatura pendente."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    canceled = StubSub(owner_id=owner, plan_id=plan.id, status="canceled",
+                       idempotency_key=f"invsub-{owner}-{plan.id}-monthly")
+    active = StubSub(owner_id=owner, plan_id=plan.id, status="active",
+                     idempotency_key="invoice-retry:abc")
+    sub_repo = SubRepo(None, owned=[canceled, active])
+    sub_repo.by_idempotency_key[canceled.idempotency_key] = canceled
+    svc = InvoiceService(InvoiceRepo(), sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    with pytest.raises(ValueError, match="assinatura ativa"):
+        await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:1")
+
+    assert sub_repo.saved == [], "nenhuma fatura nova deve nascer numa assinatura cancelada"
+
+
+@pytest.mark.asyncio
+async def test_contract_does_not_reuse_a_closed_subscription():
+    """Assinatura encerrada libera a chave: a nova contratacao nasce limpa,
+    em vez de pendurar uma fatura numa assinatura cancelada."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    canceled = StubSub(owner_id=owner, plan_id=plan.id, status="canceled",
+                       idempotency_key=f"invsub-{owner}-{plan.id}-monthly")
+    sub_repo = SubRepo(None, owned=[canceled])
+    sub_repo.by_idempotency_key[canceled.idempotency_key] = canceled
+    svc = InvoiceService(InvoiceRepo(), sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    result = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:1")
+
+    assert result["subscription_id"] != str(canceled.id)
+    assert canceled.status == "canceled"
