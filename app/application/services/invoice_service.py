@@ -259,6 +259,19 @@ class InvoiceService:
             checkout = await self.refresh_checkout(invoice.id)
             if checkout.get("checkout_url") or checkout.get("status") not in {"failed", "not_found"}:
                 return checkout
+            if checkout.get("status") == "failed":
+                # O Billing Core deduplica a criacao por system_payment_id, entao
+                # recriar com a mesma fatura so devolve o mesmo job falhado. Sem
+                # esta saida, o polling do front vira uma tentativa por segundo
+                # ate o Billing Core responder 429 (que o cliente traduz em 503).
+                logger.warning(
+                    "invoice_checkout_job_failed",
+                    extra={"extra_data": {
+                        "invoice_id": str(invoice.id),
+                        "bc_job_id": invoice.bc_job_id,
+                    }},
+                )
+                return checkout
 
         plan = await self._plan.get_by_id(invoice.plan_id)
         if plan is None:

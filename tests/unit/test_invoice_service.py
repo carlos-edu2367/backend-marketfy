@@ -491,3 +491,31 @@ async def test_contract_rejects_when_subscription_is_already_active():
 
     with pytest.raises(ValueError, match="assinatura ativa"):
         await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:2000")
+
+
+@pytest.mark.asyncio
+async def test_ensure_checkout_does_not_recreate_payment_after_a_failed_job():
+    """Regressao: com o job falhado, ensure_checkout caia fora do refresh e
+    chamava _create_checkout de novo. Como o Billing Core deduplica por
+    system_payment_id, isso devolve sempre o mesmo job falhado — o front, em
+    polling, virava um POST /v1/payments por segundo ate estourar 429/503."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    inv_repo = InvoiceRepo()
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job_1"}
+    bc.get_job.return_value = {"status": "failed", "result": {}}
+    svc = InvoiceService(inv_repo, SubRepo(None), PlanRepo(plan), bc, StubSettings())
+    contracted = await svc.contract(owner, plan.id, "monthly", idempotency_key="idem-1")
+    invoice_id = uuid.UUID(contracted["invoice_id"])
+
+    first = await svc.ensure_checkout(invoice_id)
+    assert bc.create_payment.await_count == 1
+
+    second = await svc.ensure_checkout(invoice_id)
+    third = await svc.ensure_checkout(invoice_id)
+
+    assert bc.create_payment.await_count == 1, "job falhado nao deve gerar nova cobranca"
+    assert first["status"] == "failed"
+    assert second["status"] == "failed"
+    assert third["checkout_url"] is None
