@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import CheckConstraint, Column, String, Boolean, Integer, ForeignKey, DateTime, Numeric, Text, UniqueConstraint, Index, Date, JSON, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, synonym
@@ -1233,3 +1233,98 @@ class MercadoPagoStoreRegistrationModel(Base):
     last_error_code = Column(String(80), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+# =============================================================================
+# FUNIS DE VENDA (admin vende planos do Marketfy)
+# =============================================================================
+
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
+class FunnelModel(Base):
+    __tablename__ = "funnels"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'published', 'archived')", name="ck_funnels_status"),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug = Column(String(80), nullable=False, unique=True, index=True)
+    name = Column(String(120), nullable=False)
+    status = Column(String(20), nullable=False, default="draft", server_default="draft")
+    plan_id = Column(UUID(as_uuid=True), ForeignKey("plans.id"), nullable=True)
+    tracking_html = Column(Text, nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class FunnelVariantModel(Base):
+    __tablename__ = "funnel_variants"
+    __table_args__ = (CheckConstraint("weight >= 0", name="ck_funnel_variants_weight"),)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    funnel_id = Column(UUID(as_uuid=True), ForeignKey("funnels.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(60), nullable=False)
+    weight = Column(Integer, nullable=False, default=100, server_default="100")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    position = Column(Integer, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class FunnelStepModel(Base):
+    __tablename__ = "funnel_steps"
+    __table_args__ = (UniqueConstraint("variant_id", "position", name="uq_funnel_steps_variant_position"),)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("funnel_variants.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    position = Column(Integer, nullable=False)
+    name = Column(String(120), nullable=False)
+    html = Column(Text, nullable=False, default="", server_default="")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class FunnelSessionModel(Base):
+    __tablename__ = "funnel_sessions"
+    __table_args__ = (Index("ix_funnel_sessions_funnel_created", "funnel_id", "created_at"),)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    funnel_id = Column(UUID(as_uuid=True), ForeignKey("funnels.id", ondelete="CASCADE"), nullable=False)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("funnel_variants.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    utm_source = Column(String(200), nullable=True)
+    utm_medium = Column(String(200), nullable=True)
+    utm_campaign = Column(String(200), nullable=True)
+    utm_content = Column(String(200), nullable=True)
+    utm_term = Column(String(200), nullable=True)
+    referrer = Column(String(500), nullable=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
+    last_step_position = Column(Integer, nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    registered_at = Column(DateTime(timezone=True), nullable=True)
+    trial_at = Column(DateTime(timezone=True), nullable=True)
+    subscribed_at = Column(DateTime(timezone=True), nullable=True)
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+    first_payment_amount = Column(Numeric(10, 2), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class FunnelEventModel(Base):
+    __tablename__ = "funnel_events"
+    __table_args__ = (
+        Index("ix_funnel_events_funnel_occurred", "funnel_id", "occurred_at"),
+        Index(
+            "uq_funnel_events_step_view",
+            "session_id", "step_position",
+            unique=True,
+            postgresql_where=text("type = 'step_view'"),
+            sqlite_where=text("type = 'step_view'"),
+        ),
+    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("funnel_sessions.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    funnel_id = Column(UUID(as_uuid=True), ForeignKey("funnels.id", ondelete="CASCADE"), nullable=False)
+    variant_id = Column(UUID(as_uuid=True), ForeignKey("funnel_variants.id", ondelete="CASCADE"), nullable=False)
+    type = Column(String(40), nullable=False)
+    step_position = Column(Integer, nullable=True)
+    occurred_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
