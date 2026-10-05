@@ -10,7 +10,7 @@ if app_dir not in sys.path:
     sys.path.append(app_dir)
 
 from domain.identity import User, Market, UserRole
-from domain.shared import Email
+from domain.shared import CPF, Email
 
 
 def test_user_can_be_created_without_cpf():
@@ -52,3 +52,27 @@ async def test_user_repository_loads_a_user_with_null_cpf_without_crashing():
 
         assert loaded is not None
         assert loaded.cpf is None
+
+
+@pytest.mark.asyncio
+async def test_user_repository_saves_users_without_cpf_as_null_not_the_string_none():
+    """Regressão: save() gravava str(None) == 'None', o que quebrava o 2º cadastro sem CPF
+    (users.cpf é UNIQUE) e o login (CPF('None') é inválido)."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with Session() as session:
+        repo = SQLAlchemyUserRepository(session)
+        first = await repo.save(User(name="Ana", email=Email("ana@t.com"), cpf=None, password_hash="x", role=UserRole.OWNER))
+        second = await repo.save(User(name="Bia", email=Email("bia@t.com"), cpf=None, password_hash="x", role=UserRole.OWNER))
+
+        assert (await session.get(UserModel, first.id)).cpf is None
+        assert (await session.get(UserModel, second.id)).cpf is None
+        assert (await repo.get_by_id(first.id)).cpf is None
+
+        with_cpf = await repo.save(User(name="Cris", email=Email("cris@t.com"), cpf=CPF("12345678901"),
+                                        password_hash="x", role=UserRole.OWNER))
+        assert (await session.get(UserModel, with_cpf.id)).cpf == "123.456.789-01"
+        assert str((await repo.get_by_id(with_cpf.id)).cpf) == "123.456.789-01"

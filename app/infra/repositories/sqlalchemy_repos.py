@@ -60,7 +60,7 @@ class SQLAlchemyUserRepository(UserRepositoryInterface):
         
         model.name = user.name
         model.email = user.email.value
-        model.cpf = str(user.cpf)
+        model.cpf = str(user.cpf) if user.cpf else None
         model.password_hash = user.password_hash
         model.role = user.role.value if hasattr(user.role, 'value') else user.role
         model.is_active = user.is_active
