@@ -26,7 +26,7 @@ from domain.interfaces import (
     SaleRepositoryInterface,
     TicketRepositoryInterface,
 )
-from domain.shared import BusinessRuleException, CPF
+from domain.shared import BusinessRuleException, CPF, is_valid_cpf
 from domain.support import Ticket, TicketPriority, TicketStatus
 
 from application.dtos import (
@@ -64,6 +64,8 @@ class FinanceService:
 
     async def register_customer(self, market_id: uuid.UUID, dto: CustomerCreateDTO) -> Customer:
         if dto.cpf:
+            if not is_valid_cpf(dto.cpf):
+                raise BusinessRuleException("CPF inválido.")
             existing = await self.customer_repo.get_by_cpf(market_id, CPF(dto.cpf).value)
             if existing:
                 raise BusinessRuleException("Cliente já cadastrado com este CPF.")

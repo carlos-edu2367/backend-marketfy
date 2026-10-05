@@ -372,6 +372,22 @@ async def test_off_mode_preserves_commercial_flow_without_rule_lookup() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cash_change_is_not_added_to_box_balance() -> None:
+    product = _product("Legado")
+    service, deps = _service(
+        products=[product],
+        mode=FiscalRuleEnforcement.OFF,
+        resolver=AsyncMock(),
+    )
+    request = _sale_request(products=[product])
+    request.payments[0].amount = Decimal("40.00")  # cliente entrega R$ 40 numa venda de R$ 10
+
+    await service.process_sync(MARKET_ID, [request])
+
+    assert deps.box.current_balance == Decimal("30.00")  # 20 + 10 líquido, não 20 + 40
+
+
+@pytest.mark.asyncio
 async def test_completed_retry_returns_frozen_sale_before_block_offline_gate() -> None:
     product = _product("Congelado")
     request = _sale_request(products=[product], offline_id="offline-retry-1")

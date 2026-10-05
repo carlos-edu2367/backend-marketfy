@@ -187,6 +187,7 @@ async def preflight_sale_fiscal_rules(
         "allowed": enforcement.value != "block" or not errors,
         "enforcement": enforcement.value,
         "errors": errors,
+        "fiscal_document_possible": not errors,
     }
 
 

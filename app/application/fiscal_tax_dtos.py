@@ -153,6 +153,8 @@ class FiscalPreflightResponse(StrictFiscalModel):
     allowed: bool
     enforcement: Literal["off", "warn", "block"]
     errors: list[FiscalProductError]
+    # False quando há itens sem regra tributária: a NFC-e não será emitida (venda comercial segue).
+    fiscal_document_possible: bool = True
 
 
 class FiscalRuleEnforcementRequest(StrictFiscalModel):

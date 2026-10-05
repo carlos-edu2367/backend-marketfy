@@ -76,6 +76,13 @@ BASIC_FEATURES = {PlanFeature.PDV, PlanFeature.CUSTOMERS, PlanFeature.SUPPORT, P
 # Resultado da verificação
 # ---------------------------------------------------------------------------
 
+def _is_paid_plan(plan) -> bool:
+    """True para planos pagos/trial; aceita PlanType (Enum) ou string crua."""
+    plan_type = getattr(plan, "type", None)
+    value = getattr(plan_type, "value", plan_type)
+    return value in ("pago", "trial")
+
+
 @dataclass
 class PlanAccessResult:
     allowed: bool
@@ -269,7 +276,7 @@ class PlanAccessService:
                     reason="Plano não encontrado.",
                     subscription_status=status_result.subscription_status,
                 )
-            if plan.type not in ("pago", "trial"):
+            if not _is_paid_plan(plan):
                 return PlanAccessResult(
                     allowed=False,
                     reason=f"Feature '{feature}' disponível apenas em planos pagos.",
@@ -389,7 +396,7 @@ class PlanAccessService:
         }
 
         is_operational = status_result.subscription_status in SubscriptionStatus.OPERATIONAL
-        is_paid = plan is not None and plan.type in ("pago", "trial")
+        is_paid = plan is not None and _is_paid_plan(plan)
         includes_finance = plan is not None and getattr(plan, "includes_finance", True)
 
         base["features"] = {

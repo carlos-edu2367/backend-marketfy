@@ -2,7 +2,11 @@ import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 
-from infra.web.dependencies import get_audit_service, get_sales_service, get_current_user, require_market_access
+from infra.web.dependencies import (
+    get_audit_service, get_sales_service, get_current_user, require_market_access,
+    get_plan_access_service,
+)
+from application.services.plan_access_service import PlanAccessService, PlanFeature
 from infra.security.market_access import MarketPermission
 from application.services.audit_service import AuditService
 from application.services.sales_service import SalesService
@@ -16,6 +20,13 @@ from infra.observability.audit import record_audit_event
 from infra.observability.metrics import metrics_registry
 
 router = APIRouter()
+
+
+async def _require_pdv_feature(market, plan_svc: PlanAccessService) -> None:
+    """Paywall do PDV: assinatura do dono da loja precisa estar operacional."""
+    access = await plan_svc.check_feature(market.owner_id, PlanFeature.PDV)
+    if not access.allowed:
+        raise HTTPException(status_code=403, detail=access.reason)
 
 # ==================================================================================
 # TERMINAIS (PDVs)
@@ -35,7 +46,9 @@ async def create_terminal(
     dto: TerminalCreateDTO,
     service: SalesService = Depends(get_sales_service),
     market=Depends(require_market_access(MarketPermission.SALES_WRITE)),
+    plan_svc: PlanAccessService = Depends(get_plan_access_service),
 ):
+    await _require_pdv_feature(market, plan_svc)
     try:
         return await service.create_terminal(market_id, dto)
     except BusinessRuleException as e:
@@ -63,7 +76,9 @@ async def open_box(
     service: SalesService = Depends(get_sales_service),
     current_user=Depends(get_current_user),
     market=Depends(require_market_access(MarketPermission.SALES_WRITE)),
+    plan_svc: PlanAccessService = Depends(get_plan_access_service),
 ):
+    await _require_pdv_feature(market, plan_svc)
     try:
         # Se operator_id não vier no DTO, usa o usuário autenticado
         op_id = dto.operator_id or current_user.id
@@ -165,8 +180,10 @@ async def sync_sales(
     dto: SaleSyncDTO,
     service: SalesService = Depends(get_sales_service),
     market=Depends(require_market_access(MarketPermission.SALES_WRITE)),
+    plan_svc: PlanAccessService = Depends(get_plan_access_service),
 ):
     """Recebe lote de vendas offline para sincronização."""
+    await _require_pdv_feature(market, plan_svc)
     try:
         result = await service.process_sync(market_id, dto.sales)
         metrics_registry.record_sync("success")

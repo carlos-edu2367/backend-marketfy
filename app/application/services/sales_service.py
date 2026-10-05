@@ -316,6 +316,12 @@ class SalesService:
                     await self.product_repo.save(product, commit=False) # Commit no final
                     
                 # 6. CORREÇÃO: Atualiza Saldo do Caixa (Se houve dinheiro)
+                # O troco devolvido ao cliente sai do dinheiro recebido: o caixa guarda só o líquido.
+                total_paid = sum((p.amount for p in dto.payments), Decimal("0.00"))
+                change_due = max(Decimal("0.00"), total_paid - sale.total_amount)
+                cash_amount_to_add_to_box = max(
+                    Decimal("0.00"), cash_amount_to_add_to_box - change_due
+                )
                 if cash_amount_to_add_to_box > 0:
                     box.current_balance += cash_amount_to_add_to_box
                     await self.box_repo.save(box, commit=False)

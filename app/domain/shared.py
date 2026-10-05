@@ -41,6 +41,19 @@ class CPF:
     def __str__(self):
         return f"{self.value[:3]}.{self.value[3:6]}.{self.value[6:9]}-{self.value[9:]}"
 
+def is_valid_cpf(value: str) -> bool:
+    """Valida CPF pelos dígitos verificadores (rejeita sequências repetidas como 111.111.111-11)."""
+    digits = re.sub(r'\D', '', value or '')
+    if len(digits) != 11 or digits == digits[0] * 11:
+        return False
+    for size in (9, 10):
+        total = sum(int(d) * w for d, w in zip(digits[:size], range(size + 1, 1, -1)))
+        check = (total * 10) % 11 % 10
+        if check != int(digits[size]):
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class CNPJ:
     value: str
