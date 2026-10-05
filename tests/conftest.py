@@ -13,6 +13,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/mar
 os.environ.setdefault("SECRET_KEY", "test-secret-key-com-mais-de-32-caracteres-ok")
 os.environ.setdefault("FISCAL_SECRET_KEY", "test-fiscal-secret-key-com-mais-de-32-chars-ok")
 os.environ.setdefault("ENVIRONMENT", "development")
+os.environ.setdefault("FUNNEL_ATTRIBUTION_ENABLED", "false")
 
 # Modelos usam sqlalchemy.dialects.postgresql.UUID (Entity.id, FKs). Esse tipo
 # não sabe compilar DDL para SQLite, então qualquer teste que rode

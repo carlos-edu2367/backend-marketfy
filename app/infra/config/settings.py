@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     ANALYTICS_ENABLED: bool = False
     POSTHOG_API_KEY: Optional[str] = None
     POSTHOG_HOST: str = "https://us.i.posthog.com"
+    # Funis de venda: marca marcos (trial/assinatura/pagamento) na sessão de funil do usuário
+    FUNNEL_ATTRIBUTION_ENABLED: bool = True
 
     # Mercado Pago Pix (QR dinâmico presencial) — aplicação OAuth única do Marketfy
     MP_ENABLED: bool = False
