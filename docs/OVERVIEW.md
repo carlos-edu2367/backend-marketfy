@@ -34,6 +34,7 @@ O admin cria funis para vender os planos do Marketfy e acompanha a conversão da
 - **A/B e origem:** variantes com peso (a sessão fica presa a uma variante), captura de `utm_*` e referrer, scripts de rastreamento (pixels) por funil.
 - **Métricas:** por coorte de entrada — etapa a etapa com queda, cadastro → trial → assinatura → pago, receita, comparação A/B (com aviso de amostra pequena), quebra por origem e série diária. Sessões de admin são excluídas.
 - **Atribuição:** o `fsid` da sessão é ligado ao usuário no cadastro; trial, assinatura e primeiro pagamento marcam a sessão pelo mesmo ponto que já emite eventos ao PostHog (`FUNNEL_ATTRIBUTION_ENABLED`).
+- **MCP (Claude Code / Claude Web):** `<base>/mcp`, com login OAuth de admin, expõe criar, listar e detalhar funis, métricas por etapa e overview. Ver `backend/docs/mcp.md`.
 - **Spec e plano:** `backend/docs/superpowers/specs/2026-10-04-sales-funnels-design.md` e `.../plans/2026-10-04-sales-funnels.md`.
 
 ### Páginas públicas

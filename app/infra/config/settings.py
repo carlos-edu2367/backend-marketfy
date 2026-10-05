@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     # Endpoints internos/operacionais
     METRICS_ACCESS_TOKEN: Optional[str] = None
 
+    # Servidor MCP (Claude Code / Claude Web). Base pública sem /api/v1; vazio = deriva de PUBLIC_API_BASE_URL.
+    MCP_ENABLED: bool = True
+    MCP_PUBLIC_BASE_URL: Optional[str] = None
+    MCP_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    MCP_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+
     # Fiscal
     FISCAL_SECRET_KEY: Optional[str] = None
     FISCAL_PROVIDER: str = "neectify_fiscal"    # neectify_fiscal | fake

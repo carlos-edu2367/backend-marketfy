@@ -22,6 +22,7 @@ from infra.observability.request_context import (
 from infra.observability.sanitization import sanitize_log_data
 from infra.security.rate_limiter import enforce_rate_limit_async
 
+from infra.mcp import oauth as mcp_oauth, server as mcp_server
 from infra.web.routers import (
     admin,
     admin_fiscal,
@@ -81,6 +82,8 @@ async def _rate_limit_for_request(request: Request):
             await enforce_rate_limit_async(request, "sales-sync", limit=60, window_seconds=60)
         elif path.startswith("/api/v1/admin"):
             await enforce_rate_limit_async(request, "admin", limit=120, window_seconds=60)
+        elif method == "POST" and path == "/mcp":
+            await enforce_rate_limit_async(request, "mcp", limit=120, window_seconds=60)
         elif method == "POST" and path == "/api/v1/billing/webhooks/internal":
             await enforce_rate_limit_async(request, "billing-webhook", limit=200, window_seconds=60)
         elif method == "POST" and path == "/api/v1/fiscal/webhooks/focus-nfe":
@@ -362,6 +365,9 @@ app.include_router(funnels_public.router, prefix="/api/v1/funnels", tags=["Funne
 app.include_router(funnels_admin.router, prefix="/api/v1/admin/funnels", tags=["Admin Funnels"])
 app.include_router(marketing_funnel.router_public, prefix="/api/v1/marketing-funnel", tags=["Marketing Funnel"])
 app.include_router(marketing_funnel.router_admin, prefix="/api/v1/admin", tags=["Marketing Funnel Admin"])
+if settings.MCP_ENABLED:
+    app.include_router(mcp_oauth.router, tags=["MCP"])
+    app.include_router(mcp_server.router, tags=["MCP"])
 
 
 @app.get("/health", tags=["Health"])

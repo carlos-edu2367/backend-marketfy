@@ -1,6 +1,6 @@
 """Rotas admin de funis de venda — somente `require_admin`."""
 import uuid
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -11,11 +11,10 @@ from application.dtos_funnels import (
     VariantCreateRequest, VariantUpdateRequest,
 )
 from application.services.funnel_admin_service import UNSET, FunnelAdminService
-from application.services.funnel_metrics import aggregate_metrics
+from application.services.funnel_reporting import funnel_metrics_report, list_funnels_with_kpis
 from domain.funnels import FunnelError, FunnelNotFound
 from infra.database.setup import get_db
 from infra.observability.audit import record_audit_event
-from infra.repositories.funnel_metrics_repo import FunnelMetricsRepository
 from infra.repositories.funnel_repo import FunnelRepository
 from infra.web.dependencies import get_audit_service, require_admin
 from infra.web.routers.funnels_public import funnel_http_error
@@ -65,15 +64,7 @@ async def _audit(audit, request, admin, action, funnel_id, metadata=None):
 
 @router.get("")
 async def list_funnels(db: AsyncSession = Depends(get_db), admin=Depends(require_admin)):
-    repo, metrics = FunnelRepository(db), FunnelMetricsRepository(db)
-    kpis = await metrics.list_kpis(datetime.now(timezone.utc) - timedelta(days=30))
-    out = []
-    for f in await repo.list_funnels():
-        sessions, paid = kpis.get(f.id, (0, 0))
-        out.append({"id": f.id, "slug": f.slug, "name": f.name, "status": f.status, "plan_id": f.plan_id,
-                    "variant_count": len(await repo.list_variants(f.id)), "sessions_30d": sessions,
-                    "paid_30d": paid, "paid_conversion_30d": round(paid / sessions, 4) if sessions else 0.0})
-    return out
+    return await list_funnels_with_kpis(db)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -217,28 +208,8 @@ async def funnel_metrics(
     db: AsyncSession = Depends(get_db),
     admin=Depends(require_admin),
 ):
-    repo = FunnelRepository(db)
-    funnel = await repo.get_funnel(funnel_id)
-    if funnel is None:
-        raise funnel_http_error(FunnelNotFound())
-    today = datetime.now(timezone.utc).date()
-    end_day = to or today
-    start_day = from_ or (end_day - timedelta(days=29))
-    start = datetime.combine(start_day, time.min, tzinfo=timezone.utc)
-    end = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=timezone.utc)
-
-    metrics = FunnelMetricsRepository(db)
-    rows = await metrics.cohort_rows(funnel_id, start, end, variant_id=variant_id,
-                                     utm_source=utm_source, utm_campaign=utm_campaign)
-    variants = await repo.list_variants(funnel_id)
-    # Nomes das etapas vêm da primeira variante (as posições são compartilhadas entre variantes).
-    first_steps = await repo.list_steps(variants[0].id) if variants else []
-    data = aggregate_metrics(
-        rows=rows,
-        step_views=await metrics.step_view_counts([r.id for r in rows]),
-        variants=[(v.id, v.name, v.weight) for v in variants if variant_id is None or v.id == variant_id],
-        step_names={s.position: s.name for s in first_steps},
-    )
-    data["period"] = {"from": start_day.isoformat(), "to": end_day.isoformat()}
-    data["maturing"] = (today - end_day).days < 14
-    return data
+    try:
+        return await funnel_metrics_report(db, funnel_id, from_=from_, to=to, variant_id=variant_id,
+                                           utm_source=utm_source, utm_campaign=utm_campaign)
+    except FunnelError as exc:
+        raise funnel_http_error(exc)
