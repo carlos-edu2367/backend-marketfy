@@ -102,6 +102,9 @@ class BillingSubscriptionRepositoryInterface:
     async def get_active_by_owner(self, owner_id: uuid.UUID):
         raise NotImplementedError
 
+    async def get_current_for_owner(self, owner_id: uuid.UUID):
+        raise NotImplementedError
+
     async def get_by_id(self, subscription_id: uuid.UUID):
         raise NotImplementedError
 
@@ -139,7 +142,7 @@ class PlanAccessService:
 
     async def get_subscription_status(self, owner_id: uuid.UUID) -> PlanAccessResult:
         """Retorna o status consolidado, recalculando grace/expiração por data."""
-        sub = await self._sub_repo.get_active_by_owner(owner_id)
+        sub = await self._sub_repo.get_current_for_owner(owner_id)
 
         if sub is not None:
             plan = await self._plan_repo.get_by_id(sub.plan_id) if sub.plan_id else None
@@ -161,14 +164,18 @@ class PlanAccessService:
         """Deriva (status_efetivo, locked) de status persistido + expires_at + grace.
 
         Regras:
-          - Estados terminais persistidos (canceled/failed) => bloqueado.
-          - Com expires_at no futuro => mantém status persistido.
-          - Passou de expires_at mas dentro do grace (3d) => past_due, não bloqueado.
-          - Passou do grace => expired, bloqueado.
+          - FAILED persistido => bloqueado na hora, sempre.
+          - Dentro de expires_at => opera com o status persistido (inclui o caso
+            de cancel_at_period_end=True: o usuario continua com acesso ate o
+            fim do periodo, D1).
+          - Passou de expires_at com cancel_at_period_end=True => expirado na
+            hora, sem carencia (o usuario pediu para parar; nao ha o que tolerar).
+          - Passou de expires_at sem cancel_at_period_end (atraso de pagamento
+            comum) => carencia de 3 dias como past_due antes de expirar.
         """
         from datetime import timedelta
         status = sub.status
-        if status in (SubscriptionStatus.CANCELED, SubscriptionStatus.FAILED):
+        if status == SubscriptionStatus.FAILED:
             return status, True
         expires_at = getattr(sub, "expires_at", None)
         if expires_at is None:
@@ -176,6 +183,8 @@ class PlanAccessService:
         now = datetime.utcnow()
         if now <= expires_at:
             return status, status in SubscriptionStatus.BLOCKED
+        if getattr(sub, "cancel_at_period_end", False):
+            return SubscriptionStatus.EXPIRED, True
         grace_end = expires_at + timedelta(days=SubscriptionStatus.GRACE_DAYS)
         if now <= grace_end:
             return SubscriptionStatus.PAST_DUE, False

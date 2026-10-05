@@ -176,6 +176,101 @@ async def test_create_payment_mock_when_billing_core_disabled():
 
 
 @pytest.mark.asyncio
+async def test_create_subscription_includes_back_url_when_given():
+    client = BillingCoreClient()
+    mock_response = httpx.Response(202, json={"job_id": "job-sub-1"})
+
+    with patch("httpx.AsyncClient.request", return_value=mock_response) as mock_request:
+        await client.create_subscription(
+            system_sub_id="sub-local-1",
+            customer_provider_id="cus_1",
+            description="Plano Pro",
+            value=129.90,
+            subscription_type="MONTHLY",
+            expires_at=datetime(2099, 1, 1),
+            webhook_link="https://api-marketfy.neectify.com/billing/webhooks/internal",
+            idempotency_key="bc-sub-sub-local-1",
+            back_url="https://app.marketfy.com/billing/retorno?tipo=subscription&ref=sub-local-1",
+        )
+        sent_json = mock_request.call_args.kwargs["json"]
+        assert sent_json["back_url"] == "https://app.marketfy.com/billing/retorno?tipo=subscription&ref=sub-local-1"
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_omits_back_url_when_not_given():
+    client = BillingCoreClient()
+    mock_response = httpx.Response(202, json={"job_id": "job-sub-2"})
+
+    with patch("httpx.AsyncClient.request", return_value=mock_response) as mock_request:
+        await client.create_subscription(
+            system_sub_id="sub-local-2",
+            customer_provider_id="cus_1",
+            description="Plano Pro",
+            value=129.90,
+            subscription_type="MONTHLY",
+            expires_at=datetime(2099, 1, 1),
+            webhook_link="https://api-marketfy.neectify.com/billing/webhooks/internal",
+            idempotency_key="bc-sub-sub-local-2",
+        )
+        sent_json = mock_request.call_args.kwargs["json"]
+        assert "back_url" not in sent_json
+
+
+@pytest.mark.asyncio
+async def test_cancel_subscription_calls_correct_endpoint_with_idempotency_key():
+    client = BillingCoreClient()
+    mock_response = httpx.Response(202, json={"job_id": "job-cancel-1"})
+
+    with patch("httpx.AsyncClient.request", return_value=mock_response) as mock_request:
+        res = await client.cancel_subscription(
+            "preapproval_1", idempotency_key="cancel-sub-local-1", reason="Solicitado pelo cliente",
+        )
+        assert res["job_id"] == "job-cancel-1"
+        mock_request.assert_called_once()
+        args, kwargs = mock_request.call_args
+        assert args[0] == "POST"
+        assert args[1].endswith("/v1/subscriptions/preapproval_1/cancel")
+        assert kwargs["json"] == {"reason": "Solicitado pelo cliente"}
+        assert kwargs["headers"]["Idempotency-Key"] == "cancel-sub-local-1"
+
+
+@pytest.mark.asyncio
+async def test_cancel_subscription_mock_when_billing_core_disabled():
+    with patch.object(settings, "BILLING_CORE_ENABLED", False):
+        client = BillingCoreClient()
+
+    res = await client.cancel_subscription("preapproval_1", idempotency_key="cancel-sub-local-1")
+    assert res["job_id"].startswith("job_mock_cancel_")
+
+
+@pytest.mark.asyncio
+async def test_get_subscription_status_calls_get_endpoint():
+    client = BillingCoreClient()
+    mock_response = httpx.Response(
+        200,
+        json={
+            "subscription_id": "local-id", "gateway_status": "ACTIVE",
+            "next_due_date": "2026-11-01", "value": "129.90", "cycle": "MONTHLY",
+        },
+    )
+
+    with patch("httpx.AsyncClient.request", return_value=mock_response) as mock_request:
+        result = await client.get_subscription_status("preapproval_1")
+        assert result["gateway_status"] == "ACTIVE"
+        mock_request.assert_called_once()
+        assert mock_request.call_args[0][1].endswith("/v1/subscriptions/preapproval_1")
+
+
+@pytest.mark.asyncio
+async def test_get_subscription_status_mock_when_billing_core_disabled():
+    with patch.object(settings, "BILLING_CORE_ENABLED", False):
+        client = BillingCoreClient()
+
+    res = await client.get_subscription_status("preapproval_1")
+    assert res["gateway_status"] == "ACTIVE"
+
+
+@pytest.mark.asyncio
 async def test_get_job_success():
     client = BillingCoreClient()
     mock_response = httpx.Response(

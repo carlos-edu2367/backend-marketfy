@@ -7,12 +7,11 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
+from domain.billing_periods import PERIOD_DAYS
 from infra.config.logger import get_logger
 from infra.observability.funnel_analytics import build_analytics
 
 logger = get_logger("invoice_service")
-
-PERIOD_DAYS = {"monthly": 30, "semiannual": 180, "annual": 365}
 
 
 def price_for_period(plan, subscription_type: str) -> Decimal:
@@ -54,6 +53,18 @@ class InvoiceService:
         if plan is None or not plan.is_active:
             raise ValueError("Plano não disponível.")
 
+        # A assinatura viva pode estar sob outra chave (ex.: `invoice-retry:<fatura>`,
+        # criada por retry_canceled_invoice), entao nao basta olhar a chave fixa
+        # abaixo: sem esta varredura, uma cliente com plano ativo ganhava uma
+        # segunda fatura pendente.
+        for owned in await self._sub.list_by_owner(owner_id):
+            if (
+                owned.plan_id == plan_id
+                and owned.subscription_type == subscription_type
+                and owned.status in {"active", "trialing"}
+            ):
+                raise ValueError("Você já possui uma assinatura ativa para este plano.")
+
         from infra.database.models import BillingSubscriptionModel
         sub = BillingSubscriptionModel(
             owner_id=owner_id, plan_id=plan_id,
@@ -65,7 +76,42 @@ class InvoiceService:
             value=price_for_period(plan, subscription_type),
             idempotency_key=f"invsub-{owner_id}-{plan_id}-{subscription_type}",
         )
-        sub = await self._sub.save(sub)
+        # A chave da assinatura e fixa por (owner, plano, ciclo), enquanto a chave
+        # recebida do cliente muda a cada tentativa. Sem isso, a segunda contratacao
+        # do mesmo plano batia na UNIQUE e virava 409 permanente.
+        sub, was_created = await self._sub.create_if_absent_by_idempotency_key(sub)
+
+        if not was_created:
+            if sub.status in {"active", "trialing"}:
+                raise ValueError("Você já possui uma assinatura ativa para este plano.")
+            if sub.status == "pending":
+                open_invoice = await self._inv.get_open_invoice_for_subscription(sub.id)
+                if open_invoice is not None:
+                    return {
+                        "subscription_id": str(sub.id),
+                        "invoice_id": str(open_invoice.id),
+                        "job_id": open_invoice.bc_job_id,
+                        "checkout_url": open_invoice.checkout_url,
+                    }
+            else:
+                # Assinatura encerrada (canceled/expired/failed): pendurar uma
+                # fatura nova nela deixaria a cobranca orfa. Libera a chave fixa,
+                # preservando a linha antiga, e contrata uma assinatura limpa.
+                closed = sub
+                closed.idempotency_key = f"{closed.idempotency_key}:closed:{closed.id}"
+                await self._sub.save(closed)
+                sub, _ = await self._sub.create_if_absent_by_idempotency_key(
+                    BillingSubscriptionModel(
+                        owner_id=owner_id, plan_id=plan_id,
+                        billing_system=self._settings.BILLING_CORE_SYSTEM,
+                        billing_system_sub_id=str(owner_id),
+                        billing_mode="invoice",
+                        status="pending",
+                        subscription_type=subscription_type,
+                        value=price_for_period(plan, subscription_type),
+                        idempotency_key=f"invsub-{owner_id}-{plan_id}-{subscription_type}",
+                    )
+                )
 
         now = datetime.utcnow()
         invoice = await self._create_invoice(
@@ -184,7 +230,7 @@ class InvoiceService:
         s = self._settings
         result = await self._bc.create_payment(
             value=f"{Decimal(str(invoice.amount)):.2f}",
-            description=f"Assinatura Marketfy {plan.name} — {invoice.subscription_id}",
+            description=f"Assinatura Marketfy {plan.name}",
             system=s.BILLING_CORE_SYSTEM,
             system_payment_id=str(invoice.id),
             webhook_link=s.BILLING_CORE_WEBHOOK_INVOICE_URL,
@@ -245,6 +291,19 @@ class InvoiceService:
             checkout = await self.refresh_checkout(invoice.id)
             if checkout.get("checkout_url") or checkout.get("status") not in {"failed", "not_found"}:
                 return checkout
+            if checkout.get("status") == "failed":
+                # O Billing Core deduplica a criacao por system_payment_id, entao
+                # recriar com a mesma fatura so devolve o mesmo job falhado. Sem
+                # esta saida, o polling do front vira uma tentativa por segundo
+                # ate o Billing Core responder 429 (que o cliente traduz em 503).
+                logger.warning(
+                    "invoice_checkout_job_failed",
+                    extra={"extra_data": {
+                        "invoice_id": str(invoice.id),
+                        "bc_job_id": invoice.bc_job_id,
+                    }},
+                )
+                return checkout
 
         plan = await self._plan.get_by_id(invoice.plan_id)
         if plan is None:
@@ -284,16 +343,24 @@ class InvoiceService:
             logger.info("invoice_already_paid", extra={"extra_data": {"invoice_id": str(invoice_id)}})
             return
         sub = await self._sub.get_by_id(invoice.subscription_id)
+        period_end = invoice.period_end
         if sub is not None:
+            # Se o pagamento veio depois do dia em que o periodo comecou (checkout
+            # demorou a ser pago), a validade conta a partir de agora — ninguem
+            # perde os dias que o checkout ficou parado.
+            paid_at = datetime.utcnow()
+            if paid_at.date() > invoice.period_start.date():
+                period_days = PERIOD_DAYS.get(sub.subscription_type, PERIOD_DAYS["monthly"])
+                period_end = paid_at + timedelta(days=period_days)
             sub.status = "active"
-            sub.expires_at = invoice.period_end
+            sub.expires_at = period_end
             sub.last_event_at = datetime.utcnow()
             await self._sub.save(sub)
         if self._user is not None:
             user = await self._user.get_by_id(invoice.owner_id)
             if user is not None:
                 user.plan_id = invoice.plan_id
-                user.plan_expiration = invoice.period_end
+                user.plan_expiration = period_end
                 user.is_active = True
                 await self._user.save(user)
         if sub is not None:

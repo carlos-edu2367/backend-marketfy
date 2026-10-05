@@ -31,6 +31,7 @@ from application.jobs.fiscal_jobs import (
 from application.jobs.billing_jobs import (
     generate_due_invoices,
     reconcile_pending_invoices,
+    reconcile_provisional_subscriptions,
 )
 from application.jobs.pix_jobs import (
     reconcile_pending_attempts,
@@ -109,6 +110,7 @@ class WorkerSettings:
         cron(reconcile_pending_bc_payments, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
         cron(generate_due_invoices, hour=8, minute=0),               # diário 08:00 UTC
         cron(reconcile_pending_invoices, minute={2, 12, 22, 32, 42, 52}),
+        cron(reconcile_provisional_subscriptions, minute={4, 14, 24, 34, 44, 54}),
         # Pix: reverifica tentativas com consulta de status velha — a cada ~2 min
         cron(reconcile_pending_attempts, minute=set(range(0, 60, 2))),
         # Pix: reverifica tentativas cujo QR já venceu — a cada ~2 min (mesmo ritmo da reconciliação)

@@ -35,7 +35,7 @@ def _alembic(*args):
 
 def test_migration_roundtrip():
     _alembic("upgrade", "head")
-    _alembic("downgrade", "20260914_0022")
+    _alembic("downgrade", "20260915_0026")
     _alembic("upgrade", "head")
 
 

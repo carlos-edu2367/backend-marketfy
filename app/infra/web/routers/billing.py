@@ -19,7 +19,7 @@ import hashlib
 import hmac
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -246,6 +246,123 @@ async def retry_invoice(
         raise HTTPException(status_code=400, detail=str(exc))
 
     return result
+
+
+@router.post("/subscriptions/{subscription_id}/checkout", status_code=status.HTTP_202_ACCEPTED)
+async def ensure_subscription_checkout(
+    subscription_id: uuid.UUID,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirma o checkout de uma assinatura recorrente ja criada em POST /subscribe.
+
+    O front chama esta rota em polling ate `checkout_url` sair, igual ja faz
+    hoje para faturas via POST /invoices/{id}/checkout.
+    """
+    from application.services.recurring_service import RecurringService
+    from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
+
+    repo = SQLAlchemyBillingSubscriptionRepository(db)
+    sub = await repo.get_by_id(subscription_id)
+    if sub is None or sub.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Assinatura não encontrada.")
+
+    rec = RecurringService(
+        subscription_repo=repo, plan_repo=None, user_repo=None,
+        billing_client=BillingCoreClient(), settings=settings,
+    )
+    try:
+        result = await rec.ensure_checkout(subscription_id)
+        await db.commit()
+    except BillingCoreError as exc:
+        logger.warning(f"[billing] Billing Core indisponível ao preparar assinatura={subscription_id}: {exc}")
+        raise HTTPException(status_code=503, detail="Serviço de cobrança temporariamente indisponível.")
+
+    return {
+        "subscription_id": str(subscription_id),
+        "status": result.get("status"),
+        "checkout_url": result.get("checkout_url"),
+    }
+
+
+@router.post("/subscription/cancel", status_code=status.HTTP_200_OK)
+async def cancel_subscription(
+    request: Request,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    audit: AuditService = Depends(get_audit_service),
+):
+    """Cancela a assinatura vigente do usuário. O acesso continua até
+    expires_at (D1) — nada é bloqueado nesta chamada."""
+    from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
+
+    repo = SQLAlchemyBillingSubscriptionRepository(db)
+    sub = await repo.get_current_for_owner(current_user.id)
+    if sub is None or sub.status in ("canceled", "expired", "failed"):
+        raise HTTPException(status_code=404, detail="Nenhuma assinatura ativa para cancelar.")
+    if sub.cancel_at_period_end:
+        return {"status": "already_canceled", "expires_at": sub.expires_at.isoformat() if sub.expires_at else None}
+
+    sub.cancel_at_period_end = True
+    sub.canceled_at = datetime.utcnow()
+
+    if sub.billing_mode == "recurring" and sub.billing_subscription_id:
+        try:
+            await BillingCoreClient().cancel_subscription(
+                sub.billing_subscription_id,
+                idempotency_key=f"cancel-{sub.id}",
+                reason="Cancelado pelo cliente via Marketfy.",
+            )
+        except BillingCoreError as exc:
+            logger.warning(f"[billing] Falha ao cancelar assinatura={sub.id} no Billing Core: {exc}")
+            raise HTTPException(status_code=503, detail="Serviço de cobrança temporariamente indisponível.")
+
+    await repo.save(sub)
+    await db.commit()
+
+    await record_audit_event(
+        audit, request, actor=current_user, action="billing.subscription.cancel",
+        resource_type="billing_subscription", resource_id=str(sub.id),
+        result="success", metadata={"billing_mode": sub.billing_mode},
+    )
+
+    return {"status": "canceled_at_period_end", "expires_at": sub.expires_at.isoformat() if sub.expires_at else None}
+
+
+@router.get("/subscriptions/{subscription_id}/status")
+async def get_subscription_status_live(
+    subscription_id: uuid.UUID,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Consulta o status ao vivo no gateway e concede acesso provisório de 24h
+    quando o cartão já foi autorizado mas a primeira fatura ainda não chegou
+    (D2). O webhook real, quando chegar, recalcula expires_at e substitui o
+    valor provisório (ver SubscriptionService.process_recurring_event)."""
+    from infra.repositories.billing_repo import SQLAlchemyBillingSubscriptionRepository
+
+    repo = SQLAlchemyBillingSubscriptionRepository(db)
+    sub = await repo.get_by_id(subscription_id)
+    if sub is None or sub.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Assinatura não encontrada.")
+
+    if sub.status != "pending" or not sub.billing_subscription_id:
+        return {"status": sub.status, "provisional": bool(sub.provisional)}
+
+    try:
+        remote = await BillingCoreClient().get_subscription_status(sub.billing_subscription_id)
+    except BillingCoreError as exc:
+        logger.warning(f"[billing] Falha ao consultar status ao vivo da assinatura={sub.id}: {exc}")
+        return {"status": sub.status, "provisional": bool(sub.provisional)}
+
+    if remote.get("gateway_status") == "ACTIVE":
+        sub.status = "active"
+        sub.provisional = True
+        sub.expires_at = datetime.utcnow() + timedelta(hours=24)
+        await repo.save(sub)
+        await db.commit()
+
+    return {"status": sub.status, "provisional": bool(sub.provisional)}
 
 
 @router.get("/invoices/{invoice_id}")

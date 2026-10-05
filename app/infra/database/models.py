@@ -459,6 +459,7 @@ class BillingSubscriptionModel(Base):
     billing_system_sub_id = Column(String, nullable=True)   # str(owner_user_id)
     billing_subscription_id = Column(String, nullable=True)  # ID retornado pelo Billing Core
     billing_job_id = Column(String, nullable=True)           # job_id para polling
+    checkout_url = Column(String, nullable=True)              # link de pagamento do preapproval
 
     # Identificador do cliente no provedor de pagamento
     customer_provider_id = Column(String, nullable=True)
@@ -472,6 +473,15 @@ class BillingSubscriptionModel(Base):
     value = Column(Numeric(10, 2), default=0, nullable=False)
     expires_at = Column(DateTime, nullable=True)
     last_event_at = Column(DateTime, nullable=True)
+
+    # Cancelamento sem perda imediata de acesso (D1): o usuario mantem acesso
+    # ate expires_at; nenhuma fatura/cobranca nova e gerada depois disso.
+    cancel_at_period_end = Column(Boolean, default=False, nullable=False)
+    canceled_at = Column(DateTime, nullable=True)
+
+    # Acesso provisorio de 24h concedido quando o Mercado Pago autoriza o
+    # cartao mas a primeira fatura (e o webhook real) ainda nao chegou.
+    provisional = Column(Boolean, default=False, nullable=False)
 
     # Idempotência de criação
     idempotency_key = Column(String, nullable=True, unique=True)
@@ -1328,3 +1338,36 @@ class FunnelEventModel(Base):
     type = Column(String(40), nullable=False)
     step_position = Column(Integer, nullable=True)
     occurred_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class MarketingFunnelEventModel(Base):
+    __tablename__ = "marketing_funnel_events"
+    __table_args__ = (
+        Index("ix_mfe_variant_event_step", "funnel_variant", "event_name", "step"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    visitor_id = Column(String, nullable=False, index=True)
+    funnel_variant = Column(String(1), nullable=False)
+    event_name = Column(String(64), nullable=False)
+    step = Column(String(32), nullable=True)
+    properties = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class MarketingFunnelLeadModel(Base):
+    __tablename__ = "marketing_funnel_leads"
+    __table_args__ = (
+        Index("ix_mfl_variant", "funnel_variant"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    visitor_id = Column(String, nullable=False, index=True)
+    funnel_variant = Column(String(1), nullable=False)
+    name = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    control_score = Column(Integer, nullable=True)
+    answers = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)

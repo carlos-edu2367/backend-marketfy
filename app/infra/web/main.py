@@ -39,6 +39,7 @@ from infra.web.routers import (
     funnels_public,
     identity,
     inventory,
+    marketing_funnel,
     billing_core_webhooks,
     billing_invoice_webhooks,
     pix,
@@ -359,6 +360,8 @@ app.include_router(billing.router, prefix="/api/v1/billing", tags=["Billing"])
 app.include_router(pix.router, prefix="/api/v1/pix", tags=["Pix"])
 app.include_router(funnels_public.router, prefix="/api/v1/funnels", tags=["Funnels"])
 app.include_router(funnels_admin.router, prefix="/api/v1/admin/funnels", tags=["Admin Funnels"])
+app.include_router(marketing_funnel.router_public, prefix="/api/v1/marketing-funnel", tags=["Marketing Funnel"])
+app.include_router(marketing_funnel.router_admin, prefix="/api/v1/admin", tags=["Marketing Funnel Admin"])
 
 
 @app.get("/health", tags=["Health"])

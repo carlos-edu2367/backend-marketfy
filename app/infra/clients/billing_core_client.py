@@ -332,6 +332,7 @@ class BillingCoreClient:
         expires_at: datetime,
         webhook_link: str,
         idempotency_key: str,
+        back_url: str | None = None,
     ) -> Dict[str, Any]:
         """Cria assinatura no Billing Core (Planos)."""
         if not self._enabled:
@@ -347,6 +348,8 @@ class BillingCoreClient:
             "expires_at": expires_at.isoformat(),
             "webhook_link": webhook_link,
         }
+        if back_url:
+            payload["back_url"] = back_url
 
         return await self._request(
             "POST",
@@ -354,6 +357,48 @@ class BillingCoreClient:
             json=payload,
             idempotency_key=idempotency_key,
         )
+
+    async def cancel_subscription(
+        self,
+        billing_subscription_id: str,
+        *,
+        idempotency_key: str,
+        reason: str | None = None,
+    ) -> Dict[str, Any]:
+        """Cancela assinatura no Billing Core.
+
+        POST /v1/subscriptions/{id}/cancel
+        """
+        if not self._enabled:
+            return {"job_id": f"job_mock_cancel_{uuid.uuid4().hex[:12]}"}
+
+        payload: Dict[str, Any] = {}
+        if reason:
+            payload["reason"] = reason
+
+        return await self._request(
+            "POST",
+            f"/v1/subscriptions/{billing_subscription_id}/cancel",
+            json=payload,
+            idempotency_key=idempotency_key,
+        )
+
+    async def get_subscription_status(self, billing_subscription_id: str) -> Dict[str, Any]:
+        """Consulta o status ao vivo da assinatura no gateway.
+
+        GET /v1/subscriptions/{id} — requer scope subscriptions:read no
+        billing-core.
+        """
+        if not self._enabled:
+            return {
+                "subscription_id": billing_subscription_id,
+                "gateway_status": "ACTIVE",
+                "next_due_date": datetime.utcnow().date().isoformat(),
+                "value": "0.00",
+                "cycle": "MONTHLY",
+            }
+
+        return await self._request("GET", f"/v1/subscriptions/{billing_subscription_id}")
 
     async def get_job_status(self, job_id: str) -> Dict[str, Any]:
         """Polling de status de job (Planos)."""

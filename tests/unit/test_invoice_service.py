@@ -10,6 +10,7 @@ from typing import Optional
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 app_dir = os.path.abspath(os.path.join(current_dir, "../../app"))
@@ -98,20 +99,34 @@ class InvoiceRepo:
 
 
 class SubRepo:
-    def __init__(self, sub):
+    def __init__(self, sub, owned=None):
         self._sub = sub
         self.saved = []
         self.by_idempotency_key = {}
+        self._owned = list(owned or [])
+    async def list_by_owner(self, owner_id):
+        return [s for s in self._owned if s.owner_id == owner_id]
     async def get_by_id(self, sid):
         return self._sub
     async def get_by_idempotency_key(self, key):
         return self.by_idempotency_key.get(key)
     async def save(self, sub):
+        key = getattr(sub, "idempotency_key", None)
+        # Espelha billing_subscriptions.idempotency_key UNIQUE: um INSERT com
+        # chave repetida estoura IntegrityError, nao sobrescreve em silencio.
+        if key and self.by_idempotency_key.get(key) not in (None, sub):
+            raise IntegrityError("INSERT INTO billing_subscriptions", {}, Exception(
+                'duplicate key value violates unique constraint '
+                '"billing_subscriptions_idempotency_key_key"'
+            ))
         if sub.id is None:
             sub.id = uuid.uuid4()
         self.saved.append(sub)
-        if getattr(sub, "idempotency_key", None):
-            self.by_idempotency_key[sub.idempotency_key] = sub
+        # Reindexa: um UPDATE que troca a chave libera a antiga, como no banco.
+        for stale in [k for k, v in self.by_idempotency_key.items() if v is sub and k != key]:
+            del self.by_idempotency_key[stale]
+        if key:
+            self.by_idempotency_key[key] = sub
         return sub
     async def create_if_absent_by_idempotency_key(self, sub):
         existing = await self.get_by_idempotency_key(sub.idempotency_key)
@@ -344,6 +359,69 @@ async def test_contract_tracks_subscription_created_for_invoice_mode():
 
 
 @pytest.mark.asyncio
+async def test_checkout_description_uses_plan_name_not_uuid():
+    plan = StubPlan(name="Plano Pro")
+    inv_repo = InvoiceRepo()
+    inv = await inv_repo.create(
+        owner_id=uuid.uuid4(), subscription_id=uuid.uuid4(), plan_id=plan.id,
+        period_start=datetime.utcnow(), period_end=datetime.utcnow() + timedelta(days=30),
+        due_date=datetime.utcnow(), amount=Decimal("50.00"), idempotency_key="idem-desc-1",
+    )
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job-1"}
+    svc = InvoiceService(inv_repo, SubRepo(None), PlanRepo(plan), bc, StubSettings())
+
+    await svc._create_checkout(inv, plan, idempotency_key="idem-desc-1")
+
+    _, kwargs = bc.create_payment.call_args
+    assert kwargs["description"] == "Assinatura Marketfy Plano Pro"
+    assert str(inv.subscription_id) not in kwargs["description"]
+
+
+@pytest.mark.asyncio
+async def test_activate_invoice_recomputes_period_end_from_actual_payment_date_when_paid_late():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    period_start = datetime.utcnow() - timedelta(days=3)
+    period_end = period_start + timedelta(days=30)
+    sub = StubSub(owner_id=owner, plan_id=plan.id, status="pending", subscription_type="monthly")
+    inv_repo = InvoiceRepo()
+    inv = await inv_repo.create(owner_id=owner, subscription_id=sub.id, plan_id=plan.id,
+                                period_start=period_start, period_end=period_end,
+                                due_date=period_start, amount=Decimal("50.00"), idempotency_key="idem-late-1")
+    sub_repo = SubRepo(sub)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    before = datetime.utcnow()
+    await svc.activate_invoice(inv.id, "pay_1", {})
+    after = datetime.utcnow()
+
+    expected_min = before + timedelta(days=30)
+    expected_max = after + timedelta(days=30)
+    assert expected_min <= sub.expires_at <= expected_max
+    assert sub.expires_at > period_end  # nao perdeu os 3 dias que o checkout demorou
+
+
+@pytest.mark.asyncio
+async def test_activate_invoice_keeps_period_end_when_paid_same_day():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    now = datetime.utcnow()
+    period_end = now + timedelta(days=30)
+    sub = StubSub(owner_id=owner, plan_id=plan.id, status="pending")
+    inv_repo = InvoiceRepo()
+    inv = await inv_repo.create(owner_id=owner, subscription_id=sub.id, plan_id=plan.id,
+                                period_start=now, period_end=period_end,
+                                due_date=now, amount=Decimal("50.00"), idempotency_key="idem-sameday-1")
+    sub_repo = SubRepo(sub)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    await svc.activate_invoice(inv.id, "pay_1", {})
+
+    assert sub.expires_at == period_end
+
+
+@pytest.mark.asyncio
 async def test_activate_invoice_tracks_invoice_paid():
     owner = uuid.uuid4()
     plan = StubPlan()
@@ -362,3 +440,128 @@ async def test_activate_invoice_tracks_invoice_paid():
         str(owner), "invoice_paid",
         {"amount": "510.00", "subscription_type": "annual"},
     )
+
+
+@pytest.mark.asyncio
+async def test_contract_twice_reuses_pending_subscription_and_open_invoice():
+    """Regressao: o frontend manda idempotency_key nova a cada abertura do modal
+    (`mktf-sub:<user>:<plan>:<Date.now()>`), entao a guarda por fatura nunca casa,
+    enquanto a chave da assinatura (`invsub-...`) e fixa. O segundo Pix do mesmo
+    plano/ciclo batia na UNIQUE e virava 409 para sempre."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    inv_repo = InvoiceRepo()
+    sub_repo = SubRepo(None)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    first = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:1000")
+    second = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:2000")
+
+    assert second["subscription_id"] == first["subscription_id"]
+    assert second["invoice_id"] == first["invoice_id"]
+    assert len(sub_repo.saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_contract_again_opens_a_new_invoice_when_none_is_open():
+    """Assinatura pendente orfa (fatura anterior paga/cancelada) deve render uma
+    fatura nova, nao um 409."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    inv_repo = InvoiceRepo()
+    sub_repo = SubRepo(None)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    first = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:1000")
+    inv_repo.open_by_sub.pop(uuid.UUID(first["subscription_id"]), None)
+
+    second = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:2000")
+
+    assert second["subscription_id"] == first["subscription_id"]
+    assert second["invoice_id"] != first["invoice_id"]
+    assert len(sub_repo.saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_contract_rejects_when_subscription_is_already_active():
+    """Plano ja ativo nao deve virar 409 generico, e sim erro de negocio (400)."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    inv_repo = InvoiceRepo()
+    sub_repo = SubRepo(None)
+    svc = InvoiceService(inv_repo, sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    first = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:1000")
+    sub_repo.by_idempotency_key[f"invsub-{owner}-{plan.id}-monthly"].status = "active"
+    inv_repo.open_by_sub.pop(uuid.UUID(first["subscription_id"]), None)
+
+    with pytest.raises(ValueError, match="assinatura ativa"):
+        await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:2000")
+
+
+@pytest.mark.asyncio
+async def test_ensure_checkout_does_not_recreate_payment_after_a_failed_job():
+    """Regressao: com o job falhado, ensure_checkout caia fora do refresh e
+    chamava _create_checkout de novo. Como o Billing Core deduplica por
+    system_payment_id, isso devolve sempre o mesmo job falhado — o front, em
+    polling, virava um POST /v1/payments por segundo ate estourar 429/503."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    inv_repo = InvoiceRepo()
+    bc = AsyncMock()
+    bc.create_payment.return_value = {"job_id": "job_1"}
+    bc.get_job.return_value = {"status": "failed", "result": {}}
+    svc = InvoiceService(inv_repo, SubRepo(None), PlanRepo(plan), bc, StubSettings())
+    contracted = await svc.contract(owner, plan.id, "monthly", idempotency_key="idem-1")
+    invoice_id = uuid.UUID(contracted["invoice_id"])
+
+    first = await svc.ensure_checkout(invoice_id)
+    assert bc.create_payment.await_count == 1
+
+    second = await svc.ensure_checkout(invoice_id)
+    third = await svc.ensure_checkout(invoice_id)
+
+    assert bc.create_payment.await_count == 1, "job falhado nao deve gerar nova cobranca"
+    assert first["status"] == "failed"
+    assert second["status"] == "failed"
+    assert third["checkout_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_contract_rejects_when_owner_already_has_an_active_plan_under_another_key():
+    """Regressao: a assinatura ativa da cliente vivia sob a chave
+    `invoice-retry:<fatura>`, enquanto a busca so olhava a chave fixa
+    `invsub-...` — que apontava para uma assinatura CANCELADA. A contratacao
+    reaproveitava a cancelada e emitia uma segunda fatura pendente."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    canceled = StubSub(owner_id=owner, plan_id=plan.id, status="canceled",
+                       idempotency_key=f"invsub-{owner}-{plan.id}-monthly")
+    active = StubSub(owner_id=owner, plan_id=plan.id, status="active",
+                     idempotency_key="invoice-retry:abc")
+    sub_repo = SubRepo(None, owned=[canceled, active])
+    sub_repo.by_idempotency_key[canceled.idempotency_key] = canceled
+    svc = InvoiceService(InvoiceRepo(), sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    with pytest.raises(ValueError, match="assinatura ativa"):
+        await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:1")
+
+    assert sub_repo.saved == [], "nenhuma fatura nova deve nascer numa assinatura cancelada"
+
+
+@pytest.mark.asyncio
+async def test_contract_does_not_reuse_a_closed_subscription():
+    """Assinatura encerrada libera a chave: a nova contratacao nasce limpa,
+    em vez de pendurar uma fatura numa assinatura cancelada."""
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    canceled = StubSub(owner_id=owner, plan_id=plan.id, status="canceled",
+                       idempotency_key=f"invsub-{owner}-{plan.id}-monthly")
+    sub_repo = SubRepo(None, owned=[canceled])
+    sub_repo.by_idempotency_key[canceled.idempotency_key] = canceled
+    svc = InvoiceService(InvoiceRepo(), sub_repo, PlanRepo(plan), AsyncMock(), StubSettings())
+
+    result = await svc.contract(owner, plan.id, "monthly", idempotency_key="mktf-sub:u:p:1")
+
+    assert result["subscription_id"] != str(canceled.id)
+    assert canceled.status == "canceled"

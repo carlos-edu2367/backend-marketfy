@@ -25,6 +25,7 @@ class StubSub:
     billing_mode: str = "invoice"
     expires_at: Optional[datetime] = None
     updated_at: datetime = field(default_factory=datetime.utcnow)
+    cancel_at_period_end: bool = False
 
 
 @dataclass
@@ -40,7 +41,7 @@ class StubPlan:
 class SubRepo:
     def __init__(self, sub):
         self._sub = sub
-    async def get_active_by_owner(self, owner_id):
+    async def get_current_for_owner(self, owner_id):
         return self._sub
 
 
@@ -92,3 +93,46 @@ async def test_active_before_expiry_not_locked():
     assert res.subscription_status == SubscriptionStatus.ACTIVE
     assert res.locked is False
     assert res.billing_mode == "invoice"
+
+
+@pytest.mark.asyncio
+async def test_cancel_at_period_end_stays_operational_until_expires_at():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    sub = StubSub(owner_id=owner, plan_id=plan.id, status="active", expires_at=datetime.utcnow() + timedelta(days=5),
+                  cancel_at_period_end=True)
+    res = await _svc(sub, plan).get_subscription_status(owner)
+    assert res.allowed is True
+    assert res.subscription_status == "active"
+
+
+@pytest.mark.asyncio
+async def test_cancel_at_period_end_blocks_immediately_after_expires_at_no_grace():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    sub = StubSub(owner_id=owner, plan_id=plan.id, status="active", expires_at=datetime.utcnow() - timedelta(hours=1),
+                  cancel_at_period_end=True)
+    res = await _svc(sub, plan).get_subscription_status(owner)
+    assert res.allowed is False
+    assert res.subscription_status == SubscriptionStatus.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_late_payment_without_cancel_still_gets_grace_period():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    sub = StubSub(owner_id=owner, plan_id=plan.id, status="active", expires_at=datetime.utcnow() - timedelta(hours=1),
+                  cancel_at_period_end=False)
+    res = await _svc(sub, plan).get_subscription_status(owner)
+    assert res.subscription_status == SubscriptionStatus.PAST_DUE
+    assert res.locked is False
+
+
+@pytest.mark.asyncio
+async def test_failed_status_locks_regardless_of_expires_at():
+    owner = uuid.uuid4()
+    plan = StubPlan()
+    sub = StubSub(owner_id=owner, plan_id=plan.id, status="failed", expires_at=datetime.utcnow() + timedelta(days=30))
+    res = await _svc(sub, plan).get_subscription_status(owner)
+    assert res.allowed is False
+    assert res.locked is True
