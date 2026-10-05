@@ -172,6 +172,11 @@ def get_analytics_service(db: AsyncSession = Depends(get_db)):
 def get_audit_service(db: AsyncSession = Depends(get_db)):
     return AuditService(SQLAlchemyAuditLogRepository(db))
 
+def get_funnel_attribution_service():
+    from application.services.funnel_attribution_service import FunnelAttributionService
+    from infra.database.setup import async_session_factory
+    return FunnelAttributionService(async_session_factory)
+
 # --- POLÍTICA CENTRAL DE AUTORIZAÇÃO (Fase 3 / PR 9) ---
 #
 # A regra é centralizada em `infra/security/market_access.py`. Os helpers

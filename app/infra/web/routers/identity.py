@@ -11,7 +11,9 @@ from application.services.subscription_service import SubscriptionService
 from application.services.plan_access_service import PlanAccessService, PlanFeature
 from application.services.plan_catalog import select_public_plans
 from application.dtos import UserCreateDTO, MarketCreateDTO, UserResponseDTO, SubscribeDTO, PublicPlanDTO
-from infra.web.dependencies import get_identity_service, get_current_user, get_subscription_service
+from infra.web.dependencies import (
+    get_identity_service, get_current_user, get_subscription_service, get_funnel_attribution_service,
+)
 from infra.security.authorization import is_admin_user
 
 router = APIRouter()
@@ -20,12 +22,16 @@ router = APIRouter()
 @router.post("/register", response_model=UserResponseDTO, status_code=status.HTTP_201_CREATED)
 async def register_user(
     dto: UserCreateDTO,
-    service: IdentityService = Depends(get_identity_service)
+    service: IdentityService = Depends(get_identity_service),
+    attribution=Depends(get_funnel_attribution_service),
 ):
     try:
-        return await service.register_user(dto)
+        user = await service.register_user(dto)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if dto.funnel_session_id is not None:
+        await attribution.link_registration(dto.funnel_session_id, user.id)
+    return user
 
 @router.post("/markets", status_code=status.HTTP_201_CREATED)
 async def create_market(

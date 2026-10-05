@@ -21,8 +21,10 @@ class UserCreateDTO(BaseModel):
     name: str
     email: EmailStr
     cpf: Optional[str] = None
+    # Sessão de funil de venda que trouxe o cadastro (opcional; ver spec de funis)
+    funnel_session_id: Optional[UUID] = None
     # Removemos o max_length do Field para tratar manualmente no validator
-    password: str = Field(..., min_length=6) 
+    password: str = Field(..., min_length=6)
 
     @field_validator('password')
     @classmethod

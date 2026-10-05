@@ -23,7 +23,7 @@ from domain.interfaces import UserRepositoryInterface, PlanRepositoryInterface
 from domain.shared import BusinessRuleException
 from infra.config.logger import get_logger
 from infra.config.settings import get_settings
-from infra.observability.analytics import PostHogClient
+from infra.observability.funnel_analytics import build_analytics
 
 logger = get_logger("subscription_service")
 settings = get_settings()
@@ -46,7 +46,7 @@ class SubscriptionService:
         self._sub_repo = subscription_repo
         self._event_repo = event_repo
         self._billing_client = billing_client
-        self._analytics = analytics or PostHogClient()
+        self._analytics = analytics or build_analytics()
 
     # ------------------------------------------------------------------
     # Trial
@@ -368,6 +368,20 @@ class SubscriptionService:
                         user.plan_expiration = subscription_expires_at
                         user.is_active = True
                     await self.user_repo.save(user)
+
+            if event == "PAYMENT_RECEIVED" and local_sub is not None:
+                try:
+                    await self._analytics.track_event(
+                        str(local_sub.owner_id), "invoice_paid",
+                        {
+                            "amount": str(local_sub.value),
+                            "subscription_type": local_sub.subscription_type,
+                            "billing_mode": "recurring",
+                        },
+                    )
+                except Exception:
+                    # Analytics nunca pode marcar o evento de billing como falho.
+                    logger.warning(f"[webhook] Falha ao emitir invoice_paid event_id={event_id}")
 
             event_model.processing_status = "processed"
             event_model.processed_at = datetime.utcnow()

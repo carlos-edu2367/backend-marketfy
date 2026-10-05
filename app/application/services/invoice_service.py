@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from infra.config.logger import get_logger
-from infra.observability.analytics import PostHogClient
+from infra.observability.funnel_analytics import build_analytics
 
 logger = get_logger("invoice_service")
 
@@ -32,7 +32,7 @@ class InvoiceService:
         self._bc = billing_client
         self._settings = settings
         self._user = user_repo
-        self._analytics = analytics or PostHogClient()
+        self._analytics = analytics or build_analytics()
 
     # -- Contratação -------------------------------------------------------
     async def contract(self, owner_id: uuid.UUID, plan_id: uuid.UUID,
